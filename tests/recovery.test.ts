@@ -1,0 +1,67 @@
+import { describe, expect, it } from 'vitest';
+import { Vector3 } from 'three';
+import { makeWorld, CAPE } from './helpers';
+import { getVehicle } from '../src/vehicles/catalog';
+import { AscentGuidance, FlightSoftware, launchAzimuth } from '../src/game/guidance';
+import { BoosterGuidance, LandingZone } from '../src/game/recovery';
+import type { Vessel } from '../src/physics/vessel';
+
+function zoneAt(lat: number, lon: number, id: string): LandingZone {
+  return { id, name: id, dir: new Vector3(Math.cos(lat) * Math.cos(lon), Math.cos(lat) * Math.sin(lon), Math.sin(lat)), height: 0, radius: 40, kind: 'pad' };
+}
+
+export function flyWithRecovery(vehicleId: string, maxTime = 1100) {
+  const { world } = makeWorld();
+  const def = getVehicle(vehicleId);
+  const v = world.createVessel(def, world.system.earth);
+  world.addVessel(v);
+  world.placeOnSurface(v, world.system.earth, CAPE.lat, CAPE.lon, 5, 0);
+  v.padSupportAlt = 5;
+  const zones = [zoneAt(CAPE.lat - 0.07 * Math.PI / 180, CAPE.lon + 0.03 * Math.PI / 180, 'LZ-1'), zoneAt(CAPE.lat - 0.0735 * Math.PI / 180, CAPE.lon + 0.03 * Math.PI / 180, 'LZ-2')];
+  const boosters: { v: Vessel; g: BoosterGuidance }[] = [];
+  const said: string[] = [];
+  world.guidanceFactory = (bv) => {
+    const zone = zones.find((z) => !z.occupied)!;
+    zone.occupied = true;
+    const g = new BoosterGuidance(bv, world, zone);
+    g.onEvent = (id) => said.push(`${bv.name}:${id}@${world.t.toFixed(0)}`);
+    boosters.push({ v: bv, g });
+    return { update: (vv, dt, env) => g.update(vv, dt, env) };
+  };
+  const az = launchAzimuth(CAPE.lat, 28.6 * Math.PI / 180);
+  const g = new AscentGuidance(world, v, def.targetOrbit ?? 220000, az);
+  const fsw = new FlightSoftware(v);
+  world.stage(v);
+  const dt = 1 / 60;
+  let liftoff = false;
+  const t0 = world.t;
+  for (let i = 0; i < maxTime / dt; i++) {
+    g.update(dt);
+    fsw.update(world.t, liftoff);
+    world.update(dt);
+    if (!liftoff && v.telemetry.verticalSpeed > 0.5) { liftoff = true; v.hasLiftedOff = true; }
+    if (liftoff && v.telemetry.altitude > 45) v.padSupportAlt = NaN;
+    if (boosters.length && boosters.every((b) => b.v.landed || b.v.destroyed) && g.phase === 'done') break;
+    if (i % (boosters.some((b) => b.g.phase === 'entry' || b.g.phase === 'landing' || b.g.phase === 'glide') ? 60 : 1800) === 0) for (const b of boosters) {
+      const tm = b.v.telemetry;
+      console.log(`t=${(world.t - t0).toFixed(0)} ${b.g.phase.padEnd(9)} alt ${(tm.altitude / 1000).toFixed(1)}km v ${tm.speedSurface.toFixed(0)} vz ${tm.verticalSpeed.toFixed(0)} miss ${(b.g.missDistance / 1000).toFixed(2)}km prop ${b.v.stagePropellant().current.toFixed(0)} thr ${(tm.thrust / 1000).toFixed(0)}kN q ${(tm.dynamicPressure/1000).toFixed(1)} aoa ${(Math.min(tm.aoa, 180 - tm.aoa)).toFixed(1)} run ${b.v.engines.filter((e) => e.running).length} mask ${b.v.controls.engineMask ? b.v.controls.engineMask.size : 'all'} thr ${b.v.controls.throttle.toFixed(2)}`);
+    }
+  }
+  return { world, v, boosters, said, zones };
+}
+
+describe('booster recovery', () => {
+  it('KESTREL 9 first stage returns to the landing zone', () => {
+    const { boosters, said, world } = flyWithRecovery('kestrel9');
+    console.log(said.join('\n'));
+    expect(boosters.length).toBe(1);
+    const b = boosters[0];
+    const fix = b.v.fixedDirection(world.t, new Vector3());
+    const dist = Math.acos(Math.min(1, fix.dot(b.g.zone.dir))) * 6371000;
+    console.log('rest', b.v.telemetry.speedSurface.toFixed(3), b.v.angVel.length().toFixed(4), 'contact', b.v.contactForce.toFixed(0), 'thrust', b.v.telemetry.thrust.toFixed(0), 'pitch', b.v.telemetry.pitch.toFixed(1));
+    console.log('landed', b.v.landed, 'destroyed', b.v.destroyReason, 'dist', dist.toFixed(1), 'impact', b.v.lastImpactSpeed.toFixed(2));
+    expect(b.v.destroyed, b.v.destroyReason).toBe(false);
+    expect(b.v.landed).toBe(true);
+    expect(dist).toBeLessThan(300);
+  });
+});

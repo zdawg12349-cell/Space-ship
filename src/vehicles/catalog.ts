@@ -63,7 +63,7 @@ function kestrelFirstStage(id: string, name: string, parent: string | null, top:
     features: {
       gridFins: { y: top === 'interstage' ? 46.6 : 44.2, size: 1.25 },
       landingLegs: { y: 4.5, length: 9.6, count: 4 },
-      rcs: { thrust: 400, arm: 20 },
+      rcs: { thrust: 2600, arm: 20 },
     },
     recovery,
     separation: { kind: 'stack', impulse: 1.6 },
@@ -228,7 +228,7 @@ function leviathan(): VehicleDef {
     assemblies: [
       asm('core', 'Super-heavy booster', null, b.sections, engines, {
         extraMass: 52800,
-        features: { gridFins: { y: 68.5, size: 2.6 }, rcs: { thrust: 3000, arm: 30 } },
+        features: { gridFins: { y: 68.5, size: 2.6 }, rcs: { thrust: 12000, arm: 30 } },
         recovery: 'rtls', separation: { kind: 'stack', impulse: 1.4 }, maxSkinTemp: 1500,
       }),
       asm('ship', 'Ship', 'core', s.sections, shipEngines, { extraMass: 9600, features: { flaps: true, rcs: { thrust: 2500, arm: 22 } }, separation: { kind: 'stack', impulse: 1.0 }, maxSkinTemp: 1600 }),

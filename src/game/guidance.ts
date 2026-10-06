@@ -67,7 +67,7 @@ export class AscentGuidance {
   private mecoHold = 0;
   enabled = true;
   /** fraction of propellant kept in a recoverable booster for its return */
-  recoveryReserve = 0.11;
+  recoveryReserve = 0.155;
 
   constructor(world: PhysicsWorld, vessel: Vessel, targetAltitude: number, azimuth: number) {
     this.world = world;
@@ -227,7 +227,8 @@ export class AscentGuidance {
       const recover = sepTargets.map((id) => v.getAssembly(id)).filter((a) => a && a.def.recovery && a.def.recovery !== 'none');
       for (const a of recover) {
         if (!a) continue;
-        if (a === v.rootAssembly && a.engines.some((e) => e.running) && a.fuelFraction < this.recoveryReserve) {
+        const reserve = a.def.recovery === 'droneship' ? this.recoveryReserve * 0.62 : this.recoveryReserve;
+        if (a === v.rootAssembly && a.engines.some((e) => e.running) && a.fuelFraction < reserve) {
           throttle = 0; // MECO
           this.mecoHold += dt;
         }

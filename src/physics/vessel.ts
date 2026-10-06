@@ -168,6 +168,8 @@ const _v2 = new Vector3();
 const _v3 = new Vector3();
 const _v4 = new Vector3();
 const _q1 = new Quaternion();
+const _q2 = new Quaternion();
+const _tb = new Vector3();
 const _up = new Vector3();
 const _east = new Vector3();
 const _north = new Vector3();
@@ -1102,6 +1104,7 @@ export class Vessel {
   }
 
   private _cps: Vector3[] = [];
+  private lastTouching = 0;
 
   private applyContact(dt: number, t: number, surfaceH: number, overWater: boolean, force: Vector3, torque: Vector3, vSurf: Vector3): number {
     const R = this.body.radius;
@@ -1127,6 +1130,7 @@ export class Vessel {
     let touching = 0;
     let maxImpact = 0;
     const water = overWater && !usePad;
+    const touchingEstimate = Math.max(1, this.lastTouching);
     for (let i = 0; i < n; i++) {
       const lp = this._cps[i];
       const wp = this.pointToInertial(lp, _v1);
@@ -1137,6 +1141,7 @@ export class Vessel {
       touching++;
       const nrm = _v2.copy(wp).multiplyScalar(1 / rr);
       const rLocal = _v3.copy(lp).sub(this.com);
+      const rlx = rLocal.x, rly = rLocal.y, rlz = rLocal.z;
       const pv = _v4.copy(this.angVel).cross(rLocal).applyQuaternion(this.rot).add(vSurf);
       const vn = pv.dot(nrm);
       if (-vn > maxImpact) maxImpact = -vn;
@@ -1153,7 +1158,14 @@ export class Vessel {
       const vtl = vt.length();
       if (vtl > 1e-4) {
         const mu = water ? 0.15 : 0.7;
-        const ft = Math.min(mu * fn, ((this.mass / n) * vtl) / dt * 0.5);
+        // effective mass of the contact point along the slip direction:
+        // 1/m_eff = 1/m + (r x t) . I^-1 (r x t)   (body frame, diagonal inertia)
+        _q2.copy(this.rot).invert();
+        const tb = _tb.copy(vt).multiplyScalar(1 / vtl).applyQuaternion(_q2);
+        const cx = rly * tb.z - rlz * tb.y, cy = rlz * tb.x - rlx * tb.z, cz = rlx * tb.y - rly * tb.x;
+        const invM = 1 / this.mass + (cx * cx) / this.inertia.x + (cy * cy) / this.inertia.y + (cz * cz) / this.inertia.z;
+        const mEff = 1 / invM;
+        const ft = Math.min(mu * fn, ((mEff / Math.max(1, touchingEstimate)) * vtl) / dt * 0.3);
         fN.addScaledVector(vt, -ft / vtl);
       }
       force.add(fN);
@@ -1164,6 +1176,7 @@ export class Vessel {
       torque.z += rl.x * fLocal.y - rl.y * fLocal.x;
       total += fn;
     }
+    this.lastTouching = touching;
     if (touching > 0) {
       this.angVel.multiplyScalar(Math.max(0, 1 - dt * (water ? 1.5 : 6)));
       this.lastImpactSpeed = Math.max(this.lastImpactSpeed * 0.99, maxImpact);
@@ -1234,15 +1247,18 @@ export class Vessel {
     if (this.isDebris || this.destroyed) return;
     // q·alpha bending limit (Pa·deg) — typical launchers ~150–250 kPa·deg
     const capsuleOnly = this.aero.isCapsule && this.assemblies.length <= 3;
-    const effA = Math.min(aoaDeg, 180 - aoaDeg < aoaDeg && capsuleOnly ? 180 - aoaDeg : aoaDeg);
-    const qa = q * effA;
+    // bending loads depend on the angle to the nearest axial direction (tail-first flight is fine)
+    const effA = Math.min(aoaDeg, 180 - aoaDeg);
+    // engines firing into the flow (powered descent) shield the body: relieve bending loads
+    const poweredTailFirst = aoaDeg > 90 && this.telemetry.thrust > 0;
+    const qa = q * effA * (poweredTailFirst ? 0.4 : 1);
     this.telemetry.qAlpha = qa;
     const limit = capsuleOnly ? 2.5e6 : 2.2e5;
     if (qa > limit && q > 2000) {
       this.destroy(capsuleOnly ? 'Aerodynamic loads tore the spacecraft apart' : 'Structural failure — aerodynamic bending loads exceeded (q·α)');
     }
-    // axial g limit
-    const g = this.telemetry.gForce;
+    // axial g limit (flight loads only — ground contact is judged by impact speed instead)
+    const g = this.contactForce > 0 ? 0 : this.telemetry.gForce;
     if (g > (capsuleOnly ? 25 : 12) && this.hasLiftedOff) {
       this.destroy(`Structural failure at ${g.toFixed(1)} g`);
     }
