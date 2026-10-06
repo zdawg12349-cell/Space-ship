@@ -5,7 +5,7 @@ Asset preprocessing for ASCENT.
 Turns the raw, legally-sourced texture/catalog downloads (see CREDITS.md) into
 compact, game-ready files under public/assets/.
 
-Usage:  python3 -I scripts/process_assets.py <raw_dir> <out_dir>
+Usage:  python3 -I scripts/process_assets.py <raw_dir> <out_dir> [earth,moon,planets,sky]
 
 Raw inputs expected in <raw_dir>:
   earth-blue-marble.jpg        NASA Blue Marble (via vasturiano/three-globe)
@@ -67,6 +67,21 @@ def smoothstep(e0, e1, x):
     return t * t * (3.0 - 2.0 * t)
 
 
+def inv_modis_stretch(display):
+    """Inverse of the MODIS Rapid Response true-colour stretch (byte in -> byte out):
+    0->0, 30->110, 60->160, 120->210, 190->240, 255->255, where input bytes map reflectance 0..1.1."""
+    xs = np.array([0, 30, 60, 120, 190, 255], dtype=np.float32)
+    ys = np.array([0, 110, 160, 210, 240, 255], dtype=np.float32)
+    b = np.clip(display, 0, 1) * 255.0
+    refl = np.interp(b.ravel(), ys, xs).reshape(b.shape) / 255.0 * 1.1
+    return np.clip(refl, 0, 1)
+
+
+def linear_to_srgb(c):
+    c = np.clip(c, 0, 1)
+    return np.where(c <= 0.0031308, c * 12.92, 1.055 * np.power(c, 1 / 2.4) - 0.055)
+
+
 # ----------------------------------------------------------------------------- Earth
 def earth():
     size = (4096, 2048)
@@ -97,8 +112,12 @@ def earth():
     deep = np.array([0.020, 0.055, 0.115], dtype=np.float32)  # sRGB-ish dark navy
     shelf = np.array([0.045, 0.16, 0.24], dtype=np.float32)
     ocean = deep[None, None, :] * (1 - shallow[..., None] * 0.6) + shelf[None, None, :] * (shallow[..., None] * 0.6)
-    # Gentle land grading: Blue Marble is a touch dark/green in shadows; lift slightly.
-    land = np.clip(bm * 1.04, 0, 1)
+    # Blue Marble is a display product (MODIS-style true-colour stretch), not reflectance:
+    # dark vegetation is crushed and bright deserts are lifted. Invert the standard MODIS
+    # true-colour enhancement curve to recover approximate surface reflectance, then store it
+    # sRGB-encoded so the GPU decode yields linear reflectance.
+    land_refl = inv_modis_stretch(bm)
+    land = linear_to_srgb(land_refl)
     alb = land * (1 - w[..., None]) + ocean * w[..., None]
     save_rgb(alb, out('earth', 'albedo.webp'), quality=93)
 
@@ -289,9 +308,14 @@ def milky_way(rows):
 
 
 if __name__ == '__main__':
-    earth()
-    moon()
-    planets()
-    r = stars()
-    milky_way(r)
+    only = sys.argv[3].split(',') if len(sys.argv) > 3 else None
+    if not only or 'earth' in only:
+        earth()
+    if not only or 'moon' in only:
+        moon()
+    if not only or 'planets' in only:
+        planets()
+    if not only or 'sky' in only:
+        r = stars()
+        milky_way(r)
     print('done')
