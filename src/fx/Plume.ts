@@ -45,11 +45,11 @@ interface StyleDef {
 }
 
 const STYLES: Record<PlumeStyle, StyleDef> = {
-  kerolox: { core: [1.0, 0.88, 0.66], body: [1.0, 0.56, 0.18], edge: [0.9, 0.3, 0.06], diamond: [1.0, 0.92, 0.75], intensity: 2200, length: 30, coreLen: 4.5, diamonds: 0.55, soot: 0.9, expansion: 1, light: 9000, lightColor: [1.0, 0.62, 0.3] },
+  kerolox: { core: [1.0, 0.88, 0.66], body: [1.0, 0.56, 0.18], edge: [0.9, 0.3, 0.06], diamond: [1.0, 0.92, 0.75], intensity: 2200, length: 42, coreLen: 5.5, diamonds: 0.55, soot: 0.9, expansion: 1, light: 9000, lightColor: [1.0, 0.62, 0.3] },
   hydrolox: { core: [0.62, 0.66, 1.0], body: [0.42, 0.38, 0.85], edge: [0.35, 0.25, 0.6], diamond: [1.0, 0.78, 0.86], intensity: 180, length: 14, coreLen: 3.0, diamonds: 1.0, soot: 0, expansion: 1.1, light: 1500, lightColor: [0.75, 0.75, 1.0] },
   methalox: { core: [0.62, 0.7, 1.0], body: [0.62, 0.42, 0.85], edge: [0.95, 0.45, 0.25], diamond: [0.95, 0.88, 1.0], intensity: 420, length: 18, coreLen: 4.0, diamonds: 0.85, soot: 0.06, expansion: 1, light: 4000, lightColor: [0.85, 0.75, 1.0] },
   hypergolic: { core: [1.0, 0.72, 0.55], body: [0.95, 0.5, 0.38], edge: [0.7, 0.28, 0.2], diamond: [1.0, 0.85, 0.75], intensity: 220, length: 12, coreLen: 3.0, diamonds: 0.35, soot: 0.04, expansion: 1.2, light: 3000, lightColor: [1.0, 0.7, 0.55] },
-  solid: { core: [1.0, 0.97, 0.88], body: [1.0, 0.82, 0.55], edge: [1.0, 0.62, 0.3], diamond: [1.0, 0.95, 0.85], intensity: 2600, length: 30, coreLen: 8.0, diamonds: 0.15, soot: 0.25, expansion: 0.8, light: 12000, lightColor: [1.0, 0.86, 0.66] },
+  solid: { core: [1.0, 0.97, 0.88], body: [1.0, 0.82, 0.55], edge: [1.0, 0.62, 0.3], diamond: [1.0, 0.95, 0.85], intensity: 2600, length: 44, coreLen: 9.0, diamonds: 0.15, soot: 0.25, expansion: 0.8, light: 12000, lightColor: [1.0, 0.86, 0.66] },
   nuclear: { core: [0.7, 0.78, 1.0], body: [0.5, 0.55, 0.95], edge: [0.4, 0.4, 0.8], diamond: [0.9, 0.9, 1.0], intensity: 60, length: 10, coreLen: 3.0, diamonds: 0.4, soot: 0, expansion: 1.3, light: 400, lightColor: [0.8, 0.85, 1.0] },
   aerospike: { core: [0.62, 0.66, 1.0], body: [0.48, 0.42, 0.9], edge: [0.4, 0.3, 0.7], diamond: [1.0, 0.8, 0.9], intensity: 200, length: 12, coreLen: 2.5, diamonds: 0.6, soot: 0, expansion: 0.25, light: 1500, lightColor: [0.75, 0.75, 1.0] },
 };

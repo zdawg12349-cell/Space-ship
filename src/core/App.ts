@@ -104,6 +104,8 @@ export class App {
       rw.sunLight.shadow.map = null;
     }
     rw.plumes.quality = g.plumeQuality;
+    rw.effects.setBudget(g.particles);
+    rw.envProbe.setSize(g.envProbe);
     this.resize(true);
   }
 
@@ -218,7 +220,7 @@ export class App {
     w.__ascent = {
       startMission: (id: string) => this.startFlight({ missionId: id }),
       startSandbox: (o: Partial<FlightLaunchOptions>) => this.startFlight({ ...o }),
-      advance: (s: number) => this.flight?.advance(s),
+      advance: (s: number, renderEvery?: number) => this.flight?.advance(s, renderEvery),
       session: () => this.flight?.session,
       flight: () => this.flight,
       shot: (id: string) => this.flight?.session.director.forceShot(id),

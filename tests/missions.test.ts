@@ -197,15 +197,22 @@ describe('autopilot flight', () => {
     w.active = v;
     circular(w, v, 100_000, 2);
     const ap = new Autopilot(w, v);
+    const site = { lat: (0.674 * Math.PI) / 180, lon: (23.473 * Math.PI) / 180 };
+    ap.landingSite = site;
     ap.setMode('land');
     let touchdown = NaN;
-    run(w, ap, 4000, () => {
+    run(w, ap, 9000, () => {
       for (const e of v.events) if (e.type === 'touchdown') touchdown = e.speed;
       return v.landed || v.destroyed;
     });
-    console.log('lunar landing', v.landed, v.destroyed, v.destroyReason, 'touchdown', touchdown, 'prop', v.stagePropellant().current.toFixed(0));
+    const fixed = v.fixedDirection(w.t, new Vector3());
+    const siteDir = new Vector3(Math.cos(site.lat) * Math.cos(site.lon), Math.cos(site.lat) * Math.sin(site.lon), Math.sin(site.lat));
+    const offKm = (Math.acos(Math.min(1, fixed.dot(siteDir))) * v.body.radius) / 1000;
+    const lat = (Math.asin(fixed.z) * 180) / Math.PI, lon = (Math.atan2(fixed.y, fixed.x) * 180) / Math.PI;
+    console.log('lunar landing', v.landed, v.destroyed, v.destroyReason, 'touchdown', touchdown, 'prop', v.stagePropellant().current.toFixed(0), 'at', lat.toFixed(2), lon.toFixed(2), 'off site', offKm.toFixed(0), 'km');
     expect(v.destroyed).toBe(false);
     expect(v.landed).toBe(true);
+    expect(offKm).toBeLessThan(30);
   });
 
   it('vacuum ascent reaches lunar orbit', () => {

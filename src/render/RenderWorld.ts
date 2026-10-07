@@ -248,7 +248,9 @@ export class RenderWorld {
     this.scene.add(this.zones.group);
     this.envProbe = new EnvironmentProbe(renderer, this.atmosphere, 64);
     this.plumes = new PlumeSystem(this.fxScene, this.scene, this.detailTex, () => this.post.linearDepth);
-    this.effects = new Effects(this, 6000);
+    // allocated for the largest preset; App.applyGraphics sets the active budget
+    this.effects = new Effects(this, 14000);
+    this.effects.setBudget(6000);
     this.aero = new AeroShells(this.fxScene);
     this.hemi = new HemisphereLight(0x8899bb, 0x443322, 0.0);
     this.scene.add(this.hemi);

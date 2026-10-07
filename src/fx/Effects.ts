@@ -126,6 +126,12 @@ export class Effects {
     this.anchorAlt = newAlt;
   }
 
+  /** Particle budget for the graphics preset (the pool is allocated once at full size). */
+  setBudget(n: number): void {
+    this.particles.budget = n;
+    this.rateScale = Math.min(2, n / 6000);
+  }
+
   private rate(key: string, perSecond: number, dt: number): number {
     const v = (this.acc.get(key) ?? 0) + perSecond * dt * this.rateScale;
     const n = Math.floor(v);

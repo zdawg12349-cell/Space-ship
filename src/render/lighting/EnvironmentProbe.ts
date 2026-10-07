@@ -13,7 +13,7 @@ import { FullscreenQuad } from '../util/Fullscreen';
  * The sun disc itself is excluded; the directional light carries direct sunlight.
  */
 export class EnvironmentProbe {
-  readonly cube: WebGLCubeRenderTarget;
+  cube: WebGLCubeRenderTarget;
   private pmrem: PMREMGenerator;
   private pmremRT: WebGLRenderTarget | null = null;
   private quad: FullscreenQuad;
@@ -24,6 +24,17 @@ export class EnvironmentProbe {
   texture: Texture | null = null;
   /** seconds between refreshes (also refreshes on large sun/altitude changes) */
   interval = 0.35;
+
+  /** Change the cube resolution (graphics preset); the next update re-renders it. */
+  setSize(size: number): void {
+    if (size === this.cube.width) return;
+    this.cube.dispose();
+    this.cube = new WebGLCubeRenderTarget(size, { type: HalfFloatType, generateMipmaps: false, minFilter: LinearFilter, magFilter: LinearFilter, depthBuffer: false });
+    this.mat.uniforms.uSize.value = size;
+    this.pmremRT?.dispose();
+    this.pmremRT = null;
+    this.timer = 1e9;
+  }
 
   constructor(private renderer: WebGLRenderer, atmosphere: Atmosphere, size = 64) {
     this.cube = new WebGLCubeRenderTarget(size, { type: HalfFloatType, generateMipmaps: false, minFilter: LinearFilter, magFilter: LinearFilter, depthBuffer: false });

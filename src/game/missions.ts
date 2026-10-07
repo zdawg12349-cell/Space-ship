@@ -106,14 +106,14 @@ export const MISSIONS: MissionDef[] = [
   {
     id: 'landing', number: 9, title: 'Tranquility', subtitle: 'Powered descent to the lunar surface',
     briefing: 'Lunar orbit, 100 km. Undock, burn retrograde to start the descent and fly the lander down onto the Sea of Tranquility. Watch the radar altitude, keep the descent rate under control and land gently with fuel to spare.',
-    vehicle: 'selene', site: 'cape', date: '2026-10-13T20:17:00Z', weather: 'clear', countdownStart: 0, orbitAssist: false, recovery: false, start: 'lunarOrbit',
+    vehicle: 'selene', site: 'cape', date: '2026-10-17T07:15:00Z', weather: 'clear', countdownStart: 0, orbitAssist: false, recovery: false, start: 'lunarOrbit',
     objectives: [{ kind: 'lunarTouchdown', text: 'Touch down on the Moon (< 3 m/s)', param: 3 }],
     tags: ['Moon', 'Landing'], mood: 'tension',
   },
   {
     id: 'homeward', number: 10, title: 'Homeward', subtitle: 'Lunar liftoff · return · entry',
     briefing: 'You are on the lunar surface. Lift off, reach lunar orbit, burn for home and ride the hottest reentry in the game — eleven kilometres per second — under parachutes to an ocean splashdown.',
-    vehicle: 'lrv', site: 'cape', date: '2026-10-14T18:00:00Z', weather: 'fair', countdownStart: 0, orbitAssist: false, recovery: false, start: 'moonSurface',
+    vehicle: 'lrv', site: 'cape', date: '2026-10-18T06:00:00Z', weather: 'fair', countdownStart: 0, orbitAssist: false, recovery: false, start: 'moonSurface',
     objectives: [{ kind: 'lunarLiftoff', text: 'Lift off from the Moon' }, { kind: 'lunarOrbit', text: 'Reach lunar orbit' }, { kind: 'tei', text: 'Trans-Earth injection' }, { kind: 'survivedEntry', text: 'Survive entry' }, { kind: 'splashdown', text: 'Splashdown' }],
     tags: ['Moon', 'Reentry'], mood: 'hope',
   },

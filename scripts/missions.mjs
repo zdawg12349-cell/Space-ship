@@ -66,7 +66,7 @@ for (const id of ids) {
   await page.waitForTimeout(1500);
   const log = [];
   for (const st of PLANS[id] ?? []) {
-    if (st.advance) await page.evaluate((s) => window.__ascent.advance(s), st.advance);
+    if (st.advance) await page.evaluate((s) => window.__ascent.advance(s, 30), st.advance);
     if (st.wait) await page.waitForTimeout(st.wait);
     if (st.stage) await page.evaluate(() => window.__h.s().stageNow());
     if (st.warp !== undefined) await page.evaluate((w) => window.__h.s().setWarp(w), st.warp);
@@ -80,7 +80,7 @@ for (const id of ids) {
         void s; void f; void v; void ph; void r; void ap;
         const test = new Function('s', 'f', 'v', 'ph', 'r', 'ap', `return (${cond});`);
         let waited = 0;
-        while (waited < max && !test(s, f, v, ph, r, ap)) { window.__ascent.advance(10); waited += 10; }
+        while (waited < max && !test(s, f, v, ph, r, ap)) { window.__ascent.advance(10, 30); waited += 10; }
         return waited;
       }, { cond: st.until, max: st.max });
       log.push(`until ${st.until} after ${res} s`);

@@ -274,6 +274,8 @@ function createPuffAtlas(): DataTexture {
 export class ParticleSystem {
   readonly max: number;
   count = 0;
+  /** active particle budget (graphics preset); never more than the allocated capacity */
+  budget = Infinity;
   // state (local frame)
   private px: Float32Array; private py: Float32Array; private pz: Float32Array;
   private vx: Float32Array; private vy: Float32Array; private vz: Float32Array;
@@ -362,7 +364,7 @@ export class ParticleSystem {
     const ki = KIND_INDEX.get(o.kind)!;
     for (let j = 0; j < n; j++) {
       let i: number;
-      if (this.count < this.max) i = this.count++;
+      if (this.count < Math.min(this.max, this.budget)) i = this.count++;
       else {
         // pool full: recycle the oldest-looking particle (highest age fraction) from a small sample
         let best = 0, bestF = -1;

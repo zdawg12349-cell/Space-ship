@@ -169,6 +169,7 @@ export class FlightSession {
     this.autopilot.targetOrbit = config.targetOrbit ?? this.def.targetOrbit ?? 220_000;
     this.autopilot.azimuth = this.azimuth;
     this.autopilot.planeNormal = planeNormal;
+    if (startKind === 'lunarOrbit') this.autopilot.landingSite = { lat: (0.674 * Math.PI) / 180, lon: (23.473 * Math.PI) / 180 };
     if (startKind === 'pad') {
       if (config.orbitAssist !== false) this.autopilot.setMode('orbit');
     } else if (startKind === 'entry') this.autopilot.setMode('retrograde');
@@ -280,8 +281,9 @@ export class FlightSession {
       const r = body.radius + alt;
       const vc = Math.sqrt(body.gm / r);
       const inc = ((config.inclination ?? (kind === 'leo' ? 28.6 : 2)) * Math.PI) / 180;
-      // for the lunar descent, start ~30 deg before Tranquility Base (0.67N, 23.47E)
-      const phase0 = kind === 'lunarOrbit' ? ((23.47 - 32) * Math.PI) / 180 : 0;
+      // for the lunar descent, start a little more than half an orbit before Tranquility Base
+      // (0.67N, 23.47E): the descent-orbit burn comes up within minutes
+      const phase0 = kind === 'lunarOrbit' ? ((23.47 - 200) * Math.PI) / 180 : 0;
       const nrm = pole.clone().applyAxisAngle(ref, inc);
       const p = ref.clone().applyAxisAngle(nrm, phase0).multiplyScalar(r);
       const vel = new Vector3().crossVectors(nrm, p).normalize().multiplyScalar(vc);
@@ -604,6 +606,15 @@ export class FlightSession {
   private autoWarp(): void {
     const ap = this.autopilot;
     const n = ap.node;
+    // the descent assist marks the quiet stretches (waiting for the burn point, the long
+    // coast down to the low point): warp through them, back to real time before they end
+    if (ap.mode === 'land' && ap.coastUntil !== null && !this.warpTarget) {
+      const remain = ap.coastUntil - this.world.t;
+      let idx = 0;
+      if (remain > 30) for (let i = WARP_LEVELS.length - 1; i >= 0; i--) if (remain > WARP_LEVELS[i] * 3) { idx = Math.min(i, 6); break; }
+      if (idx !== this.world.warpIndex) this.world.setWarpIndex(idx);
+      return;
+    }
     const wt = this.warpTarget;
     if (wt && !(ap.mode === 'node' && n)) {
       const remain = wt.t - this.world.t;

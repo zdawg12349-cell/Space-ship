@@ -506,14 +506,18 @@ export class FlightController {
   }
 
   /** Fast-forward the simulation (automation / debugging). */
-  advance(seconds: number): { met: number; phase: string } {
+  /**
+   * Fast-forward (tests and tools): simulate `seconds` in 1/30 s steps. The scene is updated
+   * every `renderEvery` steps (effects and camera follow; lower = closer to live play).
+   */
+  advance(seconds: number, renderEvery = 2): { met: number; phase: string } {
     const s = this.session;
     const dt = 1 / 30;
     const n = Math.round(seconds / dt);
     for (let i = 0; i < n; i++) {
       s.update(dt);
       this.director.update(dt);
-      if (i % 2 === 0) s.render(dt * 2);
+      if (i % renderEvery === 0) s.render(dt * renderEvery);
     }
     return { met: s.met, phase: s.phase };
   }

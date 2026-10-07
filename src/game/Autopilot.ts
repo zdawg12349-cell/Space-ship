@@ -1,4 +1,4 @@
-import { Vector3 } from 'three';
+import { Quaternion, Vector3 } from 'three';
 import { keplerPropagate, lambert } from '../physics/orbit';
 import type { Vessel } from '../physics/vessel';
 import type { PhysicsWorld } from '../physics/world';
@@ -73,6 +73,11 @@ export class Autopilot {
   /** status line for the HUD */
   status = '';
   private landPhase: 'deorbit' | 'coast' | 'brake' | 'terminal' | 'down' = 'deorbit';
+  /** descent target (body-fixed lat/lon, radians): the descent-orbit burn waits for the right phase */
+  landingSite: { lat: number; lon: number } | null = null;
+  private doiStarted = false;
+  /** sim time until which nothing needs attention (the session time-warps toward it) */
+  coastUntil: number | null = null;
   private ascPhase: 'vertical' | 'pitch' | 'done' = 'vertical';
   private ascT = 0;
   /** ascent target (m) for 'ascend' */
@@ -175,7 +180,8 @@ export class Autopilot {
       this.ascent.enabled = true;
     }
     if (m !== 'orbit' && this.ascent) this.ascent.enabled = false;
-    if (m === 'land') this.landPhase = 'deorbit';
+    if (m === 'land') { this.landPhase = 'deorbit'; this.doiStarted = false; }
+    this.coastUntil = null;
     if (m === 'ascend') { this.ascPhase = 'vertical'; this.ascT = 0; }
     this.status = '';
   }
@@ -297,11 +303,13 @@ export class Autopilot {
   /** Simulate a retrograde full-throttle braking burn in 2D; returns the altitude where speed reaches ~0. */
   private stopAltitude(h: number, vh: number, vz: number, aMax: number, g: number): number {
     let x = vh, z = vz, alt = h;
+    const R = this.vessel.body.radius;
     const dt = 0.25;
     for (let i = 0; i < 2400; i++) {
       const sp = Math.hypot(x, z);
       if (sp < 2) return alt;
-      const ax = (-x / sp) * aMax, az = (-z / sp) * aMax - g;
+      // gravity less the centrifugal relief of the horizontal speed (86% of lunar g in orbit)
+      const ax = (-x / sp) * aMax, az = (-z / sp) * aMax - g + (x * x) / (R + alt);
       x += ax * dt; z += az * dt; alt += z * dt;
       if (alt < -500) return alt;
     }
@@ -330,27 +338,58 @@ export class Autopilot {
     const pe = o.periapsis - body.radius;
     const retro = _h.lengthSq() > 1 ? _h.clone().normalize().negate() : _u.clone();
     switch (this.landPhase) {
-      case 'deorbit':
-        // lower periapsis to ~9 km
+      case 'deorbit': {
         this.att.update(v, { dir: retro }, dt);
+        // with a landing site: burn half an orbit (plus the braking arc) before it, so the
+        // descent orbit's low point and the powered descent fall on the site
+        if (this.landingSite && !this.doiStarted && o.e < 0.2) {
+          const ahead = this.siteAngleAhead();
+          const DOI_LEAD = (173 * Math.PI) / 180;
+          let wait = ahead - DOI_LEAD;
+          if (wait < 0) wait += Math.PI * 2;
+          if (wait > (0.6 * Math.PI) / 180) {
+            const tWait = (wait / (Math.PI * 2)) * o.period;
+            this.throttleCmd = 0;
+            this.coastUntil = this.world.t + tWait - 90;
+            this.status = `Descent orbit insertion in ${Math.ceil(tWait / 60)} min · landing site ${((ahead * 180) / Math.PI).toFixed(0)}° ahead`;
+            return true;
+          }
+          this.doiStarted = true;
+          this.coastUntil = null;
+        }
+        // lower periapsis to ~9 km
         this.throttleCmd = this.att.error < 0.1 ? 1 : 0;
         this.status = `Descent orbit insertion · periapsis ${(pe / 1000).toFixed(1)} km`;
         if (pe < 9000 || o.e >= 1 || tm.altitude < 15_000) { this.throttleCmd = 0; this.landPhase = 'coast'; }
         return true;
+      }
       case 'coast': {
         this.att.update(v, { dir: retro }, dt);
         this.throttleCmd = 0;
         const hs = this.stopAltitude(h, vh, vz, aMax * 0.9, g);
         this.status = `Coasting to powered descent · ${(h / 1000).toFixed(1)} km · ignition at stop alt ${hs.toFixed(0)} m`;
-        if (hs < 450 || h < 2000) this.landPhase = 'brake';
+        // powered descent straddles the low point: begin about half the braking time before it
+        const tp = o.timeToPeriapsis();
+        const tBrake = vh / Math.max(0.1, aMax * 0.85);
+        this.coastUntil = tp > tBrake * 0.55 + 240 && tp < o.period * 0.9 ? this.world.t + tp - tBrake * 0.55 - 120 : null;
+        const nearLow = (tp < tBrake * 0.55 && tp < o.period * 0.5) || o.period - tp < 30;
+        if (nearLow || h < 2000) { this.landPhase = 'brake'; this.coastUntil = null; }
         return true;
       }
       case 'brake': {
-        // gravity-turn braking: thrust retrograde, throttle so the predicted stop is ~150 m up
-        this.att.update(v, { dir: vh < 25 ? _u.clone().addScaledVector(vHorizVec, -0.03).normalize() : retro }, dt);
-        const hs = this.stopAltitude(h, vh, vz, aMax * 0.92, g);
-        const err = hs - 150;
-        this.throttleCmd = Math.max(0.15, Math.min(1, 0.92 - err / 900));
+        // altitude-managed braking (like the Apollo braking phase): most of the thrust kills
+        // horizontal speed, the rest holds a descent profile that reaches ~150 m as the
+        // horizontal speed runs out, so a low-thrust lander doesn't sink into the ground
+        const aBudget = aMax * 0.95;
+        const tgoH = vh / Math.max(0.1, aBudget * 0.9);
+        const vzT = -Math.max(0, h - 150) / Math.max(25, tgoH);
+        const aVneed = g - (vh * vh) / (body.radius + Math.max(0, h)) + (vzT - vz) * 0.3;
+        const aV = Math.max(-0.3 * aBudget, Math.min(0.85 * aBudget, aVneed));
+        const aH = Math.sqrt(Math.max(0, aBudget * aBudget - aV * aV));
+        const hDir = vh > 1 ? vHorizVec.clone().multiplyScalar(-1 / vh) : new Vector3();
+        const dir = hDir.multiplyScalar(vh > 25 ? aH : aH * (vh / 25)).addScaledVector(_u, Math.max(0.05, aV)).normalize();
+        this.att.update(v, { dir }, dt);
+        this.throttleCmd = this.att.error < 0.35 ? Math.max(0.15, Math.min(1, Math.hypot(vh > 25 ? aH : aH * (vh / 25), aV) / Math.max(0.1, aMax))) : 0.1;
         this.status = `Powered descent · ${h.toFixed(0)} m · ${vh.toFixed(0)} m/s horizontal · ${(-vz).toFixed(1)} m/s down`;
         if (h < 160 || (vh < 8 && Math.abs(vz) < 15)) this.landPhase = 'terminal';
         return true;
@@ -370,6 +409,20 @@ export class Autopilot {
         this.att.killRotation(v);
         return true;
     }
+  }
+
+  /** Angle (rad, 0..2π) from the vessel to the landing site, measured along the direction of motion. */
+  siteAngleAhead(): number {
+    const v = this.vessel, site = this.landingSite;
+    if (!site) return 0;
+    const q = v.body.orientationAt(this.world.t, new Quaternion());
+    const sd = new Vector3(Math.cos(site.lat) * Math.cos(site.lon), Math.cos(site.lat) * Math.sin(site.lon), Math.sin(site.lat)).applyQuaternion(q);
+    const r = v.pos.clone().normalize();
+    const hn = new Vector3().crossVectors(v.pos, v.vel).normalize();
+    sd.addScaledVector(hn, -sd.dot(hn)).normalize();
+    let a = Math.atan2(new Vector3().crossVectors(r, sd).dot(hn), r.dot(sd));
+    if (a < 0) a += Math.PI * 2;
+    return a;
   }
 
   // ------------------------------------------------------------------------------ vacuum ascent

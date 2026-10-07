@@ -817,10 +817,22 @@ export class CameraDirector {
         const zone = ctx.zones.length ? ctx.zones.reduce((best, z) => (z.pos.distanceTo(this.com(ctx, target, _a)) < best.pos.distanceTo(this.com(ctx, target, _a)) ? z : best)) : null;
         if (!zone) return false;
         st.dur = 14;
+        // twin landings: when another pad lies close by, frame both boosters coming down together
+        const twins = ctx.zones.filter((z) => z.kind === 'pad' && z.pos.distanceTo(zone.pos) < 1500);
+        const twin = twins.length >= 2 && ctx.boosters.filter((x) => !x.destroyed).length >= 2;
         if (!st.anchorBody) {
           const up = this.upAt(ctx, target.body, zone.pos, _b).clone();
-          const side = new Vector3(up.y, -up.x, 0).normalize();
-          st.anchor.copy(zone.pos).addScaledVector(side, 320).addScaledVector(up, 4);
+          let centre = zone.pos.clone();
+          let side = new Vector3(up.y, -up.x, 0).normalize();
+          let dist = 320;
+          if (twin) {
+            centre = twins.reduce((acc, z) => acc.add(z.pos), new Vector3()).multiplyScalar(1 / twins.length);
+            const span = twins[0].pos.clone().sub(twins[1].pos);
+            span.addScaledVector(up, -span.dot(up));
+            side = new Vector3().crossVectors(up, span.normalize()).normalize();
+            dist = 650 + span.length() * 0.5;
+          }
+          st.anchor.copy(centre).addScaledVector(side, dist).addScaledVector(up, 4);
           st.anchorBody = target.body;
           const rot = new Quaternion();
           target.body.orientationAt(ctx.t, rot);
@@ -830,12 +842,15 @@ export class CameraDirector {
         st.anchorBody!.orientationAt(ctx.t, rot);
         out.pos.copy(st.anchorFixed!).applyQuaternion(rot).add(ctx.bodyPos(st.anchorBody!));
         this.clampGround(ctx, st.anchorBody!, out.pos, 1.8);
-        const com = this.com(ctx, target, _c);
+        // look at the booster, or at the middle of the pair
+        const pair = twin ? ctx.boosters.filter((x) => !x.destroyed).slice(0, 2) : [];
+        const com = pair.length === 2 ? this.com(ctx, pair[0], _c).add(this.com(ctx, pair[1], _d)).multiplyScalar(0.5) : this.com(ctx, target, _c);
         if (!this.smoothLookInit) { this.smoothLook.copy(com); this.smoothLookInit = true; }
         this.smoothLook.lerp(com, Math.min(1, ctx.dt * 4));
         out.look.copy(this.smoothLook);
         const d = out.pos.distanceTo(com);
-        out.fov = MathUtils.clamp(MathUtils.radToDeg(2 * Math.atan((this.vesselLength(target) * 3) / 2 / d)), 1, 50);
+        const extent = pair.length === 2 ? Math.max(this.vesselLength(target) * 3, this.com(ctx, pair[0], _a).distanceTo(this.com(ctx, pair[1], _b)) * 1.5 + this.vesselLength(target) * 1.5) : this.vesselLength(target) * 3;
+        out.fov = MathUtils.clamp(MathUtils.radToDeg(2 * Math.atan(extent / 2 / d)), 1, 55);
         out.up.copy(this.upAt(ctx, st.anchorBody!, out.pos, _a));
         out.handheld = 0.5;
         return true;
