@@ -33,6 +33,8 @@ export interface MissionDef {
   weather: WeatherKind;
   targetOrbit?: number;
   inclination?: number;
+  /** launch into the plane containing the Moon at arrival */
+  planeTarget?: 'moon';
   countdownStart: number;
   orbitAssist: boolean;
   recovery: boolean;
@@ -97,7 +99,7 @@ export const MISSIONS: MissionDef[] = [
   {
     id: 'flyby', number: 8, title: 'Free Return', subtitle: 'Lunar flyby',
     briefing: 'A three-stage lunar rocket. Reach a parking orbit, light the third stage again for translunar injection, coast for three days and swing around the far side of the Moon — the Earth setting behind the lunar horizon — then fall home.',
-    vehicle: 'colossus', site: 'cape', date: '2026-10-10T13:32:00Z', weather: 'clear', targetOrbit: 190_000, countdownStart: -60, orbitAssist: true, recovery: false, start: 'pad',
+    vehicle: 'colossus', site: 'cape', date: '2026-10-10T11:39:00Z', weather: 'clear', targetOrbit: 190_000, planeTarget: 'moon', countdownStart: -60, orbitAssist: true, recovery: false, start: 'pad',
     objectives: [{ kind: 'orbit', text: 'Parking orbit' }, { kind: 'tli', text: 'Translunar injection' }, { kind: 'moonSoi', text: 'Enter the Moon\'s sphere of influence' }, { kind: 'moonFlyby', text: 'Fly within 1,000 km of the Moon', param: 1_000_000 }, { kind: 'earthReturn', text: 'Return toward Earth', optional: true }],
     tags: ['Moon', 'Transfer'], mood: 'wonder',
   },

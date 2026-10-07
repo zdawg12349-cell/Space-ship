@@ -11,6 +11,8 @@ const _r = new Vector3();
 const _v = new Vector3();
 const _a = new Vector3();
 const _b = new Vector3();
+const _cr = new Vector3();
+const _cv = new Vector3();
 const _q = new Quaternion();
 
 export interface WorldEvent {
@@ -241,8 +243,9 @@ export class PhysicsWorld {
     if (body.atmosphereTop > 0 && rl < body.radius + body.atmosphereTop) return 'atmosphere';
     if (body.def.hasSurface && rl < body.radius + 12000 && !body.atmosphere) return 'surface';
     for (const c of body.children) {
-      c.localStateAt(tc, _a, _b);
-      const dx = r.x - _a.x, dy = r.y - _a.y, dz = r.z - _a.z;
+      // (separate scratch: r is often _a itself)
+      c.localStateAt(tc, _cr, _cv);
+      const dx = r.x - _cr.x, dy = r.y - _cr.y, dz = r.z - _cr.z;
       if (dx * dx + dy * dy + dz * dz < c.soi * c.soi) return 'soi_enter';
     }
     return null;

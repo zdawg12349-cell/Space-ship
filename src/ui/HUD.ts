@@ -234,8 +234,9 @@ export class HUD {
     // countdown / ignition sequence
     const counting = s.phase === 'countdown' || (s.met < 15 && s.seq.step > 0 && s.seq.step < 13);
     const showIgn = counting && s.met > -15;
-    this.ignitionEl.style.display = showIgn ? '' : 'none';
-    this.leftEl.style.display = s.phase === 'countdown' && showIgn ? 'none' : '';
+    // the checklist takes the telemetry column's place until the tower is cleared
+    this.ignitionEl.classList.toggle('show', showIgn);
+    this.leftEl.classList.toggle('soft-hide', showIgn);
     Array.from(this.ignitionEl.children).forEach((c, i) => c.classList.toggle('on', s.seq.step > i));
     const T = s.met;
     const showBig = s.phase === 'countdown' && T > -10.5 && T < 0;
@@ -374,6 +375,10 @@ export class HUD {
     const c = this.engCtx;
     const W = this.engCanvas.width, H = this.engCanvas.height;
     c.clearRect(0, 0, W, H);
+    // dark backing disc so the diagram reads over a bright sky
+    c.beginPath(); c.arc(W / 2, H / 2, W / 2 - 1.5, 0, Math.PI * 2);
+    c.fillStyle = 'rgba(5, 7, 11, 0.55)'; c.fill();
+    c.strokeStyle = 'rgba(255,255,255,0.14)'; c.lineWidth = 1; c.stroke();
     const v = s.active;
     const pts: { x: number; z: number; r: number; state: number; failed: boolean; solid: boolean }[] = [];
     let ext = 0.5;
@@ -398,8 +403,10 @@ export class HUD {
         c.beginPath(); c.arc(sx, sy, r * 1.6, 0, Math.PI * 2); c.fill();
       } else if (p.state > 0) {
         c.fillStyle = 'rgba(255,176,74,0.25)'; c.fill();
+      } else {
+        c.fillStyle = 'rgba(0,0,0,0.35)'; c.fill();
       }
-      c.strokeStyle = p.state > 0 ? 'rgba(255,190,110,0.9)' : 'rgba(255,255,255,0.28)';
+      c.strokeStyle = p.state > 0 ? 'rgba(255,190,110,0.9)' : 'rgba(255,255,255,0.5)';
       c.lineWidth = 1.2;
       c.beginPath(); c.arc(sx, sy, r, 0, Math.PI * 2); c.stroke();
     }

@@ -19,7 +19,7 @@ import { FlightSnapshot, saveProgress, snapshotVessel, writeSnapshot } from './S
 import type { Settings } from './Settings';
 import { GRAPHICS } from './Settings';
 import { Tutorial } from '../ui/Tutorial';
-import { planCapture, planCircularize, planDeorbit, planTEI, planTLI } from './Planner';
+import { planCapture, planCircularize, planCorrection, planDeorbit, planTEI, planTLI, trajectoryForecast } from './Planner';
 
 /**
  * Glue between a FlightSession and the player: input, HUD, audio, radio, music, the mission
@@ -34,6 +34,7 @@ export interface FlightLaunchOptions {
   weather?: WeatherKind;
   targetOrbit?: number;
   inclination?: number;
+  planeTarget?: 'moon';
   countdownStart?: number;
   recovery?: boolean;
   orbitAssist?: boolean;
@@ -85,6 +86,7 @@ export class FlightController {
       weather: (snap?.weather as WeatherKind) ?? opts.weather ?? mission?.weather ?? 'fair',
       targetOrbit: opts.targetOrbit ?? mission?.targetOrbit,
       inclination: opts.inclination ?? mission?.inclination,
+      planeTarget: opts.planeTarget ?? mission?.planeTarget,
       countdownStart: opts.countdownStart ?? mission?.countdownStart ?? -120,
       orbitAssist: opts.orbitAssist ?? mission?.orbitAssist ?? true,
       recovery: opts.recovery ?? mission?.recovery ?? true,
@@ -260,6 +262,13 @@ export class FlightController {
         if (inOrbit) out.push({ id: 'plan_tei', label: 'Plan return to Earth' });
       }
     }
+    // translunar / trans-Earth coast: trim the trajectory, or warp to the next event
+    const fc = this.forecast;
+    if (fc && !inOrbit && (v.body.id === 'earth' || v.body.id === 'moon')) {
+      out.push({ id: 'plan_mcc', label: 'Course correction' });
+      if (!s.warpTarget && fc.t - s.world.t > 1800) out.push({ id: 'warp_event', label: fc.what === 'Lunar periapsis' && v.body.id === 'earth' ? 'Warp to Moon' : `Warp to ${fc.what.toLowerCase()}` });
+    }
+    if (s.warpTarget) out.push({ id: 'warp_stop', label: 'Stop warp' });
     if (v.body.id === 'jupiter' && o.e >= 1 && v.pos.dot(v.vel) < 0) out.push({ id: 'plan_joi', label: 'Plan orbit insertion', primary: true });
     if (v.body.id === 'jupiter' && o.e < 1 && o.e > 0.01) out.push({ id: 'plan_circ', label: 'Circularise' });
     return out;
@@ -279,23 +288,60 @@ export class FlightController {
       case 'ascend': s.setAutopilot('ascend'); this.app.audio.radio?.say('moon_ascent_go', 2); return;
       case 'plan_deorbit': node = planDeorbit(v, t); break;
       case 'plan_circ': node = planCircularize(v, t); break;
-      case 'plan_tli': this.hud.log('Planning translunar injection…', s.met); node = planTLI(v, s.system, t); if (node) this.app.audio.radio?.say('tli_go', 2); break;
+      case 'plan_tli': {
+        // a second or so of trajectory search: let the HUD show the message first
+        this.hud.log('Planning translunar injection…', s.met);
+        setTimeout(() => {
+          const nd = planTLI(v, s.system, s.world.t);
+          if (!nd) { this.hud.log('No lunar trajectory from this orbit', s.met, 'warn'); return; }
+          ap.setNode(nd);
+          this.app.audio.radio?.say('tli_go', 2);
+          this.hud.log(`${nd.label}: ${nd.dv.length().toFixed(0)} m/s · ${nd.result}`, s.met, 'good');
+        }, 60);
+        return;
+      }
+      case 'plan_mcc': node = planCorrection(v, s.system, t); break;
+      case 'warp_event': {
+        const fc = this.forecast;
+        if (!fc) return;
+        // arrive with a few minutes in hand (an hour before a lunar flyby periapsis)
+        const lead = fc.what === 'Lunar periapsis' && v.body.id === 'moon' ? 3600 : 600;
+        s.warpTarget = { t: fc.t - lead, label: fc.what === 'Lunar periapsis' && v.body.id === 'earth' ? 'Approaching the Moon' : `${fc.what} ahead` };
+        return;
+      }
+      case 'warp_stop': s.warpTarget = null; s.setWarp(0); return;
       case 'plan_tei': node = planTEI(v, s.system, t); break;
       case 'plan_joi': node = planCapture(v, t, 60, 'Jupiter orbit insertion'); break;
     }
-    if (!node) { this.hud.log('No solution found from this orbit', s.met, 'warn'); return; }
+    if (!node) { this.hud.log(id === 'plan_mcc' ? 'Trajectory already on target' : 'No solution found from this orbit', s.met, 'warn'); return; }
     ap.setNode(node);
     this.hud.log(`${node.label}: ${node.dv.length().toFixed(0)} m/s · ${node.result}`, s.met, 'good');
   }
 
+  /** next trajectory event (lunar periapsis, perigee) while coasting between bodies */
+  private forecast: { what: string; km: number; t: number } | null = null;
+  private forecastTimer = 0;
+
   private updateNav(dt: number): void {
     this.navTimer -= dt;
+    this.forecastTimer -= dt;
     if (this.navTimer > 0) return;
     this.navTimer = 0.25;
     const s = this.session;
     const ap = s.autopilot;
     const n = ap.node;
+    if (this.forecastTimer <= 0) {
+      this.forecastTimer = 1;
+      const v = s.active;
+      this.forecast = !v.destroyed && !v.landed && s.phase !== 'countdown' ? trajectoryForecast(v, s.system, s.world.t) : null;
+    }
     let nodeText = '';
+    const fc = this.forecast;
+    if (fc && !n) {
+      const dtf = fc.t - s.world.t;
+      const when = dtf > 86400 ? `${(dtf / 86400).toFixed(1)} d` : dtf > 3600 ? `${(dtf / 3600).toFixed(1)} h` : `${Math.max(0, dtf / 60).toFixed(0)} min`;
+      nodeText = `${fc.what.toUpperCase()}\n${fc.km < 0 ? 'IMPACT' : fc.km.toLocaleString('en-US', { maximumFractionDigits: 0 }) + ' km'} · in ${when}`;
+    }
     if (n) {
       const dtn = n.t - s.world.t;
       const bt = ap.burnTime(ap.nodeRemaining);

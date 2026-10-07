@@ -1,4 +1,5 @@
 import { Vector3 } from 'three';
+import { keplerPropagate, lambert } from '../physics/orbit';
 import type { Vessel } from '../physics/vessel';
 import type { PhysicsWorld } from '../physics/world';
 import { AttitudeController } from './attitude';
@@ -48,6 +49,8 @@ export class Autopilot {
   ascent: AscentGuidance | null = null;
   targetOrbit = 220_000;
   azimuth = Math.PI / 2;
+  /** target orbit plane for the ascent (inertial normal), e.g. a lunar launch window */
+  planeNormal: Vector3 | null = null;
   /** throttle the altitude-hold loop wants (null = leave to the player) */
   throttleCmd: number | null = null;
   /** set when orbit assist finishes (the session cuts the throttle) */
@@ -59,6 +62,14 @@ export class Autopilot {
   nodeRemaining = 0;
   private nodeStarted = false;
   private nodeDir = new Vector3();
+  /**
+   * Burn targeting: a point on the planned post-burn conic (body-relative) and the time the
+   * vessel should pass it. During the burn the velocity to be gained is the Lambert velocity
+   * to that point minus the current velocity, so a finite burn ends on the impulsive plan
+   * regardless of its length, a late start or a thrust shortfall.
+   */
+  private nodeAim: { body: Vessel['body']; p: Vector3; tArr: number; h: Vector3 } | null = null;
+  private lastVg = new Vector3();
   /** status line for the HUD */
   status = '';
   private landPhase: 'deorbit' | 'coast' | 'brake' | 'terminal' | 'down' = 'deorbit';
@@ -78,7 +89,50 @@ export class Autopilot {
     this.node = n;
     this.nodeRemaining = n ? n.dv.length() : 0;
     this.nodeStarted = false;
-    if (n) this.nodeDir.copy(n.dv).normalize();
+    this.nodeAim = null;
+    this.lastVg.set(0, 0, 0);
+    if (!n) return;
+    this.nodeDir.copy(n.dv).normalize();
+    // aim point on the planned conic, far enough past the node to outlast the burn but well
+    // short of the 180° transfer where Lambert's plane becomes undefined
+    const v = this.vessel, mu = v.body.gm;
+    const rB = new Vector3(), vB = new Vector3();
+    keplerPropagate(v.pos, v.vel, mu, n.t - this.world.t, rB, vB);
+    vB.add(n.dv);
+    const h = new Vector3().crossVectors(rB, vB);
+    if (h.lengthSq() < 1) return;
+    h.normalize();
+    const bt = this.burnTime(n.dv.length());
+    const energy = vB.lengthSq() / 2 - mu / rB.length();
+    const period = energy < 0 ? 2 * Math.PI * Math.sqrt(Math.pow(-mu / (2 * energy), 3) / mu) : Infinity;
+    // the furthest point (up to ~150° of transfer) keeps the post-burn conic closest to the plan
+    const p = new Vector3(), pv = new Vector3();
+    const angleAt = (dt: number) => {
+      keplerPropagate(rB, vB, mu, dt, p, pv);
+      return Math.acos(Math.max(-1, Math.min(1, p.dot(rB) / (p.length() * rB.length()))));
+    };
+    const maxAng = (150 * Math.PI) / 180;
+    const minLead = Math.max(120, isFinite(bt) ? bt * 3 : 600);
+    let lo = minLead, hi = Math.min(isFinite(period) ? period * 0.45 : 4 * 86400, 4 * 86400);
+    if (hi <= lo || angleAt(lo) > maxAng) hi = lo;
+    else if (angleAt(hi) > maxAng) {
+      for (let i = 0; i < 40; i++) { const mid = 0.5 * (lo + hi); if (angleAt(mid) > maxAng) hi = mid; else lo = mid; }
+      hi = lo;
+    }
+    const lead = hi;
+    keplerPropagate(rB, vB, mu, lead, p, pv);
+    this.nodeAim = { body: v.body, p: p.clone(), tArr: n.t + lead, h };
+  }
+
+  /** Velocity to be gained toward the aim point (writes the vector, returns false if unusable). */
+  private velocityToGain(out: Vector3): boolean {
+    const a = this.nodeAim, v = this.vessel;
+    if (!a || a.body !== v.body) return false;
+    const tof = a.tArr - this.world.t;
+    if (tof < 30) return false;
+    if (!lambert(v.pos, a.p, tof, v.body.gm, a.h, out)) return false;
+    out.sub(v.vel);
+    return isFinite(out.x);
   }
 
   /** Seconds of burn needed for a Δv at the current thrust/mass (vacuum). */
@@ -114,7 +168,10 @@ export class Autopilot {
     } else if (m === 'altitude') {
       this.targetAltitude = v.telemetry.altitude;
     } else if (m === 'orbit') {
-      if (!this.ascent) this.ascent = new AscentGuidance(this.world, v, this.targetOrbit, this.azimuth);
+      if (!this.ascent) {
+        this.ascent = new AscentGuidance(this.world, v, this.targetOrbit, this.azimuth);
+        this.ascent.planeNormal = this.planeNormal;
+      }
       this.ascent.enabled = true;
     }
     if (m !== 'orbit' && this.ascent) this.ascent.enabled = false;
@@ -179,17 +236,29 @@ export class Autopilot {
           else if (t >= start + 30 && this.att.error < 0.2) this.nodeStarted = true;
         }
         if (this.nodeStarted) {
-          // integrate delivered Δv along the burn direction
           const acc = v.telemetry.thrust / Math.max(1, v.mass);
-          const along = acc * dt * Math.max(0, _h.set(0, 1, 0).applyQuaternion(v.rot).dot(this.nodeDir));
-          this.nodeRemaining -= along;
+          let finished = false;
+          if (this.velocityToGain(_d)) {
+            // velocity-to-be-gained steering: thrust along Vg until it is nulled
+            const vg = _d.length();
+            if (this.lastVg.lengthSq() > 0 && _d.dot(this.lastVg) < 0) finished = true; // overshoot: Vg flipped
+            if (vg < 1 && this.att.error > 0.3) finished = true; // residual too small to chase
+            this.lastVg.copy(_d);
+            this.nodeRemaining = vg;
+            if (vg > 0.05) this.nodeDir.copy(_d).multiplyScalar(1 / vg);
+            target.copy(this.nodeDir);
+          } else {
+            // fallback: integrate delivered Δv along the fixed burn direction
+            const along = acc * dt * Math.max(0, _h.set(0, 1, 0).applyQuaternion(v.rot).dot(this.nodeDir));
+            this.nodeRemaining -= along;
+          }
           const thrMax = v.telemetry.thrust > 0 ? v.telemetry.thrust / Math.max(0.05, v.controls.throttle) : 0;
           const aMax = thrMax / Math.max(1, v.mass);
           // throttle down for the last second of the burn
           this.throttleCmd = this.att.error > 0.25 ? 0 : aMax > 0 ? Math.max(0.05, Math.min(1, this.nodeRemaining / Math.max(0.5, aMax))) : 1;
           this.status = `${n.label}: ${this.nodeRemaining.toFixed(1)} m/s remaining`;
           if (v.stagePropellant().current <= 0 && v.nextStage) this.wantStage = true;
-          if (this.nodeRemaining <= 0.15) {
+          if (this.nodeRemaining <= 0.15 || finished) {
             this.throttleCmd = 0;
             this.node = null;
             this.mode = 'stability';

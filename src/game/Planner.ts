@@ -1,4 +1,4 @@
-import { Vector3 } from 'three';
+import { Quaternion, Vector3 } from 'three';
 import type { CelestialBody, SolarSystem } from '../physics/bodies';
 import { keplerPropagate } from '../physics/orbit';
 import type { Vessel } from '../physics/vessel';
@@ -89,21 +89,36 @@ export function planCircularize(v: Vessel, t: number): ManeuverNode | null {
  * Lunar periapsis (radius, m) reached by an Earth-relative conic starting at (r0, v0) at t0,
  * or Infinity if it never enters the Moon's sphere of influence within maxT.
  */
-function lunarArrival(sys: SolarSystem, r0: Vector3, v0: Vector3, t0: number, maxT: number): { rp: number; tSoi: number } {
+function lunarArrival(sys: SolarSystem, r0: Vector3, v0: Vector3, t0: number, maxT: number, exact = true): { rp: number; tSoi: number } {
   const earth = sys.earth, moon = sys.moon;
   const mu = earth.gm;
   const mr = new Vector3(), mv = new Vector3();
+  // quick rejection: an ellipse whose apoapsis falls short of the Moon's sphere never arrives
+  const rm = r0.length(), energy = v0.lengthSq() / 2 - mu / rm;
+  if (energy < 0) {
+    const a = -mu / (2 * energy);
+    const hh = _r2.crossVectors(r0, v0).lengthSq();
+    const e = Math.sqrt(Math.max(0, 1 - hh / (mu * a)));
+    if (a * (1 + e) < 356_000_000 - moon.soi) return { rp: Infinity, tSoi: Infinity };
+  }
   const step = 3600;
+  const inside = (dt: number) => {
+    keplerPropagate(r0, v0, mu, dt, _r2, _v2);
+    moon.localStateAt(t0 + dt, mr, mv);
+    return _r2.distanceTo(mr) < moon.soi;
+  };
   for (let dt = step; dt <= maxT; dt += step) {
     keplerPropagate(r0, v0, mu, dt, _r2, _v2);
     if (_r2.length() < earth.radius) return { rp: Infinity, tSoi: Infinity };
-    moon.localStateAt(t0 + dt, mr, mv);
-    const d = _r2.distanceTo(mr);
-    if (d < moon.soi) {
+    if (inside(dt)) {
+      // the crossing itself, as the flight's rails propagation will find it
+      let lo = dt - step, hi = dt;
+      for (let k = 0; k < (exact ? 40 : 6); k++) { const mid = 0.5 * (lo + hi); if (inside(mid)) hi = mid; else lo = mid; }
+      inside(hi);
       const rel = _r2.clone().sub(mr), relV = _v2.clone().sub(mv);
       const pe = periapsisOf(rel, relV, moon.gm);
       // periapsis only counts if we're still approaching
-      return { rp: rel.dot(relV) < 0 ? pe.rp : d, tSoi: t0 + dt };
+      return { rp: rel.dot(relV) < 0 ? pe.rp : rel.length(), tSoi: t0 + hi };
     }
   }
   return { rp: Infinity, tSoi: Infinity };
@@ -123,9 +138,9 @@ export function planTLI(v: Vessel, sys: SolarSystem, t: number, targetAlt = 300_
     const nHat = new Vector3().crossVectors(_r, _v).normalize();
     return { rB: _r.clone(), vB0: _v.clone(), dv: pHat.multiplyScalar(dvP).addScaledVector(nHat, dvN) };
   };
-  const evaluate = (tb: number, dvP: number, dvN: number) => {
+  const evaluate = (tb: number, dvP: number, dvN: number, exact = true) => {
     const b = burnVector(tb, dvP, dvN);
-    const arr = lunarArrival(sys, b.rB, b.vB0.clone().add(b.dv), tb, 6 * 86400);
+    const arr = lunarArrival(sys, b.rB, b.vB0.clone().add(b.dv), tb, 6 * 86400, exact);
     const cost = !isFinite(arr.rp) ? 1e12 : Math.abs(arr.rp - target) + (arr.rp < moonR + 30_000 ? 5e6 : 0) + (arr.tSoi - tb) * 0.3 + Math.abs(dvN) * 200;
     return { cost, arr };
   };
@@ -135,12 +150,13 @@ export function planTLI(v: Vessel, sys: SolarSystem, t: number, targetAlt = 300_
     const tb = t0 + (i / 60) * T;
     for (let dvP = 3020; dvP <= 3260; dvP += 40) {
       for (let dvN = -600; dvN <= 600; dvN += 150) {
-        const r = evaluate(tb, dvP, dvN);
+        const r = evaluate(tb, dvP, dvN, false);
         if (r.cost < best.cost) best = { cost: r.cost, tb, p: dvP, n: dvN };
       }
     }
   }
   if (!isFinite(best.cost) || best.cost >= 1e12) return null;
+  best.cost = evaluate(best.tb, best.p, best.n).cost;
   let sT = T / 60, sP = 40, sN = 150;
   for (let it = 0; it < 26; it++) {
     sT *= 0.7; sP *= 0.7; sN *= 0.7;
@@ -168,11 +184,18 @@ function earthReturn(sys: SolarSystem, r0: Vector3, v0: Vector3, t0: number): { 
     keplerPropagate(r0, v0, mu, dt, _r2, _v2);
     if (_r2.length() < moon.radius) return { rp: Infinity, tExit: Infinity };
     if (_r2.length() > moon.soi) {
+      let lo = dt - step, hi = dt;
+      for (let k = 0; k < 40; k++) {
+        const mid = 0.5 * (lo + hi);
+        keplerPropagate(r0, v0, mu, mid, _r2, _v2);
+        if (_r2.length() > moon.soi) hi = mid; else lo = mid;
+      }
+      keplerPropagate(r0, v0, mu, hi, _r2, _v2);
       const mr = new Vector3(), mv = new Vector3();
-      moon.localStateAt(t0 + dt, mr, mv);
+      moon.localStateAt(t0 + hi, mr, mv);
       const r = _r2.clone().add(mr), vv = _v2.clone().add(mv);
       const pe = periapsisOf(r, vv, sys.earth.gm);
-      return { rp: r.dot(vv) < 0 || pe.e < 1 ? pe.rp : Infinity, tExit: t0 + dt };
+      return { rp: r.dot(vv) < 0 || pe.e < 1 ? pe.rp : Infinity, tExit: t0 + hi };
     }
   }
   return { rp: Infinity, tExit: Infinity };
@@ -239,4 +262,117 @@ export function planCapture(v: Vessel, t: number, apoRadiusFactor: number, label
   const dv = _v.length() - vT;
   void pe;
   return { t: t + tp, dv: _v.clone().normalize().multiplyScalar(-dv), prograde: -dv, label, result: `Capture: ${((rp - body.radius) / 1e6).toFixed(0)} × ${((ra - body.radius) / 1e6).toFixed(0)} Mm` };
+}
+
+/**
+ * Launch plane for a lunar mission: the parking orbit must contain the Moon's position at
+ * arrival (about three days after translunar injection), so the plane through the launch
+ * site at liftoff and that direction fixes the launch azimuth. Returns the inertial plane
+ * normal (Earth-centred), its inclination and the surface-relative launch azimuth (rad from
+ * north, corrected for the ground's eastward motion), choosing the eastward-going branch.
+ */
+export function lunarLaunchPlane(sys: SolarSystem, latDeg: number, lonDeg: number, tLiftoff: number, coast = 3 * 86400 + 2 * 3600):
+  { normal: Vector3; inclination: number; azimuth: number } {
+  const earth = sys.earth;
+  const q = new Quaternion();
+  earth.orientationAt(tLiftoff, q);
+  const la = (latDeg * Math.PI) / 180, lo = (lonDeg * Math.PI) / 180;
+  const up = new Vector3(Math.cos(la) * Math.cos(lo), Math.cos(la) * Math.sin(lo), Math.sin(la)).applyQuaternion(q);
+  const north = new Vector3(-Math.sin(la) * Math.cos(lo), -Math.sin(la) * Math.sin(lo), Math.cos(la)).applyQuaternion(q);
+  const east = new Vector3().crossVectors(north, up);
+  const pole = new Vector3(0, 0, 1).applyQuaternion(q);
+  const m = new Vector3(), mv = new Vector3();
+  sys.moon.localStateAt(tLiftoff + coast, m, mv);
+  const n = new Vector3().crossVectors(up, m).normalize();
+  const d = new Vector3().crossVectors(n, up);
+  if (d.dot(east) < 0) { n.negate(); d.negate(); }
+  // inertial azimuth of the plane at the site, then remove the ground's own eastward speed
+  const beta = Math.atan2(d.dot(east), d.dot(north));
+  const vOrbit = 7800, vEq = (2 * Math.PI * earth.radius) / 86164.1;
+  const vx = vOrbit * Math.sin(beta) - vEq * Math.cos(la), vy = vOrbit * Math.cos(beta);
+  return { normal: n, inclination: Math.acos(Math.max(-1, Math.min(1, n.dot(pole)))), azimuth: Math.atan2(vx, vy) };
+}
+
+/**
+ * Mid-course correction: a small burn a few minutes from now that trims the trajectory's
+ * next target — lunar periapsis on the way out (or inside the Moon's sphere while still
+ * approaching), Earth entry perigee on the way home. Pattern search over the burn's
+ * prograde / normal / radial components with a small penalty on Δv.
+ */
+export function planCorrection(v: Vessel, sys: SolarSystem, t: number, moonAlt = 300_000, entryPe = 45_000): ManeuverNode | null {
+  const body = v.body;
+  const mu = body.gm;
+  const tb = t + 300;
+  keplerPropagate(v.pos, v.vel, mu, tb - t, _r, _v);
+  const rB = _r.clone(), vB = _v.clone();
+  const pHat = vB.clone().normalize();
+  const nHat = new Vector3().crossVectors(rB, vB).normalize();
+  const rHat = new Vector3().crossVectors(pHat, nHat).normalize().negate();
+  let goal: 'moon' | 'earth' | null = null;
+  let target = 0;
+  let metric: (vv: Vector3) => number;
+  if (body.id === 'earth') {
+    const arr = lunarArrival(sys, rB, vB, tb, 6 * 86400);
+    const pe = periapsisOf(rB, vB, mu);
+    if (isFinite(arr.rp)) {
+      goal = 'moon'; target = sys.moon.radius + moonAlt;
+      metric = (vv) => lunarArrival(sys, rB, vv, tb, 6 * 86400).rp;
+    } else if (rB.dot(vB) < 0 && pe.rp < body.radius + 2_000_000 && rB.length() > body.radius + 1_000_000) {
+      goal = 'earth'; target = body.radius + entryPe;
+      metric = (vv) => periapsisOf(rB, vv, mu).rp;
+    } else return null;
+  } else if (body.id === 'moon') {
+    if (rB.dot(vB) < 0 && periapsisOf(rB, vB, mu).e >= 1) {
+      goal = 'moon'; target = body.radius + moonAlt;
+      metric = (vv) => (rB.dot(vv) < 0 ? periapsisOf(rB, vv, mu).rp : Infinity);
+    } else if (rB.dot(vB) > 0) {
+      goal = 'earth'; target = sys.earth.radius + entryPe;
+      metric = (vv) => earthReturn(sys, rB, vv, tb).rp;
+    } else return null;
+  } else return null;
+  const dvOf = (p: number, n: number, r: number) => pHat.clone().multiplyScalar(p).addScaledVector(nHat, n).addScaledVector(rHat, r);
+  const cost = (p: number, n: number, r: number) => {
+    const rp = metric!(vB.clone().add(dvOf(p, n, r)));
+    if (!isFinite(rp)) return 1e12;
+    return Math.abs(rp - target) + Math.hypot(p, n, r) * 400;
+  };
+  let best = { c: cost(0, 0, 0), p: 0, n: 0, r: 0 };
+  const start = best.c;
+  let step = 8;
+  for (let it = 0; it < 90 && step > 0.004; it++) {
+    let improved = false;
+    for (const [a, b, c] of [[1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0], [0, 0, 1], [0, 0, -1]]) {
+      const p = best.p + a * step, n = best.n + b * step, r = best.r + c * step;
+      if (Math.hypot(p, n, r) > 250) continue;
+      const cc = cost(p, n, r);
+      if (cc < best.c) { best = { c: cc, p, n, r }; improved = true; }
+    }
+    if (!improved) step *= 0.5;
+  }
+  const dv = dvOf(best.p, best.n, best.r);
+  if (dv.length() < 0.05 || best.c >= start) return null;
+  const rp = metric!(vB.clone().add(dv));
+  const what = goal === 'moon' ? `Lunar periapsis ${((rp - sys.moon.radius) / 1000).toFixed(0)} km` : `Entry perigee ${((rp - sys.earth.radius) / 1000).toFixed(0)} km`;
+  return { t: tb, dv, prograde: best.p, label: 'Course correction', result: what };
+}
+
+/** Predicted next event of a coasting trajectory, for the HUD (km above the surface, event time), or null. */
+export function trajectoryForecast(v: Vessel, sys: SolarSystem, t: number): { what: string; km: number; t: number } | null {
+  const body = v.body;
+  if (body.id === 'earth') {
+    const o = periapsisOf(v.pos, v.vel, body.gm);
+    if (o.e < 0.9 && o.a < 200_000_000) return null;
+    const arr = lunarArrival(sys, v.pos, v.vel, t, 6 * 86400);
+    if (isFinite(arr.rp)) return { what: 'Lunar periapsis', km: (arr.rp - sys.moon.radius) / 1000, t: arr.tSoi };
+    if (v.pos.dot(v.vel) < 0) return { what: 'Perigee', km: (o.rp - body.radius) / 1000, t: t + v.updateOrbit(t).timeToPeriapsis() };
+    return null;
+  }
+  if (body.id === 'moon') {
+    const o = periapsisOf(v.pos, v.vel, body.gm);
+    if (o.e < 1) return null;
+    if (v.pos.dot(v.vel) < 0) return { what: 'Lunar periapsis', km: (o.rp - body.radius) / 1000, t: t + v.updateOrbit(t).timeToPeriapsis() };
+    const ret = earthReturn(sys, v.pos, v.vel, t);
+    if (isFinite(ret.rp)) return { what: 'Earth perigee', km: (ret.rp - sys.earth.radius) / 1000, t: ret.tExit };
+  }
+  return null;
 }

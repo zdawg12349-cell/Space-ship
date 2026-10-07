@@ -133,6 +133,7 @@ export class App {
     this.rw.vessels.clear();
     this.rw.plumes.clear();
     this.rw.effects.clear();
+    this.rw.aero.clear();
     this.rw.post.settings.letterbox = 0;
     this.system.setEpoch(this.menuTime0);
     this.menuT = 0;
@@ -218,6 +219,8 @@ export class App {
       startSandbox: (o: Partial<FlightLaunchOptions>) => this.startFlight({ ...o }),
       advance: (s: number) => this.flight?.advance(s),
       session: () => this.flight?.session,
+      flight: () => this.flight,
+      shot: (id: string) => this.flight?.session.director.forceShot(id),
     };
   }
 }

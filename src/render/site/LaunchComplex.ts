@@ -4,8 +4,8 @@ import type { LaunchSite } from '../../world/sites';
 import { box, GeoBuilder, lathe, tube } from '../vehicle/shapes';
 import { createSiteMaterials, SiteMaterials } from './siteMaterials';
 import {
-  Batch, beam, boxTruss, broadleafGeometry, building, cable, horizontalTank, instanced, latticeTower, lightMast, palmGeometry, pineGeometry, planarTruss,
-  shrubGeometry, sphereTank, tuftGeometry, verticalTank,
+  Batch, beam, boxTruss, BROAD_CROWN, broadleafGeometry, building, cable, CrownShape, horizontalTank, instanced, latticeTower, lightMast, palmGeometry,
+  PINE_CROWN, pineGeometry, planarTruss, shrubGeometry, sphereTank, tuftGeometry, verticalTank,
 } from './structures';
 
 /**
@@ -88,6 +88,9 @@ export class LaunchComplex {
   private workLights: PointLight[] = [];
   /** terrain height (m, relative to the pad ground) at local (east, north) */
   private hAt: (east: number, north: number) => number = () => 0;
+  /** vegetation occluders for camera line-of-sight: grid cell -> flat [x, z, bottom, top, radius]* */
+  private occ = new Map<number, number[]>();
+  private static readonly OCC_CELL = 40;
 
   constructor(readonly site: LaunchSite, readonly vehicle: VehicleDef, opts: ComplexOptions = {}) {
     this.group.name = `complex-${site.id}`;
@@ -111,6 +114,91 @@ export class LaunchComplex {
     this.buildVegetation(opts);
     this.buildLights(H);
     void M;
+  }
+
+  // ------------------------------------------------------------------------------- queries
+
+  /** Terrain height (m above pad ground) at site-local (x east, z south). */
+  groundAt(x: number, z: number): number {
+    const r = Math.hypot(x, z);
+    // the apron and pad mound are flat at pad level
+    return r < 140 ? 0 : this.hAt(x, -z);
+  }
+
+  /** Tallest vegetation top (site-local y) within `r` metres of (x, z), or ground level. */
+  canopyTop(x: number, z: number, r: number): number {
+    const C = LaunchComplex.OCC_CELL;
+    let top = this.groundAt(x, z);
+    const i0 = Math.floor((x - r - 8) / C), i1 = Math.floor((x + r + 8) / C);
+    const k0 = Math.floor((z - r - 8) / C), k1 = Math.floor((z + r + 8) / C);
+    for (let i = i0; i <= i1; i++) for (let k = k0; k <= k1; k++) {
+      const list = this.occ.get(this.occKey(i, k));
+      if (!list) continue;
+      for (let j = 0; j < list.length; j += 5) {
+        if (Math.hypot(list[j] - x, list[j + 1] - z) < r + list[j + 4]) top = Math.max(top, list[j + 3]);
+      }
+    }
+    return top;
+  }
+
+  /**
+   * True if the straight segment a->b (site-local) passes clear of tree crowns and scrub.
+   * Each plant is a vertical cylinder spanning its foliage band; the segment's height range
+   * across the cylinder's footprint is tested against that band.
+   */
+  lineOfSight(a: Vector3, b: Vector3): boolean {
+    const C = LaunchComplex.OCC_CELL;
+    const dx = b.x - a.x, dz = b.z - a.z;
+    const len = Math.hypot(dx, dz);
+    const steps = Math.max(1, Math.ceil(len / (C * 0.5)));
+    const seen = new Set<number>();
+    const dd = dx * dx + dz * dz;
+    for (let s = 0; s <= steps; s++) {
+      const px = a.x + (dx * s) / steps, pz = a.z + (dz * s) / steps;
+      const ci = Math.floor(px / C), ck = Math.floor(pz / C);
+      for (let i = ci - 1; i <= ci + 1; i++) for (let k = ck - 1; k <= ck + 1; k++) {
+        const key = this.occKey(i, k);
+        if (seen.has(key)) continue;
+        seen.add(key);
+        const list = this.occ.get(key);
+        if (!list) continue;
+        for (let j = 0; j < list.length; j += 5) {
+          const tx = list[j], tz = list[j + 1], bot = list[j + 2], top = list[j + 3], r = list[j + 4];
+          // segment parameter range where the xz distance to the plant axis is below r
+          let t0: number, t1: number;
+          if (dd < 1e-6) {
+            if (Math.hypot(a.x - tx, a.z - tz) > r) continue;
+            t0 = 0; t1 = 1;
+          } else {
+            const fx = a.x - tx, fz = a.z - tz;
+            const B = 2 * (fx * dx + fz * dz), Cc = fx * fx + fz * fz - r * r;
+            const disc = B * B - 4 * dd * Cc;
+            if (disc <= 0) continue;
+            const sq = Math.sqrt(disc);
+            t0 = Math.max(0, (-B - sq) / (2 * dd)); t1 = Math.min(1, (-B + sq) / (2 * dd));
+            if (t0 >= t1) continue;
+          }
+          const y0 = a.y + (b.y - a.y) * t0, y1 = a.y + (b.y - a.y) * t1;
+          if (Math.max(y0, y1) > bot && Math.min(y0, y1) < top) return false;
+        }
+      }
+    }
+    return true;
+  }
+
+  private occKey(i: number, k: number): number { return (i + 512) * 1024 + (k + 512); }
+
+  private addOccluders(list: Matrix4[], shape: CrownShape, radiusScale = 1): void {
+    const C = LaunchComplex.OCC_CELL;
+    const p = new Vector3(), q = new Quaternion(), sc = new Vector3();
+    for (const m of list) {
+      m.decompose(p, q, sc);
+      const cx = p.x + shape.cx * sc.x, cz = p.z + shape.cz * sc.z;
+      const key = this.occKey(Math.floor(cx / C), Math.floor(cz / C));
+      let arr = this.occ.get(key);
+      if (!arr) { arr = []; this.occ.set(key, arr); }
+      arr.push(cx, cz, p.y + shape.bottom * sc.y, p.y + shape.top * sc.y, shape.radius * sc.x * radiusScale);
+    }
   }
 
   // ------------------------------------------------------------------------------- ground
@@ -659,6 +747,11 @@ export class LaunchComplex {
       const x = bx + (rnd() - 0.5) * 40, z = bz + 14 + rnd() * 10;
       palms.push(new Matrix4().compose(new Vector3(x, hAt(x, -z) - 0.1, z), new Quaternion().setFromAxisAngle(_up, rnd() * 6.28), new Vector3(1, 1, 1)));
     }
+    // line-of-sight occluders for camera placement (crowns are partly see-through: shrink a little)
+    this.addOccluders(pines, PINE_CROWN, 0.8);
+    this.addOccluders(broad, BROAD_CROWN, 0.85);
+    this.addOccluders(palms, { cx: 0.84, cy: 9, cz: 0, rx: 4, ry: 1.5, bottom: 7.4, top: 10.4, radius: 3.2 });
+    this.addOccluders(scrub, { cx: 0, cy: 0.7, cz: 0, rx: 1.3, ry: 0.8, bottom: 0, top: 1.45, radius: 1.0 });
     const shrubMat = climate === 'steppe' || climate === 'arid' ? M.dryShrub : M.leaf;
     const tuftMat = climate === 'steppe' || climate === 'arid' || climate === 'coastal' ? M.dryGrass : M.grass;
     if (scrub.length) this.group.add(instanced(shrubGeometry(), shrubMat, scrub, false));

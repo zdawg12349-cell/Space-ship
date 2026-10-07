@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { Vector3 } from 'three';
 import { EarthAtmosphere, newAtmosphereSample } from '../src/physics/atmosphere';
-import { keplerPropagate, Orbit } from '../src/physics/orbit';
+import { lambert, keplerPropagate, Orbit } from '../src/physics/orbit';
 import { AU } from '../src/physics/constants';
 import { flyAscent, makeWorld, vesselOrbit } from './helpers';
 import { LAUNCHERS, vehicleStats } from '../src/vehicles/catalog';
@@ -37,6 +37,23 @@ describe('orbit mechanics', () => {
     keplerPropagate(r0, v0, mu, T / 4, R, V);
     expect(R.y).toBeCloseTo(r, -1);
   });
+  it('solves Lambert problems that round-trip with propagation', () => {
+    const cases: [Vector3, Vector3, number][] = [
+      [new Vector3(6771e3, 0, 0), new Vector3(0, 7672, 300), 1500], // LEO, ~100° of arc
+      [new Vector3(6571e3, 0, 0), new Vector3(0, 10900, 0), 3 * 3600], // translunar
+      [new Vector3(6571e3, 0, 0), new Vector3(0, 12500, 800), 7200], // hyperbolic escape
+      [new Vector3(7000e3, 2000e3, 0), new Vector3(-1500, 8200, 900), 5000], // past apoapsis-side
+    ];
+    for (const [r1, v1, tof] of cases) {
+      const r2 = new Vector3(), v2 = new Vector3(), out = new Vector3(), out2 = new Vector3();
+      keplerPropagate(r1, v1, mu, tof, r2, v2);
+      const h = new Vector3().crossVectors(r1, v1).normalize();
+      expect(lambert(r1, r2, tof, mu, h, out, out2)).toBe(true);
+      expect(out.distanceTo(v1)).toBeLessThan(0.05);
+      expect(out2.distanceTo(v2)).toBeLessThan(0.05);
+    }
+  });
+
   it('handles hyperbolic trajectories', () => {
     const r0 = new Vector3(7000e3, 0, 0), v0 = new Vector3(0, 12000, 0);
     const R = new Vector3(), V = new Vector3();

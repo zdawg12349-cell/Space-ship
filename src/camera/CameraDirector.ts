@@ -32,6 +32,8 @@ export interface CamContext {
   /** tower top, deck height (site local) */
   towerTop: Vector3 | null;
   deckHeight: number;
+  /** site-local terrain and vegetation queries for placing ground cameras with a clear view */
+  siteQuery: SiteQuery | null;
   /** ground height (m above the body's reference radius) under a helio point */
   groundHeight(body: CelestialBody, helio: Vector3): number;
   /** landing zones (helio) */
@@ -41,6 +43,15 @@ export interface CamContext {
   plumeMN: number;
   plumeSourceHelio: Vector3 | null;
 }
+
+export interface SiteQuery {
+  groundAt(x: number, z: number): number;
+  canopyTop(x: number, z: number, r: number): number;
+  lineOfSight(a: Vector3, b: Vector3): boolean;
+}
+
+/** Placement adjustment found for a ground shot so nothing blocks the view. */
+interface SpotAdj { da: number; dd: number; dh: number }
 
 interface ShotState {
   id: string;
@@ -53,6 +64,7 @@ interface ShotState {
   anchorBody: CelestialBody | null;
   subject: Vessel | null;
   a: number; b: number; c: number;
+  adj: SpotAdj | null;
 }
 
 interface CamOut {
@@ -70,6 +82,7 @@ const _a = new Vector3();
 const _b = new Vector3();
 const _c = new Vector3();
 const _d = new Vector3();
+const _e = new Vector3();
 const _q = new Quaternion();
 const _m = new Matrix4();
 
@@ -150,7 +163,7 @@ export class CameraDirector {
   forceShot(id: string): void { this.queue = []; this.startShot(id); }
 
   private startShot(id: string, subject: Vessel | null = null): void {
-    this.shot = { id, dur: 8, tau: 0, seed: this.rnd(), anchor: new Vector3(), anchorFixed: null, anchorBody: null, subject, a: this.rnd(), b: this.rnd(), c: this.rnd() };
+    this.shot = { id, dur: 8, tau: 0, seed: this.rnd(), anchor: new Vector3(), anchorFixed: null, anchorBody: null, subject, a: this.rnd(), b: this.rnd(), c: this.rnd(), adj: null };
     this.lastIds.push(id);
     if (this.lastIds.length > 4) this.lastIds.shift();
     this.smoothLookInit = false;
@@ -196,6 +209,53 @@ export class CameraDirector {
 
   /** Pad-shot bearing in the site frame, kept on the open (south, +z) side away from the tower. */
   private padAngle(f: number, spread = 1): number { return Math.PI / 2 + (f - 0.5) * (Math.PI - 0.8) * spread; }
+
+  /** Terrain height (site-local y) under a site-local point. */
+  private gy(ctx: CamContext, x: number, z: number): number { return ctx.siteQuery ? ctx.siteQuery.groundAt(x, z) : 0; }
+
+  /** Sight lines a pad camera needs: vehicle base / middle / top, each optionally only near-field. */
+  private padSight(ctx: CamContext, L: number, near: number, full: boolean): [Vector3, number][] {
+    const d = ctx.deckHeight;
+    return [
+      [new Vector3(0, d + L * 0.12, 0), full ? Infinity : near],
+      [new Vector3(0, d + L * 0.5, 0), Infinity],
+      [new Vector3(0, d + L * 0.92, 0), Infinity],
+    ];
+  }
+
+  /**
+   * Ground camera placement with a clear view. `place(adj, tau, out)` gives the site-local
+   * camera position for a candidate adjustment of bearing / distance / height. The first
+   * candidate whose start and end positions see every target (a target with a finite range
+   * only needs that much of its sight line clear, so a treeline in the distance can frame the
+   * bottom of a long-lens shot) wins; failing that the camera goes up a mast over the canopy.
+   */
+  private clearSpot(ctx: CamContext, st: ShotState, sight: [Vector3, number][], place: (adj: SpotAdj, tau: number, out: Vector3) => Vector3): SpotAdj {
+    if (st.adj) return st.adj;
+    const q = ctx.siteQuery;
+    const zero: SpotAdj = { da: 0, dd: 1, dh: 0 };
+    if (!q) return (st.adj = zero);
+    const p = new Vector3(), e = new Vector3();
+    const sees = (adj: SpotAdj) => {
+      for (const tau of [0, st.dur * 0.5, st.dur]) {
+        place(adj, tau, p);
+        for (const [to, range] of sight) {
+          e.copy(to);
+          const len = e.distanceTo(p);
+          if (len > range) e.sub(p).multiplyScalar(range / len).add(p);
+          if (!q.lineOfSight(p, e)) return false;
+        }
+      }
+      return true;
+    };
+    const cands: SpotAdj[] = [zero];
+    for (const dd of [1, 0.8, 1.25]) for (const da of [0.08, -0.08, 0.17, -0.17, 0.28, -0.28, 0.4, -0.4]) cands.push({ da, dd, dh: 0 });
+    for (const c of cands) if (sees(c)) return (st.adj = c);
+    // up a mast above the surrounding canopy
+    place(zero, 0, p);
+    const top = q.canopyTop(p.x, p.z, 25);
+    return (st.adj = { da: 0, dd: 1, dh: Math.max(0, top - p.y + 3) });
+  }
 
   private vPoint(ctx: CamContext, v: Vessel, x: number, y: number, z: number, out: Vector3): Vector3 {
     v.originInertial(out);
@@ -474,20 +534,31 @@ export class CameraDirector {
       case 'pad_wide': {
         if (!site || !near) return false;
         st.dur = 10;
-        const ang = this.padAngle(st.a) + tau * 0.012;
-        const dist = 380 + st.b * 260;
-        this.sitePoint(ctx, Math.cos(ang) * dist, 6 + st.c * 14, Math.sin(ang) * dist, out.pos);
+        const place = (adj: SpotAdj, tt: number, o: Vector3) => {
+          const ang = this.padAngle(st.a) + adj.da + tt * 0.012;
+          const dist = (380 + st.b * 260) * adj.dd;
+          const x = Math.cos(ang) * dist, z = Math.sin(ang) * dist;
+          return o.set(x, this.gy(ctx, x, z) + 6 + st.c * 14 + adj.dh, z);
+        };
+        const adj = this.clearSpot(ctx, st, this.padSight(ctx, L, 120, false), place);
+        place(adj, tau, _e);
+        this.sitePoint(ctx, _e.x, _e.y, _e.z, out.pos);
         this.vPoint(ctx, v, 0, L * 0.42, 0, out.look);
         out.up.copy(siteUp());
-        out.fov = MathUtils.radToDeg(2 * Math.atan((L * 1.7) / 2 / dist));
+        out.fov = MathUtils.radToDeg(2 * Math.atan((L * 1.7) / 2 / Math.hypot(_e.x, _e.z)));
         return true;
       }
       case 'pad_dolly': {
         if (!site || !near) return false;
         st.dur = 9;
-        const ang = this.padAngle(st.a);
-        const dist = 160 - tau * 6;
-        this.sitePoint(ctx, Math.cos(ang) * dist, 3 + tau * 1.2, Math.sin(ang) * dist, out.pos);
+        const place = (adj: SpotAdj, tt: number, o: Vector3) => {
+          const ang = this.padAngle(st.a) + adj.da;
+          const dist = (160 - tt * 6) * adj.dd;
+          return o.set(Math.cos(ang) * dist, 3 + tt * 1.2 + adj.dh, Math.sin(ang) * dist);
+        };
+        const adj = this.clearSpot(ctx, st, this.padSight(ctx, L, 0, true), place);
+        place(adj, tau, _e);
+        this.sitePoint(ctx, _e.x, _e.y, _e.z, out.pos);
         this.vPoint(ctx, v, 0, L * 0.5 + tau * 0.8, 0, out.look);
         out.up.copy(siteUp());
         out.fov = 38;
@@ -497,9 +568,14 @@ export class CameraDirector {
         if (!site || !near) return false;
         st.dur = 11;
         // low, slow orbit close to the base looking up the full height
-        const ang = this.padAngle(st.a, 0.8) + tau * 0.04;
-        const dist = Math.max(30, L * 0.75);
-        this.sitePoint(ctx, Math.cos(ang) * dist, 1.8, Math.sin(ang) * dist, out.pos);
+        const place = (adj: SpotAdj, tt: number, o: Vector3) => {
+          const ang = this.padAngle(st.a, 0.8) + adj.da + tt * 0.04;
+          const dist = Math.max(30, L * 0.75) * adj.dd;
+          return o.set(Math.cos(ang) * dist, 1.8 + adj.dh, Math.sin(ang) * dist);
+        };
+        const adj = this.clearSpot(ctx, st, this.padSight(ctx, L, 0, true), place);
+        place(adj, tau, _e);
+        this.sitePoint(ctx, _e.x, _e.y, _e.z, out.pos);
         this.vPoint(ctx, v, 0, L * 0.55, 0, out.look);
         out.up.copy(siteUp());
         out.fov = 62;
@@ -508,14 +584,19 @@ export class CameraDirector {
       case 'pad_low': {
         if (!site || !near) return false;
         st.dur = 8;
-        // ground level among the scrub, long lens compressing pad and vehicle
-        const ang = this.padAngle(st.a);
-        const dist = 900 + st.b * 500;
-        // on a camera mast above the scrub, long lens compressing pad and vehicle
-        this.sitePoint(ctx, Math.cos(ang) * dist, 7, Math.sin(ang) * dist, out.pos);
+        // on a camera mast out in the scrub, long lens compressing the treeline, pad and vehicle
+        const place = (adj: SpotAdj, _tt: number, o: Vector3) => {
+          const ang = this.padAngle(st.a) + adj.da;
+          const dist = (900 + st.b * 500) * adj.dd;
+          const x = Math.cos(ang) * dist, z = Math.sin(ang) * dist;
+          return o.set(x, this.gy(ctx, x, z) + 7 + adj.dh, z);
+        };
+        const adj = this.clearSpot(ctx, st, this.padSight(ctx, L, 160, false), place);
+        place(adj, tau, _e);
+        this.sitePoint(ctx, _e.x, _e.y, _e.z, out.pos);
         this.vPoint(ctx, v, 0, L * 0.45, 0, out.look);
         out.up.copy(siteUp());
-        out.fov = MathUtils.radToDeg(2 * Math.atan((L * 1.5) / 2 / dist));
+        out.fov = MathUtils.radToDeg(2 * Math.atan((L * 1.5) / 2 / Math.hypot(_e.x, _e.z)));
         out.handheld = 0.3;
         return true;
       }
@@ -589,9 +670,14 @@ export class CameraDirector {
       case 'liftoff_low': {
         if (!site || !near) return false;
         st.dur = 4.5;
-        const ang = this.padAngle(st.a, 0.6);
-        const dist = 260;
-        this.sitePoint(ctx, Math.cos(ang) * dist, 2.2, Math.sin(ang) * dist, out.pos);
+        const place = (adj: SpotAdj, _tt: number, o: Vector3) => {
+          const ang = this.padAngle(st.a, 0.6) + adj.da;
+          const dist = 260 * adj.dd;
+          return o.set(Math.cos(ang) * dist, 2.2 + adj.dh, Math.sin(ang) * dist);
+        };
+        const adj = this.clearSpot(ctx, st, this.padSight(ctx, L, 0, true), place);
+        place(adj, tau, _e);
+        this.sitePoint(ctx, _e.x, _e.y, _e.z, out.pos);
         const base = vehicleBase();
         out.look.copy(base).addScaledVector(siteUp(), L * 0.5);
         out.up.copy(siteUp());

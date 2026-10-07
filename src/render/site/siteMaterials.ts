@@ -103,18 +103,58 @@ export function createSiteMaterials(): SiteMaterials {
   const foliage = (c: [number, number, number], rough = 0.78) => new MeshStandardMaterial({ color: new Color(c[0], c[1], c[2]), roughness: rough, metalness: 0, side: DoubleSide });
   const leaf = foliage([0.07, 0.09, 0.045]);
   const palmLeaf = foliage([0.09, 0.115, 0.05], 0.7);
-  const pineLeaf = foliage([0.065, 0.085, 0.05], 0.85);
-  const canopy = foliage([0.075, 0.1, 0.05], 0.82);
+  const pineLeaf = foliage([0.07, 0.092, 0.052], 0.85);
+  const canopy = foliage([0.082, 0.11, 0.055], 0.82);
   const grass = foliage([0.085, 0.1, 0.05], 0.85);
   const dryGrass = foliage([0.2, 0.17, 0.09], 0.9);
   const dryShrub = foliage([0.12, 0.11, 0.07], 0.9);
-  // cheap foliage translucency: wrap lighting
+  // foliage: wrap lighting, per-plant tint variation; tree crowns also shade as one soft volume
+  // (crown-envelope normals + baked occlusion) and glow when back-lit by the sun
   for (const m of [leaf, palmLeaf, pineLeaf, canopy, grass, dryGrass, dryShrub]) {
-    m.customProgramCacheKey = () => 'site-leaf';
+    const crown = m === pineLeaf || m === canopy;
+    if (crown) m.defines = { ...(m.defines ?? {}), CROWN: '' };
+    m.customProgramCacheKey = () => (crown ? 'site-leaf-crown' : 'site-leaf');
     m.onBeforeCompile = (sh) => {
-      sh.fragmentShader = sh.fragmentShader.replace('#include <lights_fragment_end>', `#include <lights_fragment_end>
-        reflectedLight.directDiffuse *= 1.25;
-        reflectedLight.indirectDiffuse *= 1.15;`);
+      sh.vertexShader = sh.vertexShader
+        .replace('#include <common>', `#include <common>
+          varying float vTint;
+          #ifdef CROWN
+          attribute vec4 aCrown;
+          varying float vCrownAO;
+          #endif`)
+        .replace('#include <beginnormal_vertex>', `#include <beginnormal_vertex>
+          #ifdef CROWN
+          objectNormal = normalize(mix(objectNormal, aCrown.xyz, 0.62));
+          vCrownAO = aCrown.w;
+          #endif
+          #ifdef USE_INSTANCING
+          vTint = fract(sin(dot(instanceMatrix[3].xz, vec2(12.9898, 78.233))) * 43758.5453);
+          #else
+          vTint = 0.5;
+          #endif`);
+      sh.fragmentShader = sh.fragmentShader
+        .replace('#include <common>', `#include <common>
+          varying float vTint;
+          #ifdef CROWN
+          varying float vCrownAO;
+          #endif`)
+        .replace('#include <color_fragment>', `#include <color_fragment>
+          diffuseColor.rgb *= mix(vec3(0.82, 0.88, 0.8), vec3(1.18, 1.1, 0.92), vTint);
+          #ifdef CROWN
+          diffuseColor.rgb *= vCrownAO;
+          #endif`)
+        .replace('#include <lights_fragment_end>', `#include <lights_fragment_end>
+          reflectedLight.directDiffuse *= 1.25;
+          reflectedLight.indirectDiffuse *= 1.15;
+          #if defined(CROWN) && NUM_DIR_LIGHTS > 0
+          {
+            // light scattered through the leaves toward the viewer when the sun is behind the crown
+            vec3 Ls = directionalLights[0].direction;
+            float back = pow(clamp(dot(-geometryViewDir, Ls), 0.0, 1.0), 3.0);
+            float thin = clamp(0.5 - 0.5 * dot(geometryNormal, Ls), 0.0, 1.0);
+            reflectedLight.directDiffuse += directionalLights[0].color * diffuseColor.rgb * back * thin * 0.45;
+          }
+          #endif`);
     };
   }
   // wires: inflate to at least ~0.8 px and fade coverage instead, so thin catenaries don't break

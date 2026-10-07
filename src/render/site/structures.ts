@@ -234,18 +234,19 @@ export function palmGeometry(): { trunk: BufferGeometry; crown: BufferGeometry }
 }
 
 /** Lumpy crown blob: a squashed sphere whose vertices are pushed in and out by a hash of their position. */
-function crownBlob(gb: GeoBuilder, c: Vector3, rx: number, ry: number, seed: number): void {
+function crownBlob(gb: GeoBuilder, c: Vector3, rx: number, ry: number, seed: number, segs = 10): void {
   let sd = seed;
   const rnd = () => { sd = (sd * 16807) % 2147483647; return sd / 2147483647; };
   const prof: [number, number][] = [];
-  const rings = 8;
+  const rings = 7;
   for (let i = 0; i <= rings; i++) {
     const a = -Math.PI / 2 + (i / rings) * Math.PI;
-    prof.push([Math.cos(a) * rx, c.y + Math.sin(a) * ry * (i < rings / 2 ? 0.7 : 1)]);
+    // flatter underside, fuller top: foliage clumps sag under their own weight
+    prof.push([Math.cos(a) * rx, c.y + Math.sin(a) * ry * (i < rings / 2 ? 0.75 : 1)]);
   }
   prof[0][0] = 0; prof[rings][0] = 0;
   const v0 = gb.vertexCount;
-  lathe(gb, prof, { segments: 12, offset: [c.x, c.z], thetaStart: rnd() * 6.28 });
+  lathe(gb, prof, { segments: segs, offset: [c.x, c.z], thetaStart: rnd() * 6.28 });
   // displace: clumps of foliage (hash of the rounded position keeps seam vertices together)
   const hash = (x: number, y: number, z: number) => {
     const h = Math.sin(x * 12.9898 + y * 78.233 + z * 37.719 + seed) * 43758.5453;
@@ -253,44 +254,95 @@ function crownBlob(gb: GeoBuilder, c: Vector3, rx: number, ry: number, seed: num
   };
   for (let i = v0; i < gb.vertexCount; i++) {
     const px = gb.pos[i * 3], py = gb.pos[i * 3 + 1], pz = gb.pos[i * 3 + 2];
-    const k = 0.78 + 0.44 * hash(Math.round(px * 4), Math.round(py * 4), Math.round(pz * 4));
+    const k = 0.8 + 0.4 * hash(Math.round(px * 3), Math.round(py * 3), Math.round(pz * 3));
     gb.pos[i * 3] = c.x + (px - c.x) * k;
-    gb.pos[i * 3 + 1] = c.y + (py - c.y) * (0.9 + 0.2 * k);
+    gb.pos[i * 3 + 1] = c.y + (py - c.y) * (0.88 + 0.24 * k);
     gb.pos[i * 3 + 2] = c.z + (pz - c.z) * k;
   }
 }
 
-/** Slash pine: tall straight trunk, flat irregular crown of clustered blobs. */
+/** Crown envelope of a tree (tree-local metres), shared with the camera line-of-sight test. */
+export interface CrownShape { cx: number; cy: number; cz: number; rx: number; ry: number; bottom: number; top: number; radius: number }
+
+/**
+ * Per-vertex crown attributes: a normal pointing out of the whole crown's envelope (blended
+ * with the clump normal in the shader so the canopy shades as one soft volume rather than a
+ * pile of facets) and an ambient-occlusion term that darkens the inside and underside.
+ */
+function crownAttributes(g: BufferGeometry, s: CrownShape): void {
+  const pos = g.getAttribute('position');
+  const out = new Float32Array(pos.count * 4);
+  const n = new Vector3();
+  for (let i = 0; i < pos.count; i++) {
+    const x = pos.getX(i) - s.cx, y = pos.getY(i) - s.cy, z = pos.getZ(i) - s.cz;
+    n.set(x / (s.rx * s.rx), y / (s.ry * s.ry), z / (s.rx * s.rx)).normalize();
+    const hf = Math.min(1, Math.max(0, (pos.getY(i) - s.bottom) / (s.top - s.bottom)));
+    const rf = Math.min(1, Math.hypot(x, z) / s.rx);
+    const ao = Math.min(1, 0.55 + 0.35 * hf + 0.25 * rf * rf);
+    out[i * 4] = n.x; out[i * 4 + 1] = n.y; out[i * 4 + 2] = n.z; out[i * 4 + 3] = ao;
+  }
+  g.setAttribute('aCrown', new Float32BufferAttribute(out, 4));
+}
+
+/** Slash pine: tall straight trunk, open crown of rounded needle clumps at the branch tips. */
+export const PINE_CROWN: CrownShape = { cx: 0.2, cy: 15.4, cz: 0, rx: 3.6, ry: 2.8, bottom: 12.3, top: 18.5, radius: 4.1 };
 export function pineGeometry(): { trunk: BufferGeometry; crown: BufferGeometry } {
   const t = new GeoBuilder();
-  const H = 16;
-  tube(t, new Vector3(0, -0.3, 0), new Vector3(0.25, H, 0.1), 0.22, 7);
-  // a couple of dead lower branches
-  tube(t, new Vector3(0.05, H * 0.55, 0), new Vector3(1.4, H * 0.62, 0.3), 0.05, 4);
-  tube(t, new Vector3(0.1, H * 0.7, 0), new Vector3(-1.1, H * 0.8, -0.6), 0.05, 4);
+  const H = 16.5;
+  const top = new Vector3(0.25, H, 0.1);
+  tube(t, new Vector3(0, -0.3, 0), top, 0.22, 7);
   const c = new GeoBuilder();
-  const blobs: [number, number, number, number, number][] = [
-    [0.2, H + 0.3, 0.1, 2.4, 1.3], [1.6, H - 0.6, 0.6, 1.6, 0.9], [-1.4, H - 0.2, -0.5, 1.7, 1.0], [0.4, H - 1.6, -1.3, 1.4, 0.8], [-0.3, H + 1.2, 0.6, 1.5, 0.9],
-  ];
-  blobs.forEach(([x, y, z, rx, ry], i) => crownBlob(c, new Vector3(x, y, z), rx, ry, 97 + i * 13));
+  // branches spiral up the top third (golden angle), each ending in a clump of needles
+  const golden = 2.39996;
+  for (let i = 0; i < 8; i++) {
+    const f = i / 7;
+    const y = H * (0.76 + f * 0.2);
+    const a = i * golden + 0.4;
+    const len = 2.5 - f * 1.3 + ((i * 37) % 5) * 0.12;
+    const rise = 0.5 + f * 0.6;
+    const from = new Vector3(0.25 * (y / H), y, 0.1 * (y / H));
+    const tip = from.clone().add(new Vector3(Math.cos(a) * len, rise, Math.sin(a) * len));
+    tube(t, from, tip, 0.07 - f * 0.02, 4);
+    crownBlob(c, tip, 1.05 + (1 - f) * 0.35, 0.72 + (1 - f) * 0.15, 97 + i * 13, 9);
+  }
+  crownBlob(c, top.clone().add(new Vector3(0, 0.7, 0)), 1.35, 1.0, 211, 10);
+  // dead stubs lower down
+  tube(t, new Vector3(0.05, H * 0.5, 0), new Vector3(1.0, H * 0.54, 0.3), 0.04, 4);
+  tube(t, new Vector3(0.1, H * 0.62, 0), new Vector3(-0.8, H * 0.66, -0.5), 0.04, 4);
   const crown = c.build();
   crown.computeVertexNormals();
+  crownAttributes(crown, PINE_CROWN);
   return { trunk: t.build(), crown };
 }
 
-/** Broadleaf hammock tree (live oak / tropical): short trunk, broad domed canopy. */
+/** Broadleaf hammock tree (live oak / tropical): short trunk splitting into limbs, broad domed canopy. */
+export const BROAD_CROWN: CrownShape = { cx: 0, cy: 7.2, cz: 0, rx: 5.0, ry: 2.6, bottom: 5.1, top: 9.9, radius: 5.8 };
 export function broadleafGeometry(): { trunk: BufferGeometry; crown: BufferGeometry } {
   const t = new GeoBuilder();
-  tube(t, new Vector3(0, -0.3, 0), new Vector3(0.2, 3.2, 0), 0.32, 7);
-  tube(t, new Vector3(0.2, 3.0, 0), new Vector3(2.0, 5.4, 0.8), 0.16, 5);
-  tube(t, new Vector3(0.2, 3.0, 0), new Vector3(-1.6, 5.8, -0.9), 0.16, 5);
+  const fork = new Vector3(0.15, 2.7, 0);
+  tube(t, new Vector3(0, -0.3, 0), fork, 0.34, 7);
   const c = new GeoBuilder();
-  const blobs: [number, number, number, number, number][] = [
-    [0, 6.4, 0, 3.6, 2.2], [2.3, 5.6, 1.0, 2.4, 1.6], [-2.1, 5.9, -1.0, 2.5, 1.7], [0.6, 7.4, -1.6, 2.1, 1.4], [-0.8, 5.2, 2.0, 2.2, 1.5],
-  ];
-  blobs.forEach(([x, y, z, rx, ry], i) => crownBlob(c, new Vector3(x, y, z), rx, ry, 31 + i * 7));
+  const limbs = 4;
+  for (let i = 0; i < limbs; i++) {
+    const a = (i / limbs) * Math.PI * 2 + 0.5;
+    const end = new Vector3(Math.cos(a) * 3.0, 5.6 + (i % 2) * 0.6, Math.sin(a) * 3.0);
+    tube(t, fork, end, 0.17, 5);
+  }
+  // a solid inner mass so the canopy reads as one crown, then clumps over an oblate dome
+  crownBlob(c, new Vector3(0.1, 6.9, 0), 3.7, 1.9, 5, 14);
+  let sd = 77;
+  const rnd = () => { sd = (sd * 16807) % 2147483647; return sd / 2147483647; };
+  const n = 13;
+  for (let i = 0; i < n; i++) {
+    const az = i * 2.39996;
+    const el = i === 0 ? Math.PI / 2 : Math.asin(0.15 + 0.85 * (1 - i / n) * (0.6 + 0.4 * rnd()));
+    const p = new Vector3(Math.cos(az) * Math.cos(el) * 3.8, 6.0 + Math.sin(el) * 2.1, Math.sin(az) * Math.cos(el) * 3.8);
+    const big = i === 0 ? 2.3 : 1.6 + rnd() * 0.7;
+    crownBlob(c, p, big, big * 0.8, 31 + i * 7, 10);
+  }
   const crown = c.build();
   crown.computeVertexNormals();
+  crownAttributes(crown, BROAD_CROWN);
   return { trunk: t.build(), crown };
 }
 

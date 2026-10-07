@@ -17,6 +17,7 @@ import { BoosterGuidance } from './recovery';
 import type { MissionStart } from './missions';
 import { FlightSnapshot, restoreVessel } from './SaveGame';
 import { keplerPropagate } from '../physics/orbit';
+import { lunarLaunchPlane } from './Planner';
 
 /**
  * One flight, from the terminal count to wherever it ends. Owns the physics world, the
@@ -49,6 +50,8 @@ export interface FlightConfig {
   snapshot?: FlightSnapshot;
   /** vegetation density 0..1 */
   vegetation?: number;
+  /** launch into the plane that contains the Moon at arrival (translunar missions) */
+  planeTarget?: 'moon';
 }
 
 export type SessionEvent =
@@ -87,6 +90,8 @@ export class FlightSession {
   liftoffT = NaN;
   readonly config: FlightConfig;
   readonly azimuth: number;
+  /** inclination of a computed launch-window plane (deg), if any */
+  planeInclination = 0;
   /** player throttle (0..1) */
   throttle = 1;
   /** listeners */
@@ -115,6 +120,7 @@ export class FlightSession {
     const preset = WEATHER_PRESETS[config.weather];
     this.weather = new GameWeather({ kind: config.weather, windDir: ((this.site.coastBearing + 180) * Math.PI) / 180, ...preset });
     rw.cloudCover = preset.clouds;
+    rw.aero.humidity = { clear: 0.65, fair: 0.85, breezy: 0.75, overcast: 1, storm: 1 }[config.weather] ?? 0.8;
     const t0 = system.epoch;
     this.world = new PhysicsWorld(system, t0, terrain, this.weather);
     const lat = (this.site.lat * Math.PI) / 180, lon = (this.site.lon * Math.PI) / 180;
@@ -122,6 +128,7 @@ export class FlightSession {
     rw.vessels.clear();
     rw.plumes.clear();
     rw.effects.clear();
+    rw.aero.clear();
     let v: Vessel;
     if (startKind === 'pad') {
       // pad + vehicle on the launch mount, held by the clamps
@@ -145,12 +152,23 @@ export class FlightSession {
     v.step(1e-4, { t: this.world.t, terrain, weather: this.weather });
     rw.vessels.attach(v, this.def, { flightProven: this.def.assemblies.some((a) => a.recovery && a.recovery !== 'none') && config.vehicleId !== 'leviathan' });
     const incl = ((config.inclination ?? Math.abs(this.site.lat)) * Math.PI) / 180;
-    this.azimuth = launchAzimuth(lat, Math.max(incl, Math.abs(lat)));
+    let planeNormal: Vector3 | null = null;
+    if (config.planeTarget === 'moon' && startKind === 'pad') {
+      // the launch window: the parking orbit must contain the Moon's position at arrival
+      const tLift = this.world.t - (config.countdownStart ?? -120);
+      const lp = lunarLaunchPlane(system, this.site.lat, this.site.lon, tLift);
+      this.azimuth = lp.azimuth;
+      planeNormal = lp.normal;
+      this.planeInclination = (lp.inclination * 180) / Math.PI;
+    } else {
+      this.azimuth = launchAzimuth(lat, Math.max(incl, Math.abs(lat)));
+    }
     // flight software, autopilot
     this.fsw = new FlightSoftware(v);
     this.autopilot = new Autopilot(this.world, v);
     this.autopilot.targetOrbit = config.targetOrbit ?? this.def.targetOrbit ?? 220_000;
     this.autopilot.azimuth = this.azimuth;
+    this.autopilot.planeNormal = planeNormal;
     if (config.orbitAssist !== false) this.autopilot.setMode('orbit');
     // recovery
     this.zones = landingZonesFor(this.site, this.def, this.azimuth, (dir) => terrain.heightAt(system.earth, dir));
@@ -321,6 +339,8 @@ export class FlightSession {
   }
 
   setWarp(index: number): void {
+    // the player's own warp choice ends any automatic coast
+    this.warpTarget = null;
     const before = this.world.warpIndex;
     this.world.setWarpIndex(index);
     if (this.world.warpReason && index > this.world.warpIndex) this.emit({ type: 'message', text: `Time warp limited: ${this.world.warpReason}`, level: 'warn' });
@@ -427,9 +447,26 @@ export class FlightSession {
   }
 
   /** While a manoeuvre is pending, warp toward it and drop out in time to turn and burn. */
+  /** coast to an event under automatic time warp (lunar arrival, periapsis, entry) */
+  warpTarget: { t: number; label: string } | null = null;
+
   private autoWarp(): void {
     const ap = this.autopilot;
     const n = ap.node;
+    const wt = this.warpTarget;
+    if (wt && !(ap.mode === 'node' && n)) {
+      const remain = wt.t - this.world.t;
+      if (remain <= 2 || this.active.telemetry.thrust > 0) {
+        this.warpTarget = null;
+        this.world.setWarpIndex(0);
+        this.emit({ type: 'message', text: `${wt.label}`, level: 'info' });
+        return;
+      }
+      let idx = 0;
+      for (let i = WARP_LEVELS.length - 1; i >= 0; i--) if (remain > WARP_LEVELS[i] * 3) { idx = i; break; }
+      if (idx !== this.world.warpIndex) this.world.setWarpIndex(idx);
+      return;
+    }
     if (ap.mode !== 'node' || !n || ap.burning) return;
     const bt = ap.burnTime(ap.nodeRemaining);
     const tStart = n.t - (isFinite(bt) ? bt / 2 : 0) - 25;
@@ -582,7 +619,9 @@ export class FlightSession {
       case 'destroyed': {
         const g = this.rw.vessels.groupOf(vs);
         const p = g ? g.position.clone() : vs.originInertial(new Vector3()).add(this.bodyPos(vs.body)).sub(this.rw.cameraHelio);
-        this.rw.effects.explosion(p, Math.min(8, Math.cbrt(vs.mass / 1000) * 0.8));
+        const highAndFast = vs.body.atmosphereTop > 0 && vs.telemetry.altitude > 18_000 && vs.telemetry.speedSurface > 900;
+        if (highAndFast) this.rw.effects.breakup(p, vs.surfaceVelocity(new Vector3()), Math.min(6, Math.cbrt(vs.mass / 1000) * 0.7));
+        else this.rw.effects.explosion(p, Math.min(8, Math.cbrt(vs.mass / 1000) * 0.8));
         this.emit({ type: 'destroyed', vessel: vs, reason: ev.reason });
         if (main) {
           this.setPhase('destroyed');
@@ -654,7 +693,6 @@ export class FlightSession {
       if (this.phase === 'entry' && this.hasMilestone('blackout') && v.plasmaIntensity < 0.05 && tm.speedSurface < 3000) this.milestone('blackout_end', 'blackout_end');
       if (this.phase === 'entry' && tm.speedSurface < 300 && tm.altitude < 15000) this.setPhase('descent');
     }
-    if (v.plasmaIntensity > 0.05) this.rw.effects.plasmaWake(v, 1 / 60, v.plasmaIntensity);
   }
 
   // ------------------------------------------------------------------------------ rendering
@@ -675,6 +713,12 @@ export class FlightSession {
     rw.focusRadius = Math.max(40, Math.min(400, this.vesselLength(v) * 1.2));
     rw.update(t, realDt);
     rw.updateVehicles(realDt, t, world.vessels, v, (x) => this.bodyPos(x.body));
+    // plasma wakes: the spacecraft on entry and any spent stage burning up within view
+    for (const vs of world.vessels) {
+      if (vs.destroyed || vs.plasmaIntensity <= 0.05) continue;
+      if (vs !== v && vs.originInertial(_b).add(this.bodyPos(vs.body)).distanceTo(this.director.posHelio) > 600_000) continue;
+      rw.effects.plasmaWake(vs, realDt, vs.plasmaIntensity);
+    }
   }
 
   private vesselLength(v: Vessel): number {
@@ -721,6 +765,7 @@ export class FlightSession {
       site: { quat: siteQuat, origin: siteOrigin, body: earth },
       towerTop: this.complex ? this.complex.towerTop : null,
       deckHeight: this.complex ? this.complex.deckHeight : 0,
+      siteQuery: this.complex,
       groundHeight: (body, helio) => {
         body.orientationAt(this.world.t, _q);
         _a.copy(helio).sub(this.bodyPos(body)).normalize().applyQuaternion(_q.invert());

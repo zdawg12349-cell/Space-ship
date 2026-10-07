@@ -5,7 +5,8 @@ import { dateToJ2000Seconds } from '../src/physics/constants';
 import { PhysicsWorld } from '../src/physics/world';
 import { getVehicle } from '../src/vehicles/catalog';
 import { Autopilot } from '../src/game/Autopilot';
-import { planDeorbit, planTLI, planTEI, planCapture } from '../src/game/Planner';
+import { planDeorbit, planTLI, planTEI, planCapture, lunarLaunchPlane, planCorrection, trajectoryForecast } from '../src/game/Planner';
+import { AscentGuidance, FlightSoftware } from '../src/game/guidance';
 import { calm, flatTerrain } from './helpers';
 import { keplerPropagate } from '../src/physics/orbit';
 import { Vessel } from '../src/physics/vessel';
@@ -91,6 +92,99 @@ describe('manoeuvre planning', () => {
     expect(n).not.toBeNull();
     const m = /perigee (-?\d+) km/.exec(n!.result);
     expect(Math.abs(Number(m![1]) - 45)).toBeLessThan(60);
+  });
+});
+
+describe('lunar launch window', () => {
+  it('ascends into the Moon-arrival plane and TLI finds a lunar trajectory', () => {
+    const { world: w, sys } = world('2026-10-10T11:40:00Z');
+    const def = getVehicle('colossus');
+    const v = w.createVessel(def, sys.earth);
+    w.addVessel(v);
+    w.active = v;
+    const lat = 28.6084, lon = -80.6043;
+    w.placeOnSurface(v, sys.earth, (lat * Math.PI) / 180, (lon * Math.PI) / 180, 5, 0);
+    v.padSupportAlt = 5;
+    const lp = lunarLaunchPlane(sys, lat, lon, w.t);
+    console.log('window azimuth', ((lp.azimuth * 180) / Math.PI).toFixed(1), 'inclination', ((lp.inclination * 180) / Math.PI).toFixed(1));
+    const g = new AscentGuidance(w, v, 190_000, lp.azimuth);
+    g.planeNormal = lp.normal;
+    const fsw = new FlightSoftware(v);
+    w.stage(v);
+    const dt = 1 / 30;
+    let liftoff = false;
+    for (let i = 0; i < 900 / dt; i++) {
+      g.update(dt);
+      fsw.update(w.t, liftoff);
+      w.update(dt);
+      if (!liftoff && v.telemetry.verticalSpeed > 0.5) { liftoff = true; v.hasLiftedOff = true; }
+      if (liftoff && v.telemetry.altitude > 45) v.padSupportAlt = NaN;
+      if (v.destroyed || g.phase === 'done') break;
+    }
+    const o = v.updateOrbit(w.t);
+    const h = new Vector3().crossVectors(v.pos, v.vel).normalize();
+    const planeErr = (Math.acos(Math.min(1, h.dot(lp.normal))) * 180) / Math.PI;
+    console.log('parking orbit', ((o.periapsis - sys.earth.radius) / 1000).toFixed(0), 'x', ((o.apoapsis - sys.earth.radius) / 1000).toFixed(0), 'km, plane error', planeErr.toFixed(2), 'deg, dv left', v.deltaV().total.toFixed(0));
+    expect(v.destroyed).toBe(false);
+    expect(o.periapsis - sys.earth.radius).toBeGreaterThan(150_000);
+    expect(planeErr).toBeLessThan(0.6);
+    console.log('stage dv', v.deltaV().stage.toFixed(0), 'mass', (v.mass / 1000).toFixed(1), 't', v.assemblies.map((a) => `${a.def.id}:${(a.mass / 1000).toFixed(1)}t/${(a.propellant ?? 0).toFixed?.(0)}`).join(' '), 'prop', JSON.stringify(v.stagePropellant()));
+    const n = planTLI(v, sys, w.t, 300_000);
+    console.log('TLI', n?.label, n?.dv.length().toFixed(0), n?.result, n ? ((n.t - w.t) / 60).toFixed(0) + ' min' : '');
+    expect(n).not.toBeNull();
+    expect(v.deltaV().total).toBeGreaterThan(n!.dv.length());
+    // fly the burn with the node executor, then coast on rails to the Moon
+    {
+      const pr = new Vector3(), pv = new Vector3();
+      keplerPropagate(v.pos, v.vel, sys.earth.gm, Math.max(0, n!.t - w.t - 240), pr, pv);
+      w.updateRails(Math.max(0, n!.t - w.t - 240));
+      console.log('rails check: pos err', pr.distanceTo(v.pos).toFixed(0), 'm; vel err', pv.distanceTo(v.vel).toFixed(2), 'node dir . vel', n!.dv.clone().normalize().dot(v.vel.clone().normalize()).toFixed(4), 'warpReason', w.warpReason);
+    }
+    const ap = new Autopilot(w, v);
+    ap.setNode(n!);
+    ap.setMode('node');
+    let k0 = 0;
+    run(w, ap, 1500, () => {
+      if (k0++ % 600 === 0) console.log('burn', (w.t - n!.t).toFixed(0), ap.mode, ap.status, 'thr', v.controls.throttle.toFixed(2), 'F', (v.telemetry.thrust / 1000).toFixed(0), 'err', (ap as unknown as { att: { error: number } }).att.error.toFixed(3), 'eng', v.engines.map((e) => `${e.armed ? 'A' : '-'}${e.running ? 'R' : '-'}${e.failed ? 'F' : ''}`).join(''));
+      return ap.mode === 'stability' || v.destroyed;
+    });
+    console.log('after TLI: remaining', ap.nodeRemaining.toFixed(1), 'm/s', 'mode', ap.mode, 'destroyed', v.destroyed, v.destroyReason, 'alt', (v.telemetry.altitude / 1000).toFixed(0), 'body', v.body.name);
+    {
+      const o2 = v.updateOrbit(w.t);
+      console.log('post-TLI orbit pe', ((o2.periapsis - sys.earth.radius) / 1000).toFixed(0), 'ap', ((o2.apoapsis - sys.earth.radius) / 1000).toFixed(0), 'e', o2.e.toFixed(4), 'planned', n!.result);
+    }
+    console.log('forecast after TLI', JSON.stringify(trajectoryForecast(v, sys, w.t)));
+    // mid-course correction a few hours out, as the flight controllers would
+    w.updateRails(4 * 3600);
+    const mcc = planCorrection(v, sys, w.t, 300_000);
+    console.log('MCC', mcc?.dv.length().toFixed(2), 'm/s', mcc?.result);
+    if (mcc) {
+      w.updateRails(Math.max(0, mcc.t - w.t - 120));
+      const ap2 = new Autopilot(w, v);
+      for (const e of v.engines) e.armed = true;
+      ap2.setNode(mcc);
+      ap2.setMode('node');
+      run(w, ap2, 900, () => ap2.mode === 'stability' || v.destroyed);
+      console.log('after MCC: remaining', ap2.nodeRemaining.toFixed(2), 'forecast', JSON.stringify(trajectoryForecast(v, sys, w.t)));
+    }
+    let minMoon = Infinity, enteredSoi = false;
+    const mp = new Vector3(), mv = new Vector3();
+    for (let k = 0; k < 4.5 * 24 * 6; k++) {
+      w.updateRails(600);
+      if (v.body === sys.moon) {
+        enteredSoi = true;
+        // the conic's periapsis is the true closest approach (samples are 10 min apart)
+        const om = v.updateOrbit(w.t);
+        minMoon = Math.min(minMoon, v.pos.dot(v.vel) < 0 ? om.periapsis - sys.moon.radius : v.pos.length() - sys.moon.radius);
+      }
+      else if (v.body === sys.earth) { sys.moon.localStateAt(w.t, mp, mv); minMoon = Math.min(minMoon, v.pos.distanceTo(mp) - sys.moon.radius); }
+      if (v.destroyed) break;
+    }
+    console.log('lunar closest approach', (minMoon / 1000).toFixed(0), 'km, entered SOI', enteredSoi);
+    expect(enteredSoi).toBe(true);
+    expect(mcc).not.toBeNull();
+    expect(mcc!.dv.length()).toBeLessThan(40);
+    expect(Math.abs(minMoon - 300_000)).toBeLessThan(100_000);
   });
 });
 

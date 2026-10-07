@@ -201,7 +201,12 @@ export interface PlumeLight {
   intensity: number;
 }
 
+/** A hot exhaust region for the heat-shimmer pass (camera-relative world space). */
+export interface HazeSource { pos: Vector3; dir: Vector3; length: number; radius: number; strength: number; w: number }
+
 export class PlumeSystem {
+  /** hottest exhaust regions this frame, strongest first (up to three) */
+  haze: HazeSource[] = [];
   readonly lights: PlumeLight[] = [];
   private volumes: PlumeVolume[] = [];
   private known = new Set<EngineRuntime>();
@@ -297,6 +302,7 @@ export class PlumeSystem {
     const linDepth = this.linDepth();
     // per-vessel cluster light accumulation
     const clusters = new Map<Vessel, { sum: Vector3; w: number; intensity: number; color: Vector3 }>();
+    const hz = new Map<Vessel, HazeSource>();
     for (const p of this.volumes) {
       const e = p.engine;
       const v = p.vessel;
@@ -354,6 +360,18 @@ export class PlumeSystem {
       p.mesh.matrixWorld.multiplyMatrices(p.ev.pivot.matrixWorld, _m);
       _inv.copy(p.mesh.matrixWorld).invert();
       (u.uCamLocal.value as Vector3).set(0, 0, 0).applyMatrix4(_inv);
+      // heat shimmer: hot exhaust gas in dense air bends the light behind it
+      if (air > 0.05) {
+        let h = hz.get(v);
+        if (!h) { h = { pos: new Vector3(), dir: new Vector3(), length: 0, radius: 0, strength: 0, w: 0 }; hz.set(v, h); }
+        const w = Math.max(1e-3, e.thrust);
+        h.pos.add(_v.set(p.offset.x, p.offset.y, p.offset.z).applyMatrix4(p.ev.pivot.matrixWorld).multiplyScalar(w));
+        h.dir.add(_c.set(0, -1, 0).transformDirection(p.ev.pivot.matrixWorld).multiplyScalar(w));
+        h.w += w;
+        h.length = Math.max(h.length, lp * 2.2);
+        h.radius = Math.max(h.radius, rfar * 2.5 + re * 4);
+        h.strength = Math.max(h.strength, Math.min(1, air) * Math.min(1, thrustFrac * 1.4) * e.spool);
+      }
       // light accumulation (position a few radii below the exit)
       _v.set(p.offset.x, p.offset.y - Math.min(lp * 0.15, 6), p.offset.z).applyMatrix4(p.ev.pivot.matrixWorld);
       let c = clusters.get(v);
@@ -365,6 +383,11 @@ export class PlumeSystem {
       c.intensity += li;
       c.color.addScaledVector(_c.set(...st.lightColor), li);
     }
+    this.haze = [...hz.values()].filter((h) => h.w > 0).map((h) => {
+      h.pos.multiplyScalar(1 / h.w);
+      h.dir.normalize();
+      return h;
+    }).sort((a, b) => b.strength * b.radius - a.strength * a.radius).slice(0, 3);
     // assign the brightest clusters to the light pool
     const list = [...clusters.values()].filter((c) => c.intensity > 0).sort((a, b) => b.intensity - a.intensity);
     this.lights.forEach((L, i) => {

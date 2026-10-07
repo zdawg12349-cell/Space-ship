@@ -68,6 +68,8 @@ export class AscentGuidance {
   enabled = true;
   /** fraction of propellant kept in a recoverable booster for its return */
   recoveryReserve = 0.155;
+  /** target orbit plane (inertial normal, body-centred); steered into during the closed-loop phase */
+  planeNormal: Vector3 | null = null;
 
   constructor(world: PhysicsWorld, vessel: Vessel, targetAltitude: number, azimuth: number) {
     this.world = world;
@@ -161,7 +163,18 @@ export class AscentGuidance {
         const sinP = Math.max(-0.45, Math.min(0.97, (a0 + gEff) / Math.max(0.3, acc)));
         _h.copy(vel).addScaledVector(_u, -vz);
         if (_h.lengthSq() < 1) this.heading(_h, 0); else _h.normalize();
-        target.copy(_h).multiplyScalar(Math.sqrt(1 - sinP * sinP)).addScaledVector(_u, sinP).normalize();
+        const cosP = Math.sqrt(1 - sinP * sinP);
+        if (this.planeNormal) {
+          // yaw steering: fly along the target plane and null the out-of-plane velocity by burnout
+          const n = this.planeNormal;
+          const along = _w.crossVectors(n, _u);
+          if (along.dot(_h) < 0) along.negate();
+          along.normalize();
+          const w = vel.dot(n);
+          const s = Math.max(-0.3, Math.min(0.3, -w / (Math.max(10, T) * Math.max(0.3, acc))));
+          _h.copy(along).multiplyScalar(Math.sqrt(1 - s * s)).addScaledVector(n, s);
+        }
+        target.copy(_h).multiplyScalar(cosP).addScaledVector(_u, sinP).normalize();
         const done = pe > hT - 12000 || (pe > Math.max(atmTop + 10000, 150000) && ap > hT + 40000) || (dvh <= 0 && pe > atmTop);
         if (done) { throttle = 0; this.phase = pe > atmTop + 10000 ? 'done' : 'coast'; }
         break;

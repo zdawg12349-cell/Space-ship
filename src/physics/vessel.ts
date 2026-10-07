@@ -860,7 +860,11 @@ export class Vessel {
   // ---------------------------------------------------------------- thermal
 
   private stepThermal(dt: number, flux: number, noseFirst: boolean, vAir: Vector3, speed: number): void {
-    const amb = Math.max(3, this.atm.temperature);
+    // Radiative / convective sink temperature. The thermosphere's gas is ~1000 K but so thin it
+    // exchanges no meaningful heat; out there the skin radiates to space and Earthshine
+    // (~250 K). The gas temperature only matters where the air is dense enough to couple.
+    const couple = Math.min(1, this.atm.density / 1e-4);
+    const amb = Math.max(3, 250 + (Math.min(this.atm.temperature, 330) - 250) * couple);
     this.heatFluxShield = flux;
     // leading assembly receives the flux
     let lead: AssemblyRuntime | null = null;

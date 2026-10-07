@@ -40,6 +40,8 @@ export interface EffectsFlags {
 export class Effects {
   readonly particles: ParticleSystem;
   readonly flags: EffectsFlags = { deluge: 0, venting: 0 };
+  /** lit radiance of white condensation near the focus (HDR), for flow-attached vapour */
+  readonly sheetLight = new Vector3(10, 10, 10);
   /** anchor (body-fixed) */
   anchorBody: CelestialBody | null = null;
   readonly anchorDirFixed = new Vector3(1, 0, 0);
@@ -160,6 +162,7 @@ export class Effects {
     for (const v of vessels) {
       if (v.destroyed || v.body !== this.anchorBody) continue;
       this.exhaust(v, dt, complex);
+      this.rcsPuffs(v, dt);
     }
     if (complex && this.anchorDirFixed.distanceTo(_d.set(...siteDir(complex))) < 1e-4) {
       this.deluge(dt, complex);
@@ -177,6 +180,8 @@ export class Effects {
     const lights = rw.plumes.lights.map((l) => ({ pos: l.pos, color: l.color, intensity: l.intensity }));
     if (this.flashI > 0) lights.push({ pos: this.flash.position, color: this.flash.color, intensity: this.flashI });
     P.setLighting(rw.sunDir, sunIrr, amb, rw.camera.matrixWorldInverse, lights, rw.atmToFocus);
+    // radiance of a bright, thin cloud sheet near the action (vapour cones)
+    this.sheetLight.copy(sunIrr).multiplyScalar((0.85 / Math.PI) * 0.7).addScaledVector(amb, 0.85 / Math.PI * 2.2);
 
     // camera in the local frame
     const camL = P.toLocal(_a.set(0, 0, 0), new Vector3());
@@ -458,6 +463,78 @@ export class Effects {
     this.flash.color.setRGB(1, 0.62, 0.3);
     this.flashI = 4e4 * s * s;
     this.flashMax = this.flashLife = 1.2;
+    this.flash.intensity = this.flashI;
+    this.flash.visible = true;
+  }
+
+  /**
+   * Reaction-control puffs: short white jets from the thruster quads whenever the attitude
+   * system commands torque with RCS enabled (or translation). In vacuum the gas flashes out
+   * into a wide, fast-fading cone; in air it is a small, quickly dispersed puff.
+   */
+  private rcsPuffs(v: Vessel, dt: number): void {
+    const c = v.controls;
+    if (!c.rcs) return;
+    const rot = Math.abs(c.pitch) + Math.abs(c.yaw) + Math.abs(c.roll);
+    const trans = Math.abs(c.tx) + Math.abs(c.ty) + Math.abs(c.tz);
+    if (rot + trans < 0.06) return;
+    const P = this.particles;
+    const vac = v.atm.pressure < 50;
+    const vel = this.surfaceVelLocal(v, new Vector3());
+    for (const a of v.assemblies) {
+      const f = a.def.features?.rcs;
+      if (!f || a.rcsFuel <= 0 || a.destroyed) continue;
+      const y = a.bottomY + (a.topY - a.bottomY) * 0.72;
+      const R = a.maxRadius + 0.08;
+      for (let q = 0; q < 4; q++) {
+        const ang = (q / 4) * Math.PI * 2 + Math.PI / 4;
+        const cx = Math.cos(ang), cz = Math.sin(ang);
+        // which nozzles of this quad fire: roll -> tangential, pitch/yaw -> radial (up/down pairs)
+        const roll = c.roll * (q % 2 === 0 ? 1 : -1);
+        const pitchYaw = (q < 2 ? c.pitch : -c.pitch) * 0.7 + (q % 3 === 0 ? c.yaw : -c.yaw) * 0.7;
+        const fireT = Math.abs(roll) > 0.05, fireR = Math.abs(pitchYaw) > 0.05 || trans > 0.06;
+        if (!fireT && !fireR) continue;
+        const n = this.rate(`rcs${v.id}-${a.def.id}-${q}`, 42 * Math.min(1, rot + trans), dt);
+        if (!n) continue;
+        const base = this.vehiclePoint(v, _c.set(a.offX + cx * R, y, a.offZ + cz * R), new Vector3());
+        const pl = P.toLocal(base, new Vector3());
+        for (let i = 0; i < n; i++) {
+          // jet direction in the vehicle frame
+          const dir = fireT ? _e.set(-cz * Math.sign(roll), 0, cx * Math.sign(roll)) : _e.set(0, Math.sign(pitchYaw || 1), 0);
+          const dw = P.dirToLocal(dir.applyQuaternion(v.rot), new Vector3()).normalize();
+          P.emit({
+            kind: 'vapor', pos: pl, vel: dw.multiplyScalar(vac ? 260 : 40).add(vel), spread: vac ? 90 : 6,
+            size: 0.12, grow: vac ? 9 : 1.6, life: vac ? 0.28 : 0.6, opacity: vac ? 0.4 : 0.5, drag: vac ? 0 : 1,
+          });
+        }
+      }
+    }
+  }
+
+  /**
+   * Aerodynamic break-up of a stage high in the atmosphere: a shower of incandescent fragments
+   * streaking along the flight path, burning gobs of propellant and a brief flash. `velWorld`
+   * is the debris velocity relative to the ground (world axes).
+   */
+  breakup(worldPos: Vector3, velWorld: Vector3, scale: number): void {
+    if (!this.anchorBody) return;
+    const P = this.particles;
+    const pl = P.toLocal(worldPos, new Vector3());
+    const vel = P.dirToLocal(velWorld, new Vector3());
+    const s = Math.max(1, scale);
+    const dense = this.anchorBody.atmosphereTop > 0;
+    for (let i = 0; i < 120; i++) {
+      // fragments shed at a fraction of the parent's speed, fanning out a little
+      const k = 0.55 + Math.random() * 0.4;
+      P.emit({ kind: 'spark', pos: pl, vel: _d.copy(vel).multiplyScalar(k), spread: 40 + s * 10, jitter: s * 2, size: 0.5 + Math.random() * 0.8, life: 3 + Math.random() * 4, heat: 1, drag: 0.35 });
+    }
+    for (let i = 0; i < 30; i++) P.emit({ kind: 'plasma', pos: pl, vel: _d.copy(vel).multiplyScalar(0.7), spread: 30, jitter: s * 3, size: s * 2.5, grow: s * 4, life: 1.2, heat: 1, drag: 0.4 });
+    if (dense) for (let i = 0; i < 24; i++) P.emit({ kind: 'fire', pos: pl, vel: _d.copy(vel).multiplyScalar(0.5), spread: 18, jitter: s * 2, size: s * 2, grow: s * 2, life: 2.5, heat: 1, drag: 0.8 });
+    if (dense) for (let i = 0; i < 18; i++) P.emit({ kind: 'soot', pos: pl, vel: _d.copy(vel).multiplyScalar(0.4), spread: 10, jitter: s * 3, size: s * 2.5, grow: s * 1.5, life: 30, heat: 0.5 });
+    this.flash.position.copy(worldPos);
+    this.flash.color.setRGB(1, 0.55, 0.35);
+    this.flashI = 1.5e4 * s * s;
+    this.flashMax = this.flashLife = 0.8;
     this.flash.intensity = this.flashI;
     this.flash.visible = true;
   }

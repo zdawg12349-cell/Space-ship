@@ -261,3 +261,49 @@ export function solveKeplerElliptic(M: number, e: number): number {
 /** Circular orbit speed and escape speed helpers. */
 export const circularSpeed = (mu: number, r: number) => Math.sqrt(mu / r);
 export const escapeSpeed = (mu: number, r: number) => Math.sqrt(2 * mu / r);
+
+/**
+ * Lambert's problem (single revolution, universal variables — Bate, Mueller & White §5.3):
+ * the velocity needed at r1 to reach r2 after `tof` seconds, travelling the way round that
+ * matches the angular-momentum direction `hDir`. Writes v1 (and v2 at arrival if given).
+ * Returns false if no solution exists (degenerate 180° geometry, or tof out of range).
+ */
+export function lambert(r1: Vector3, r2: Vector3, tof: number, mu: number, hDir: Vector3, v1: Vector3, v2?: Vector3): boolean {
+  const r1m = r1.length(), r2m = r2.length();
+  if (tof <= 0 || r1m <= 0 || r2m <= 0) return false;
+  const cosDnu = Math.max(-1, Math.min(1, r1.dot(r2) / (r1m * r2m)));
+  let dnu = Math.acos(cosDnu);
+  if (_t1.crossVectors(r1, r2).dot(hDir) < 0) dnu = 2 * Math.PI - dnu;
+  const A = Math.sin(dnu) * Math.sqrt((r1m * r2m) / Math.max(1e-12, 1 - cosDnu));
+  if (Math.abs(A) < 1e-6) return false;
+  const sqrtMu = Math.sqrt(mu);
+  const yOf = (z: number) => r1m + r2m + (A * (z * stumpffS(z) - 1)) / Math.sqrt(stumpffC(z));
+  const tofOf = (z: number) => {
+    const y = yOf(z);
+    if (y < 0) return -Infinity;
+    const C = stumpffC(z);
+    return (Math.pow(y / C, 1.5) * stumpffS(z) + A * Math.sqrt(y)) / sqrtMu;
+  };
+  // time of flight increases monotonically with z on the single-revolution branch
+  let lo = -4 * Math.PI * Math.PI, hi = 4 * Math.PI * Math.PI - 1e-6;
+  // expand the lower bound for very short (hyperbolic) transfers
+  for (let i = 0; i < 60 && tofOf(lo) > tof; i++) lo *= 2;
+  if (!(tofOf(hi) >= tof)) return false;
+  let z = 0;
+  for (let i = 0; i < 200; i++) {
+    z = 0.5 * (lo + hi);
+    const t = tofOf(z);
+    if (t < tof) lo = z; else hi = z;
+    if (hi - lo < 1e-12 * Math.max(1, Math.abs(z))) break;
+  }
+  const y = yOf(z);
+  if (!(y > 0)) return false;
+  const f = 1 - y / r1m;
+  const g = A * Math.sqrt(y / mu);
+  const gdot = 1 - y / r2m;
+  if (Math.abs(g) < 1e-12) return false;
+  _t2.copy(r2).addScaledVector(r1, -f).multiplyScalar(1 / g);
+  if (v2) v2.copy(r2).multiplyScalar(gdot).sub(r1).multiplyScalar(1 / g);
+  v1.copy(_t2);
+  return true;
+}

@@ -1,6 +1,6 @@
 import {
   AlwaysDepth, DepthFormat, DepthTexture, FloatType, HalfFloatType, LinearFilter, LinearMipmapLinearFilter, Matrix3, Matrix4, NearestFilter, NoBlending, RedFormat,
-  RGBAFormat, ShaderMaterial, Texture, UnsignedIntType, Vector2, Vector3, WebGLRenderer, WebGLRenderTarget,
+  RGBAFormat, ShaderMaterial, Texture, UnsignedIntType, Vector2, Vector3, Vector4, WebGLRenderer, WebGLRenderTarget,
 } from 'three';
 import { FullscreenQuad, FULLSCREEN_VERT } from '../util/Fullscreen';
 import { ATMOSPHERE_COMMON, SKYVIEW_COMMON } from '../atmosphere/glsl';
@@ -83,6 +83,9 @@ export class PostPipeline {
         uCloudShellFade: { value: 1 },
         uTime: { value: 0 },
         uDebug: { value: 0 },
+        uHazeA: { value: [new Vector4(), new Vector4(), new Vector4()] },
+        uHazeB: { value: [new Vector4(), new Vector4(), new Vector4()] },
+        uAspect: { value: 1 },
       },
       vertexShader: FULLSCREEN_VERT,
       fragmentShader: /* glsl */ `
@@ -105,7 +108,36 @@ export class PostPipeline {
         uniform float uCloudShellFade;
         uniform float uTime;
         uniform int uDebug;
+        // heat shimmer: per source, exit and far end of the hot column in uv (A) and its
+        // half-width (uv height units) and strength (B)
+        uniform vec4 uHazeA[3];
+        uniform vec4 uHazeB[3];
+        uniform float uAspect;
         ${ATMOSPHERE_COMMON}
+        float hz_hash(vec2 p) { vec3 p3 = fract(vec3(p.xyx) * 0.1031); p3 += dot(p3, p3.yzx + 33.33); return fract((p3.x + p3.y) * p3.z); }
+        float hz_noise(vec2 p) { vec2 i = floor(p); vec2 f = fract(p); vec2 u = f * f * (3.0 - 2.0 * f);
+          return mix(mix(hz_hash(i), hz_hash(i + vec2(1, 0)), u.x), mix(hz_hash(i + vec2(0, 1)), hz_hash(i + vec2(1, 1)), u.x), u.y); }
+        vec2 heatHaze(vec2 uv) {
+          vec2 off = vec2(0.0);
+          for (int i = 0; i < 3; i++) {
+            float st = uHazeB[i].y;
+            if (st <= 0.0) continue;
+            vec2 a = uHazeA[i].xy, b = uHazeA[i].zw;
+            vec2 ab = (b - a) * vec2(uAspect, 1.0);
+            vec2 p = (uv - a) * vec2(uAspect, 1.0);
+            float l2 = max(dot(ab, ab), 1e-8);
+            float t = clamp(dot(p, ab) / l2, 0.0, 1.0);
+            vec2 q = p - ab * t;
+            float w = uHazeB[i].x * (0.7 + 1.6 * t);
+            float m = exp(-dot(q, q) / (w * w)) * (1.0 - 0.6 * t);
+            if (m < 0.01) continue;
+            // rising, turbulent refraction cells, finer close to the nozzle
+            vec2 sc = vec2(150.0, 95.0) / max(0.02, w * 6.0);
+            vec2 n = vec2(hz_noise(uv * sc + vec2(0.0, -uTime * 3.1)), hz_noise(uv * sc * 1.3 + vec2(uTime * 1.7, -uTime * 4.3))) - 0.5;
+            off += n * m * st;
+          }
+          return off;
+        }
         ${SKYVIEW_COMMON}
         vec2 dirToUV(vec3 d) {
           float lon = atan(d.y, d.x);
@@ -141,7 +173,7 @@ export class PostPipeline {
         }
 
         void main() {
-          vec3 scene = texture(tColor, vUv).rgb;
+          vec3 scene = texture(tColor, vUv + heatHaze(vUv)).rgb;
           // a single bad pixel (NaN / Inf / negative from a degenerate triangle) must never
           // reach the bloom chain, where it would smear across the frame
           if (any(isnan(scene)) || any(isinf(scene))) scene = vec3(0.0);

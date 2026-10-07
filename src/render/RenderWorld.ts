@@ -1,6 +1,7 @@
+import { AeroShells } from '../fx/AeroShells';
 import {
   AmbientLight, DirectionalLight, HemisphereLight, Matrix3, Matrix4, Mesh, PerspectiveCamera, Quaternion, RingGeometry, Scene,
-  ShaderMaterial, SphereGeometry, Texture, Vector3, WebGLRenderer, DoubleSide,
+  ShaderMaterial, SphereGeometry, Texture, Vector3, Vector4, WebGLRenderer, DoubleSide,
 } from 'three';
 import { segmentTransmittance, sunTransmittance } from './atmosphere/cpuAtmosphere';
 import { PlumeSystem } from '../fx/Plume';
@@ -169,6 +170,8 @@ export class RenderWorld {
   readonly plumes: PlumeSystem;
   /** particles (smoke, steam, trails, sparks...) and their emitters */
   readonly effects: Effects;
+  /** transonic vapour cones and entry plasma sheaths */
+  readonly aero: AeroShells;
   /** atmospheric transmittance camera -> focus (RGB), for FX drawn after the composite */
   readonly atmToFocus = new Vector3(1, 1, 1);
   /** launch complex at the active site (null in orbit / on the Moon) */
@@ -242,6 +245,7 @@ export class RenderWorld {
     this.envProbe = new EnvironmentProbe(renderer, this.atmosphere, 64);
     this.plumes = new PlumeSystem(this.fxScene, this.scene, this.detailTex, () => this.post.linearDepth);
     this.effects = new Effects(this, 6000);
+    this.aero = new AeroShells(this.fxScene);
     this.hemi = new HemisphereLight(0x8899bb, 0x443322, 0.0);
     this.scene.add(this.hemi);
     this.ambient = new AmbientLight(0xffffff, 0.0);
@@ -454,7 +458,37 @@ export class RenderWorld {
   updateVehicles(dt: number, t: number, vessels: Vessel[], active: Vessel | null, bodyPos: (v: Vessel) => Vector3): void {
     this.vessels.sync(vessels, bodyPos, this.cameraHelio, dt);
     this.plumes.update(dt, vessels, this.vessels, this.post.size, this.atmToFocus);
+    this.updateHaze();
     this.effects.update(dt, t, vessels, active, this.complex);
+    this.aero.update(dt, vessels, this.vessels, this.effects.sheetLight);
+  }
+
+  /** Project the plume system's hot-gas regions to screen space for the shimmer pass. */
+  private updateHaze(): void {
+    const cu = this.post.compositeMat.uniforms;
+    const A = cu.uHazeA.value as Vector4[], B = cu.uHazeB.value as Vector4[];
+    const cam = this.camera;
+    cam.updateMatrixWorld();
+    const tanH = Math.tan((cam.fov * Math.PI) / 360);
+    const sz = this.post.size;
+    cu.uAspect.value = sz.x / Math.max(1, sz.y);
+    const pa = new Vector3(), pb = new Vector3(), end = new Vector3();
+    for (let i = 0; i < 3; i++) {
+      B[i].set(0, 0, 0, 0);
+      const h = this.plumes.haze[i];
+      if (!h || h.strength < 0.02) continue;
+      const za = pa.copy(h.pos).applyMatrix4(cam.matrixWorldInverse).z;
+      if (za > -1) continue; // exit behind the camera
+      end.copy(h.pos).addScaledVector(h.dir, h.length * 0.8);
+      const zb = pb.copy(end).applyMatrix4(cam.matrixWorldInverse).z;
+      if (zb > -1) end.copy(h.pos);
+      pa.copy(h.pos).project(cam);
+      pb.copy(end).project(cam);
+      const wuv = (h.radius / -za / tanH) * 0.5;
+      if (wuv < 0.003) continue; // too small on screen to notice
+      A[i].set(pa.x * 0.5 + 0.5, pa.y * 0.5 + 0.5, pb.x * 0.5 + 0.5, pb.y * 0.5 + 0.5);
+      B[i].set(Math.min(0.6, wuv), h.strength * 0.003, 0, 0);
+    }
   }
 
   render(dt: number, extra?: () => void): void {
