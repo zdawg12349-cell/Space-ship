@@ -84,7 +84,11 @@ export function earthHeight(ctx: HeightContext, dx: number, dy: number, dz: numb
   let water = 0, elev = 0;
   if (ctx.map) {
     water = sampleMap(ctx.map, lat, lon, 0);
-    elev = sampleMap(ctx.map, lat, lon, 1) * 8848 * 0.85;
+    // the relief map is a shaded-relief bump map, not metres: lowlands sit at ~24/255 and the
+    // curve is compressive. Calibrated against known elevations (Kansas, Sahara, Colorado,
+    // Greenland, Tibet, Everest).
+    const v = sampleMap(ctx.map, lat, lon, 1) * 255;
+    elev = v <= 24 ? 0 : 8848 * Math.pow((v - 24) / 230, 1.25);
   }
   let sand = 0;
   let flat = 0;
@@ -92,7 +96,8 @@ export function earthHeight(ctx: HeightContext, dx: number, dy: number, dz: numb
   const px = dx * 2200, py = dy * 2200, pz = dz * 2200; // ~2.9 km base wavelength
   const ridged = simplex.ridged(px * 0.35, py * 0.35, pz * 0.35, 5);
   const hills = simplex.fbm(px, py, pz, detail > 0.5 ? 6 : 4);
-  const relief = (30 + elev * 0.22) * (hills * 0.6 + ridged * (elev > 600 ? 0.8 : 0.15));
+  // plains stay plains: a few metres of undulation at sea level, full relief in the mountains
+  const relief = (3 + Math.min(elev, 400) * 0.06 + elev * 0.2) * (hills * 0.6 + ridged * (elev > 600 ? 0.8 : 0.15));
   let h = elev + relief;
   // local coastline & launch site flattening
   for (const s of ctx.sites) {

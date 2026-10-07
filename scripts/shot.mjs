@@ -26,7 +26,10 @@ while (Date.now() - t1 < 20000) {
   if (s && s.frames >= f0 + 6) { state = s; break; }
   await page.waitForTimeout(300);
 }
-await page.screenshot({ path: out });
+// freeze the render loop so the compositor can capture a stable frame
+await page.evaluate(() => { window.__freeze = true; }).catch(() => undefined);
+await page.waitForTimeout(1500);
+await page.screenshot({ path: out, timeout: 180000 });
 console.log(JSON.stringify({ state, elapsed: Date.now() - t0 }));
 for (const l of logs.slice(0, 30)) console.log(l);
 await browser.close();

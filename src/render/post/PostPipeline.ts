@@ -28,7 +28,7 @@ export interface PostSettings {
 
 export const DEFAULT_POST: PostSettings = {
   msaa: 4, bloom: 0.045, exposureComp: 0, autoExposure: true, manualEV: 13, vignette: 0.28, grain: 0.035, chromatic: 0.0015,
-  saturation: 1.04, contrast: 1.05, temperature: 0.0, tint: 0, letterbox: 0, minEV: -6, maxEV: 17, adaptSpeed: 1.6, resolutionScale: 1,
+  saturation: 1.04, contrast: 1.05, temperature: 0.0, tint: 0, letterbox: 0, minEV: -4, maxEV: 17, adaptSpeed: 1.6, resolutionScale: 1,
 };
 
 /**
@@ -142,6 +142,10 @@ export class PostPipeline {
 
         void main() {
           vec3 scene = texture(tColor, vUv).rgb;
+          // a single bad pixel (NaN / Inf / negative from a degenerate triangle) must never
+          // reach the bloom chain, where it would smear across the frame
+          if (any(isnan(scene)) || any(isinf(scene))) scene = vec3(0.0);
+          scene = clamp(scene, vec3(0.0), vec3(60000.0));
           float d = texture(tDepth, vUv).r;
           vec4 vp = uInvProj * vec4(vUv * 2.0 - 1.0, -1.0, 1.0);
           vec3 rdv = normalize(vp.xyz / vp.w);
@@ -187,8 +191,9 @@ export class PostPipeline {
           if (uDebug == 3) { gl_FragColor = vec4(L, 1.0); return; }
           vec3 col = scene * T + L;
           // cloud shell composited in front (aerial perspective toward the cloud approximated by T)
-          col = col * (1.0 - cloud.a) + cloud.rgb * mix(vec3(1.0), T, 0.5) + L * 0.0;
-          gl_FragColor = vec4(col, 1.0);
+          col = col * (1.0 - cloud.a) + cloud.rgb * mix(vec3(1.0), T, 0.5);
+          if (any(isnan(col))) col = vec3(0.0);
+          gl_FragColor = vec4(max(col, vec3(0.0)), 1.0);
         }`,
     });
 
@@ -202,7 +207,11 @@ export class PostPipeline {
       uniform sampler2D tSrc;
       uniform vec2 uTexel;
       uniform float uFirst;
-      vec3 s(vec2 o) { return texture(tSrc, vUv + o * uTexel).rgb; }
+      vec3 s(vec2 o) {
+        vec3 c = texture(tSrc, vUv + o * uTexel).rgb;
+        // FX drawn after the composite could still carry a bad value: keep it out of the bloom
+        return (any(isnan(c)) || any(isinf(c))) ? vec3(0.0) : max(c, vec3(0.0));
+      }
       float karis(vec3 c) { return 1.0 / (1.0 + dot(c, vec3(0.2126, 0.7152, 0.0722)) * 0.25); }
       void main() {
         vec3 a = s(vec2(-2, 2)), b = s(vec2(0, 2)), c = s(vec2(2, 2));
@@ -245,7 +254,7 @@ export class PostPipeline {
         vec3 c = texture(tSrc, vUv).rgb;
         float l = dot(c, vec3(0.2126, 0.7152, 0.0722));
         vec2 d = vUv - 0.5;
-        float w = exp(-dot(d, d) * 4.0) * (0.015 + smoothstep(0.002, 0.05, l));
+        float w = exp(-dot(d, d) * 4.0) * (0.003 + smoothstep(0.002, 0.05, l));
         gl_FragColor = vec4(log2(max(l, 1e-7)) * w, w, 0.0, 1.0);
       }`, { tSrc: { value: null } });
     this.linDepthMat = mk(/* glsl */ `
@@ -281,6 +290,9 @@ export class PostPipeline {
         float lumCd = exp2(logAvg) * 1000.0;
         float ev = log2(max(lumCd, 1e-6) * 100.0 / 12.5);
         ev = clamp(ev, uMinEV, uMaxEV);
+        // dark scenes stay dark (the eye / a film camera never lifts a night landscape to grey):
+        // below EV 7 only part of the shortfall is compensated (higher EV = less exposure)
+        ev += max(0.0, 7.0 - ev) * 0.55;
         float target = uAuto > 0.5 ? ev - uComp : uManualEV - uComp;
         float prev = texture(tPrev, vec2(0.5)).r;
         float k = uReset > 0.5 ? 1.0 : 1.0 - exp(-uDt * uSpeed * (target > prev ? 1.0 : 1.6));
@@ -306,6 +318,7 @@ export class PostPipeline {
       uniform vec2 uResolution;
       uniform float uFade;
       uniform vec3 uFadeColor;
+      uniform float uNightGrade;
       // AgX (Sobotka) — minimal approximation with a slightly punchy look
       vec3 agxDefaultContrastApprox(vec3 x) {
         vec3 x2 = x * x; vec3 x4 = x2 * x2;
@@ -330,8 +343,8 @@ export class PostPipeline {
       }
       vec3 agxLook(vec3 val) {
         float l = dot(val, vec3(0.2126, 0.7152, 0.0722));
-        vec3 slope = vec3(1.0), power = vec3(1.35), offset = vec3(0.0);
-        float sat = 1.4;
+        vec3 slope = vec3(1.0), power = vec3(1.18), offset = vec3(0.0);
+        float sat = 1.18;
         val = pow(val * slope + offset, power);
         return l + sat * (val - l);
       }
@@ -341,7 +354,9 @@ export class PostPipeline {
         vec2 uv = vUv;
         vec2 dc = uv - 0.5;
         float ev = texture(tEV, vec2(0.5)).r;
-        float exposure = 1.0 / (1.2 * exp2(ev)) * 1000.0 * 100.0 / 100.0;
+        // EV100 -> scene-referred scale placing the metered average at middle grey (0.18),
+        // as the AgX transform expects (luminance in kcd/m^2, K = 12.5)
+        float exposure = 1000.0 * 0.18 / (0.125 * exp2(ev));
         vec3 col;
         if (uChromatic > 0.0) {
           vec2 off = dc * uChromatic;
@@ -352,6 +367,10 @@ export class PostPipeline {
         col *= exposure;
         // white balance (simple warm/cool + tint)
         col *= vec3(1.0 + uTemperature * 0.08, 1.0 + uTint * 0.05, 1.0 - uTemperature * 0.08);
+        // night grade: as the light level falls toward scotopic, colour fades and shifts blue
+        float scot = smoothstep(6.5, 0.5, ev) * uNightGrade;
+        float ls = dot(col, vec3(0.2126, 0.7152, 0.0722));
+        col = mix(col, ls * vec3(0.78, 0.92, 1.25), scot * 0.55);
         col = agx(col);
         col = agxLook(col);
         col = agxEotf(col);
@@ -370,7 +389,7 @@ export class PostPipeline {
       }`, {
       tColor: { value: null }, tBloom: { value: null }, tEV: { value: null }, uBloom: { value: 0.05 }, uBloomNorm: { value: 0.2 }, uVignette: { value: 0.25 }, uGrain: { value: 0.03 },
       uChromatic: { value: 0.001 }, uSaturation: { value: 1 }, uContrast: { value: 1 }, uTemperature: { value: 0 }, uTint: { value: 0 }, uLetterbox: { value: 0 },
-      uTime: { value: 0 }, uResolution: { value: new Vector2(1, 1) }, uFade: { value: 0 }, uFadeColor: { value: new Vector3() },
+      uTime: { value: 0 }, uResolution: { value: new Vector2(1, 1) }, uFade: { value: 0 }, uFadeColor: { value: new Vector3() }, uNightGrade: { value: 1 },
     });
     this.resize(1, 1);
   }
@@ -457,7 +476,7 @@ export class PostPipeline {
     this.lumMat.uniforms.tSrc.value = this.bloomRTs[1].texture;
     this.quad.render(r, this.lumRT, this.lumMat);
     // upsample: acc_i = mip_i + falloff * blur(acc_i+1); normalised by the summed weights
-    const falloff = 0.8;
+    const falloff = 0.62;
     this.upMat.uniforms.uFalloff.value = falloff;
     let wsum = 1;
     for (let i = 1; i < this.bloomRTs.length; i++) wsum = 1 + falloff * wsum;

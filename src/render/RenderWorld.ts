@@ -1,13 +1,20 @@
 import {
-  AmbientLight, Color, DirectionalLight, GLSL3, HemisphereLight, Matrix3, Matrix4, Mesh, PerspectiveCamera, Quaternion, RingGeometry, Scene,
+  AmbientLight, DirectionalLight, HemisphereLight, Matrix3, Matrix4, Mesh, PerspectiveCamera, Quaternion, RingGeometry, Scene,
   ShaderMaterial, SphereGeometry, Texture, Vector3, WebGLRenderer, DoubleSide,
 } from 'three';
+import { sunTransmittance } from './atmosphere/cpuAtmosphere';
+import { EnvironmentProbe } from './lighting/EnvironmentProbe';
+import { VesselVisuals } from './vehicle/VesselVisuals';
+import { LaunchComplex } from './site/LaunchComplex';
+import { sampleHeight } from './planet/heightfield';
+import { offsetDir, type LaunchSite } from '../world/sites';
+import type { VehicleDef } from '../vehicles/types';
 import type { AssetBundle } from '../core/assets';
 import type { CelestialBody, SolarSystem } from '../physics/bodies';
 import { Atmosphere } from './atmosphere/Atmosphere';
 import { PostPipeline } from './post/PostPipeline';
 import { QuadtreePlanet } from './planet/QuadtreePlanet';
-import { createEarthMaterial, createMoonMaterial } from './planet/TerrainMaterial';
+import { createEarthMaterial, createMoonMaterial, setGroundPalette } from './planet/TerrainMaterial';
 import type { GlobalMap, HeightContext, SiteDef } from './planet/heightfield';
 import { SkyBackground, Starfield } from './sky/Sky';
 import { FullscreenQuad } from './util/Fullscreen';
@@ -145,6 +152,23 @@ export class RenderWorld {
   cloudRotation = 0;
   cloudCover = 1;
   starBoost = 1;
+  /** vehicles (camera-relative groups) */
+  readonly vessels = new VesselVisuals();
+  readonly envProbe: EnvironmentProbe;
+  /** heliocentric position of the object the lighting/shadows should centre on */
+  readonly focusHelio = new Vector3();
+  focusRadius = 80;
+  /** average ground albedo for the environment probe (overridden near the pad / in orbit) */
+  groundAlbedo = 0.12;
+  /** sunlight colour at the focus (transmittance x shadow), exposed for FX/audio */
+  readonly sunColorAtFocus = new Vector3(1, 1, 1);
+  /** launch complex at the active site (null in orbit / on the Moon) */
+  complex: LaunchComplex | null = null;
+  /** complex local frame (x east, y up, z south) -> world rotation, and its origin camera-relative */
+  readonly complexQuat = new Quaternion();
+  readonly complexPos = new Vector3();
+  /** 0 = day .. 1 = night at the launch site (drives floodlights, beacons) */
+  siteNight = 0;
 
   constructor(renderer: WebGLRenderer, assets: AssetBundle, system: SolarSystem, sites: SiteDef[]) {
     this.renderer = renderer;
@@ -196,10 +220,17 @@ export class RenderWorld {
     add('ganymede', P.ganymede, {});
     add('callisto', P.callisto, {});
 
-    this.sunLight = new DirectionalLight(0xffffff, 1);
-    this.sunLight.castShadow = false;
+    this.sunLight = new DirectionalLight(0xffffff, 110);
+    this.sunLight.castShadow = true;
+    this.sunLight.shadow.mapSize.set(2048, 2048);
+    this.sunLight.shadow.bias = -0.0004;
+    this.sunLight.shadow.normalBias = 0.04;
+    this.sunLight.shadow.camera.near = 1;
+    this.sunLight.shadow.camera.far = 2000;
     this.scene.add(this.sunLight);
     this.scene.add(this.sunLight.target);
+    this.scene.add(this.vessels.root);
+    this.envProbe = new EnvironmentProbe(renderer, this.atmosphere, 64);
     this.hemi = new HemisphereLight(0x8899bb, 0x443322, 0.0);
     this.scene.add(this.hemi);
     this.ambient = new AmbientLight(0xffffff, 0.0);
@@ -209,6 +240,29 @@ export class RenderWorld {
   setSites(sites: SiteDef[]): void {
     this.heightCtxEarth.sites = sites;
     this.earth.setSites(sites);
+  }
+
+  /** Build (or replace) the launch complex for a site/vehicle pair. */
+  setComplex(site: LaunchSite | null, def: VehicleDef | null, quality = 1): LaunchComplex | null {
+    if (this.complex) {
+      this.scene.remove(this.complex.group);
+      this.complex.dispose();
+      this.complex = null;
+    }
+    if (!site || !def) return null;
+    const hs = { h: 0, water: 0, sand: 0, flat: 0 };
+    const sample = (e: number, n: number) => {
+      const d = offsetDir(site, e, n);
+      return sampleHeight(this.heightCtxEarth, d[0], d[1], d[2], hs);
+    };
+    this.complex = new LaunchComplex(site, def, {
+      heightAt: (e, n) => sample(e, n).h - site.padHeight,
+      isWater: (e, n) => sample(e, n).water > 0.45,
+      quality,
+    });
+    this.scene.add(this.complex.group);
+    setGroundPalette(this.earthMat, site.climate);
+    return this.complex;
   }
 
   resize(w: number, h: number, pixelRatio: number): void {
@@ -266,6 +320,12 @@ export class RenderWorld {
     this.atmosphere.precompute(this.renderer);
     if (camR < this.atmosphere.params.topRadius + 1) this.atmosphere.updateSkyView(this.renderer, camR, up.dot(this.sunDir));
 
+    // ---- launch complex (site-local tangent frame, camera-relative)
+    if (this.complex) this.placeComplex(dt);
+
+    // ---- sunlight & environment at the focus object
+    this.updateLighting(dt, camKm);
+
     // ---- Moon
     const camRelMoon = _v.copy(this.cameraHelio).sub(this.moonPos);
     const moonToCam = _v2.copy(this.moonPos).sub(this.cameraHelio);
@@ -317,6 +377,65 @@ export class RenderWorld {
     stu.uFov.value = cam.fov / 55;
     stu.uStarIntensity.value = 0.02 * this.starBoost;
     stu.uTwinkle.value = camR < 6371 + 30 ? 1 : 0;
+  }
+
+  private _cu = new Vector3();
+  private _cn = new Vector3();
+  private _ce = new Vector3();
+  private placeComplex(dt: number): void {
+    const c = this.complex!;
+    const la = (c.site.lat * Math.PI) / 180, lo = (c.site.lon * Math.PI) / 180;
+    const up = this._cu.set(Math.cos(la) * Math.cos(lo), Math.cos(la) * Math.sin(lo), Math.sin(la));
+    const north = this._cn.set(-Math.sin(la) * Math.cos(lo), -Math.sin(la) * Math.sin(lo), Math.cos(la));
+    const east = this._ce.crossVectors(north, up);
+    _m4.makeBasis(east, up, north.negate());
+    this.complexQuat.setFromRotationMatrix(_m4).premultiply(this.earthRot);
+    this.complexPos.copy(up).multiplyScalar(6_371_000 + c.site.padHeight).applyQuaternion(this.earthRot).add(this.earthPos).sub(this.cameraHelio);
+    const g = c.group;
+    g.position.copy(this.complexPos);
+    g.quaternion.copy(this.complexQuat);
+    // only draw it when it could cover more than a few pixels
+    g.visible = this.complexPos.length() < 120_000;
+    const cam = this.camera;
+    c.mats.pixelAngle.value = (2 * Math.tan((cam.fov * Math.PI) / 360)) / Math.max(1, this.post.size.y);
+    // night factor from the sun elevation at the pad (lamps come on in civil twilight)
+    const upW = up.applyQuaternion(this.earthRot);
+    const sunEl = upW.dot(_v.copy(this.complexPos).negate().sub(this.cameraHelio).normalize());
+    this.siteNight = Math.min(1, Math.max(0, (0.06 - sunEl) / 0.12));
+    c.update(dt, this.siteNight);
+  }
+
+  private _fk = new Vector3();
+  private _st = new Vector3();
+  private updateLighting(dt: number, camKm: Vector3): void {
+    const focusKm = this._fk.copy(this.focusHelio).sub(this.earthPos).multiplyScalar(0.001);
+    const distAU = this.focusHelio.length() / 1.495978707e11;
+    const E = 110 / Math.max(1e-6, distAU * distAU);
+    const T = sunTransmittance(this.atmosphere.params, focusKm, this.sunDir, this._st);
+    // lunar shadow (eclipses / far side of the Moon)
+    const rel = _v.copy(this.focusHelio).sub(this.moonPos);
+    const b = rel.dot(this.sunDir);
+    if (b < 0) {
+      const closest = Math.sqrt(Math.max(0, rel.lengthSq() - b * b));
+      const k = Math.min(1, Math.max(0, (closest - 1_737_400 + 3000) / 6000));
+      T.multiplyScalar(k * k * (3 - 2 * k));
+    }
+    this.sunColorAtFocus.copy(T);
+    const mx = Math.max(T.x, T.y, T.z, 1e-6);
+    this.sunLight.color.setRGB(T.x / mx, T.y / mx, T.z / mx);
+    this.sunLight.intensity = E * mx;
+    this.sunLight.visible = mx > 1e-4;
+    // shadow frustum around the focus, camera-relative
+    const fc = _v2.copy(this.focusHelio).sub(this.cameraHelio);
+    this.sunLight.target.position.copy(fc);
+    this.sunLight.position.copy(fc).addScaledVector(this.sunDir, 900);
+    this.sunLight.target.updateMatrixWorld();
+    const sc = this.sunLight.shadow.camera;
+    const R = this.focusRadius;
+    if (sc.right !== R) { sc.left = -R; sc.right = R; sc.top = R; sc.bottom = -R; sc.updateProjectionMatrix(); }
+    // image-based lighting from the sky / planet below
+    const env = this.envProbe.update(dt, camKm, this.sunDir, this.groundAlbedo);
+    this.scene.environment = env;
   }
 
   render(dt: number, extra?: () => void): void {

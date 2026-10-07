@@ -65,6 +65,7 @@ uniform float uTime;
 uniform float uCityLights;
 uniform float uCloudShadow;
 uniform float uDetailStrength;
+uniform vec3 uPalScrub, uPalGrass, uPalForest, uPalWet, uPalDry, uPalSoil, uPalSand;
 uniform int uDebug;
 ${ATMOSPHERE_COMMON}
 ${NOISE_GLSL}
@@ -108,26 +109,39 @@ void main() {
   float reliefScale = smoothstep(2000.0, 60000.0, viewDist) * (1.0 - water) * 9.0;
   N = normalize(N - (east * (hE - hC) + north * (hN - hC)) * reliefScale);
 
-  // near-field detail (tileable noise at three scales, integer multiples keep it seamless)
-  float near = 1.0 - smoothstep(800.0, 9000.0, viewDist);
-  vec3 det = texture(uDetailTex, vDetail * 8.0).rgb;
-  vec3 det2 = texture(uDetailTex, vDetail * 64.0).rgb;
-  vec3 det3 = texture(uDetailTex, vDetail * 1.0).rgb;
+  // near-field ground cover (tileable noise at five scales, integer multiples keep it seamless):
+  // vegetation communities at km scale, patches at 10-100 m, texture at metre scale
+  float near = 1.0 - smoothstep(1500.0, 14000.0, viewDist);
+  float nearer = 1.0 - smoothstep(40.0, 700.0, viewDist);
+  // fbm is concentrated around 0.5: stretch the contrast so thresholds carve real patches
+  vec3 dM = clamp((texture(uDetailTex, vDetail * 0.25).rgb - 0.5) * 2.6 + 0.5, 0.0, 1.0);
+  vec3 det3 = clamp((texture(uDetailTex, vDetail * 1.0).rgb - 0.5) * 2.6 + 0.5, 0.0, 1.0);
+  vec3 det = clamp((texture(uDetailTex, vDetail * 8.0).rgb - 0.5) * 2.4 + 0.5, 0.0, 1.0);
+  vec3 det2 = clamp((texture(uDetailTex, vDetail * 64.0).rgb - 0.5) * 2.0 + 0.5, 0.0, 1.0);
+  vec3 det4 = clamp((texture(uDetailTex, vDetail * 512.0).rgb - 0.5) * 2.0 + 0.5, 0.0, 1.0);
   if (near > 0.0 && water < 0.5) {
-    float patches = det3.r * 0.6 + det.r * 0.4;
-    vec3 scrub = vec3(0.16, 0.17, 0.09);
-    vec3 grass = vec3(0.22, 0.25, 0.11);
-    vec3 dirt = vec3(0.33, 0.28, 0.2);
-    vec3 local = mix(scrub, grass, smoothstep(0.35, 0.7, patches));
-    local = mix(local, dirt, smoothstep(0.72, 0.9, det.g) * 0.6);
-    vec3 sandC = vec3(0.72, 0.66, 0.52) * (0.85 + 0.3 * det2.b);
+    float veg = dM.r * 0.5 + det3.r * 0.35 + det.r * 0.15;
+    float moist = dM.g * 0.55 + det3.b * 0.3 + det.b * 0.15;
+    vec3 local = mix(uPalScrub, uPalGrass, smoothstep(0.42, 0.66, veg));
+    local = mix(local, uPalForest, smoothstep(0.56, 0.74, det3.g * 0.7 + dM.b * 0.3) * 0.85);
+    local = mix(local, uPalWet, smoothstep(0.66, 0.8, moist) * 0.75);
+    // bare soil, dry patches and tracks
+    local = mix(local, uPalDry, smoothstep(0.6, 0.85, det.b * 0.6 + det2.g * 0.4) * 0.6);
+    local = mix(local, uPalSoil, smoothstep(0.76, 0.92, det.g) * 0.55);
+    // cleared, mowed ground inside the launch site
+    float cleared = smoothstep(0.15, 0.85, vExtra.z);
+    vec3 mowed = mix(uPalGrass, uPalDry, smoothstep(0.42, 0.78, det.b * 0.55 + det2.r * 0.45));
+    mowed = mix(mowed, uPalSoil, smoothstep(0.8, 0.95, det2.g) * 0.4);
+    local = mix(local, mowed, cleared);
+    local *= 0.78 + 0.44 * det2.r;
+    local *= mix(1.0, 0.72 + 0.56 * det4.g, nearer);
+    vec3 sandC = uPalSand * (0.85 + 0.3 * det2.b) * mix(1.0, 0.85 + 0.3 * det4.r, nearer);
     local = mix(local, sandC, sand);
-    local *= 0.8 + 0.4 * det2.r;
-    albedo = mix(albedo, mix(albedo, local, 0.75), near * uDetailStrength);
-    vec3 dn = (vec3(det2.g, det2.b, 0.0) - 0.5) * 0.5 * near + (vec3(det.g, det.b, 0.0) - 0.5) * 0.35 * near;
+    albedo = mix(albedo, local, near * uDetailStrength);
+    vec3 dn = (vec3(det2.g, det2.b, 0.0) - 0.5) * 0.45 * near + (vec3(det.g, det.b, 0.0) - 0.5) * 0.3 * near
+            + (vec3(det4.b, det4.r, 0.0) - 0.5) * 0.6 * nearer;
     N = normalize(N + east * dn.x + north * dn.y);
   }
-
   // positions in km (body-fixed)
   vec3 pKm = dir * (uRadiusM + max(vHeight, 0.0)) * 0.001;
   float r = length(pKm);
@@ -178,7 +192,10 @@ void main() {
   float night = 1.0 - smoothstep(-0.12, 0.02, muS);
   vec3 lights = sampleSeamless(uNight, uv).rgb;
   float cloudOver = texture(uClouds, dirToUV(rotateZ(dir, -uCloudRot))).r;
-  color += lights * lights * night * uCityLights * (1.0 - 0.75 * smoothstep(0.2, 0.8, cloudOver)) * (1.0 - water * 0.9);
+  // (the map is ~10 km per texel: close up it would paint a uniform orange glow on the ground,
+  // so it only appears with distance - towns on the horizon, cities from altitude)
+  float cityFade = smoothstep(4000.0, 40000.0, viewDist);
+  color += lights * lights * night * uCityLights * cityFade * (1.0 - 0.75 * smoothstep(0.2, 0.8, cloudOver)) * (1.0 - water * 0.9);
 
   if (uDebug == 1) color = albedo * 10.0;
   else if (uDebug == 2) color = (normalize(vNormalF) * 0.5 + 0.5) * 10.0;
@@ -249,6 +266,26 @@ void main() {
 }
 `;
 
+/** Linear-albedo ground-cover palettes by climate (scrub, grass, forest, wetland, dry grass, soil, sand). */
+export type GroundClimate = 'subtropical' | 'tropical' | 'steppe' | 'coastal' | 'arid';
+const PALETTES: Record<GroundClimate, number[][]> = {
+  //            scrub                    grass                  forest                  wetland                 dry grass             soil                  sand
+  subtropical: [[0.05, 0.058, 0.036], [0.085, 0.098, 0.052], [0.036, 0.045, 0.03], [0.04, 0.046, 0.036], [0.15, 0.14, 0.09], [0.19, 0.16, 0.12], [0.46, 0.42, 0.33]],
+  tropical: [[0.038, 0.052, 0.028], [0.068, 0.09, 0.042], [0.026, 0.038, 0.022], [0.034, 0.044, 0.032], [0.12, 0.115, 0.07], [0.22, 0.14, 0.09], [0.44, 0.4, 0.31]],
+  steppe: [[0.15, 0.135, 0.095], [0.19, 0.175, 0.12], [0.11, 0.11, 0.08], [0.1, 0.1, 0.075], [0.26, 0.225, 0.16], [0.23, 0.19, 0.15], [0.42, 0.38, 0.3]],
+  coastal: [[0.075, 0.078, 0.052], [0.11, 0.11, 0.07], [0.05, 0.056, 0.04], [0.055, 0.058, 0.045], [0.2, 0.18, 0.12], [0.24, 0.2, 0.15], [0.5, 0.45, 0.35]],
+  arid: [[0.2, 0.16, 0.11], [0.22, 0.19, 0.12], [0.12, 0.11, 0.08], [0.15, 0.13, 0.1], [0.3, 0.25, 0.17], [0.32, 0.24, 0.16], [0.5, 0.42, 0.3]],
+};
+const PAL_NAMES = ['uPalScrub', 'uPalGrass', 'uPalForest', 'uPalWet', 'uPalDry', 'uPalSoil', 'uPalSand'];
+export function groundPaletteUniforms(c: GroundClimate): Record<string, { value: Vector3 }> {
+  const out: Record<string, { value: Vector3 }> = {};
+  PALETTES[c].forEach((v, i) => { out[PAL_NAMES[i]] = { value: new Vector3(v[0], v[1], v[2]) }; });
+  return out;
+}
+export function setGroundPalette(mat: ShaderMaterial, c: GroundClimate): void {
+  PALETTES[c].forEach((v, i) => (mat.uniforms[PAL_NAMES[i]].value as Vector3).set(v[0], v[1], v[2]));
+}
+
 export function createEarthMaterial(tex: { albedo: Texture; night: Texture; data: Texture; clouds: Texture; detail: Texture }, atmUniforms: Record<string, { value: unknown }>): ShaderMaterial {
   return new ShaderMaterial({
     
@@ -267,6 +304,7 @@ export function createEarthMaterial(tex: { albedo: Texture; night: Texture; data
       uCityLights: { value: 0.02 },
       uCloudShadow: { value: 1 },
       uDetailStrength: { value: 1 },
+      ...groundPaletteUniforms('subtropical'),
       uDebug: { value: 0 },
     },
     vertexShader: COMMON_VERT,

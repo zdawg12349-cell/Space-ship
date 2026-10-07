@@ -786,9 +786,11 @@ export class Vessel {
         const cant = e.mount.cant ?? 0;
         let dx = Math.sin(e.gimbalX), dz = Math.sin(e.gimbalZ);
         if (cant) {
-          const rl = Math.hypot(e.mount.pos[0], e.mount.pos[2]) || 1;
-          dx -= (e.mount.pos[0] / rl) * Math.sin(cant);
-          dz -= (e.mount.pos[2] / rl) * Math.sin(cant);
+          // cant is measured outward from the vehicle axis (strap-ons sit on an offset axis)
+          const px = e.mount.pos[0] + a.offX, pz = e.mount.pos[2] + a.offZ;
+          const rl = Math.hypot(px, pz) || 1;
+          dx -= (px / rl) * Math.sin(cant);
+          dz -= (pz / rl) * Math.sin(cant);
         }
         _v1.set(dx, 1, dz).normalize().multiplyScalar(e.thrust);
         // torque = r x F
