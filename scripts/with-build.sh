@@ -15,5 +15,7 @@ done
 APP_URL="http://127.0.0.1:$PORT/" "$@"
 STATUS=$?
 kill $VPID 2>/dev/null
+# npx leaves the vite node process running on its own: stop the server for this outDir too
+pkill -f "vite preview --outDir $OUT --port $PORT" 2>/dev/null
 wait $VPID 2>/dev/null
 exit $STATUS

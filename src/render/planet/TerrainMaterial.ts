@@ -251,8 +251,9 @@ void main() {
   vec3 det2 = texture(uDetailTex, vDetail * 128.0).rgb;
   vec3 east = normalize(vec3(-dir.y, dir.x, 0.0) + 1e-6);
   vec3 north = normalize(cross(dir, east));
-  N = normalize(N + (east * (det2.g - 0.5) + north * (det2.b - 0.5)) * 0.45 * near + (east * (det.g - 0.5) + north * (det.b - 0.5)) * 0.25 * near);
-  albedo *= mix(1.0, 0.75 + 0.5 * det2.r, near);
+  // fine regolith texture: gentle (strong normal noise turns a low sun into black speckle)
+  N = normalize(N + (east * (det2.g - 0.5) + north * (det2.b - 0.5)) * 0.14 * near + (east * (det.g - 0.5) + north * (det.b - 0.5)) * 0.1 * near);
+  albedo *= mix(1.0, 0.85 + 0.3 * det2.r, near);
   vec3 L = normalize(uSunDirF);
   vec3 V = normalize(uViewToFixed * (-vViewPos));
   float mu0 = max(0.0, dot(N, L));

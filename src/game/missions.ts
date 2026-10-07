@@ -10,7 +10,8 @@ export type MissionStart = 'pad' | 'leo' | 'lunarOrbit' | 'moonSurface' | 'jupit
 export type ObjectiveKind =
   | 'liftoff' | 'maxq' | 'karman' | 'orbit' | 'payload' | 'boosterLanded' | 'allBoostersLanded' | 'towerCatch' | 'srbSep' | 'lesJettison'
   | 'deorbit' | 'survivedEntry' | 'chutes' | 'softLanding' | 'splashdown' | 'tli' | 'moonSoi' | 'moonFlyby' | 'earthReturn'
-  | 'lunarTouchdown' | 'lunarLiftoff' | 'lunarOrbit' | 'tei' | 'jupiterSoi' | 'perijove' | 'joi' | 'nightLaunch' | 'fairing';
+  | 'lunarTouchdown' | 'lunarLiftoff' | 'lunarOrbit' | 'tei' | 'jupiterSoi' | 'perijove' | 'joi' | 'nightLaunch' | 'fairing'
+  | 'droneshipLanding';
 
 export interface ObjectiveDef {
   kind: ObjectiveKind;
@@ -72,7 +73,7 @@ export const MISSIONS: MissionDef[] = [
     id: 'heavy', number: 4, title: 'Twin Boosters', subtitle: 'Heavy lift · simultaneous landings',
     briefing: 'Three cores lit together. The two side boosters peel away, flip and fly back to land side by side seconds apart, while the centre core pushes on and lands on a drone ship far downrange.',
     vehicle: 'kestrel_heavy', site: 'cape', date: '2026-10-08T15:45:00Z', weather: 'fair', targetOrbit: 250_000, countdownStart: -60, orbitAssist: true, recovery: true, start: 'pad',
-    objectives: [{ kind: 'allBoostersLanded', text: 'Both side boosters land' }, { kind: 'orbit', text: 'Payload reaches orbit' }],
+    objectives: [{ kind: 'allBoostersLanded', text: 'Both side boosters land' }, { kind: 'orbit', text: 'Payload reaches orbit' }, { kind: 'droneshipLanding', text: 'Centre core lands on the drone ship', optional: true }],
     tags: ['Heavy', 'Recovery'], mood: 'wonder',
   },
   {

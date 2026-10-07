@@ -148,6 +148,9 @@ export class App {
   startFlight(opts: FlightLaunchOptions): void {
     this.menu?.dispose();
     this.menu = null;
+    // never stack two flights (and their HUDs / debriefs)
+    this.flight?.dispose();
+    this.flight = null;
     this.audio.setScene('flight');
     this.flight = new FlightController(this, opts);
   }

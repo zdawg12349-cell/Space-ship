@@ -299,6 +299,7 @@ export class FlightController {
         // a second or so of trajectory search: let the HUD show the message first
         this.hud.log('Planning translunar injection…', s.met);
         setTimeout(() => {
+          if (this.disposed) return;
           const nd = planTLI(v, s.system, s.world.t);
           if (!nd) { this.hud.log('No lunar trajectory from this orbit', s.met, 'warn'); return; }
           ap.setNode(nd);
@@ -645,12 +646,17 @@ export class FlightController {
       buttons,
     );
     setTimeout(() => {
+      if (this.disposed) return;
       this.app.ui.appendChild(panel);
       this.hud.setVisible(false);
     }, ok ? 2500 : 4000);
   }
 
+  private disposed = false;
+
   dispose(): void {
+    if (this.disposed) return;
+    this.disposed = true;
     this.input.dispose();
     this.hud.dispose();
     this.map?.dispose();

@@ -38,8 +38,8 @@ export async function runViewer(canvas: HTMLCanvasElement): Promise<void> {
   rw.camera.updateProjectionMatrix();
   const bodyId = q.get('body') ?? 'earth';
   const body = system.get(bodyId);
-  const lat = (num('lat', 28.6) * Math.PI) / 180;
-  const lon = (num('lon', -80.6) * Math.PI) / 180;
+  let lat = (num('lat', 28.6) * Math.PI) / 180;
+  let lon = (num('lon', -80.6) * Math.PI) / 180;
   const alt = num('alt', 400000);
   const heading = (num('heading', 90) * Math.PI) / 180;
   const pitch = (num('pitch', -10) * Math.PI) / 180;
@@ -153,7 +153,16 @@ export async function runViewer(canvas: HTMLCanvasElement): Promise<void> {
       requestAnimationFrame(frame);
       return;
     }
-    // camera placement in the body-fixed frame
+    // camera placement in the body-fixed frame (sunside=1: over the sub-solar point, offset by dlat/dlon)
+    if (q.get('sunside') === '1') {
+      const rr = new Quaternion();
+      body.orientationAt(t, rr);
+      const bp = new Vector3();
+      body.globalPositionAt(t, bp);
+      const sd = bp.clone().negate().normalize().applyQuaternion(rr.invert());
+      lat = Math.asin(sd.z) + (num('dlat', 0) * Math.PI) / 180;
+      lon = Math.atan2(sd.y, sd.x) + (num('dlon', 0) * Math.PI) / 180;
+    }
     const up = new Vector3(Math.cos(lat) * Math.cos(lon), Math.cos(lat) * Math.sin(lon), Math.sin(lat));
     const north = new Vector3(-Math.sin(lat) * Math.cos(lon), -Math.sin(lat) * Math.sin(lon), Math.cos(lat));
     const east = new Vector3().crossVectors(north, up);

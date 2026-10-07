@@ -79,10 +79,6 @@ export function snapshotVessel(v: Vessel): Pick<FlightSnapshot, 'body' | 'pos' |
 
 /** Restore runtime state onto a vessel built from the same assemblies. */
 export function restoreVessel(v: Vessel, s: FlightSnapshot): void {
-  v.pos.fromArray(s.pos);
-  v.vel.fromArray(s.vel);
-  v.rot.fromArray(s.rot);
-  v.angVel.fromArray(s.angVel);
   v.stageIndex = s.stageIndex;
   for (const as of s.assemblies) {
     const a = v.getAssembly(as.id);
@@ -98,8 +94,13 @@ export function restoreVessel(v: Vessel, s: FlightSnapshot): void {
     as.engines.forEach((es, i) => { const e = a.engines[i]; if (e) { e.armed = es.armed; e.restartsLeft = es.restartsLeft; e.srbBurned = es.srbBurned; } });
   }
   v.hasLiftedOff = true;
-  v.orbitDirty = true;
+  // mass properties first (they move the centre of mass), then the saved state of that centre
   v.updateMassProperties();
+  v.pos.fromArray(s.pos);
+  v.vel.fromArray(s.vel);
+  v.rot.fromArray(s.rot);
+  v.angVel.fromArray(s.angVel);
+  v.orbitDirty = true;
 }
 
 export function writeSnapshot(s: FlightSnapshot): boolean {

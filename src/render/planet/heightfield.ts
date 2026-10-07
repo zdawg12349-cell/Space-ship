@@ -135,16 +135,18 @@ export function earthHeight(ctx: HeightContext, dx: number, dy: number, dz: numb
 
 // ------------------------------------------------------------------------------- Moon
 
-interface CraterLevel { cell: number; minR: number; maxR: number; prob: number; depth: number }
-// cell sizes in metres on the lunar surface; radii in metres
+interface CraterLevel { cell: number; minR: number; maxR: number; prob: number; depth: number; mare: number }
+// cell sizes in metres on the lunar surface; radii in metres. `mare` is the fraction of the craters that
+// the young basalt plains lack (crater counts on Mare Tranquillitatis fall 5-10x below the highlands for
+// kilometre-sized craters; below ~150 m both are saturated)
 const CRATER_LEVELS: CraterLevel[] = [
-  { cell: 120000, minR: 15000, maxR: 45000, prob: 0.55, depth: 0.12 },
-  { cell: 40000, minR: 4000, maxR: 15000, prob: 0.6, depth: 0.15 },
-  { cell: 12000, minR: 1200, maxR: 4500, prob: 0.65, depth: 0.18 },
-  { cell: 3500, minR: 350, maxR: 1300, prob: 0.7, depth: 0.2 },
-  { cell: 1000, minR: 90, maxR: 380, prob: 0.75, depth: 0.2 },
-  { cell: 280, minR: 25, maxR: 100, prob: 0.8, depth: 0.2 },
-  { cell: 80, minR: 6, maxR: 28, prob: 0.8, depth: 0.18 },
+  { cell: 120000, minR: 15000, maxR: 45000, prob: 0.55, depth: 0.12, mare: 0.9 },
+  { cell: 40000, minR: 4000, maxR: 15000, prob: 0.6, depth: 0.15, mare: 0.85 },
+  { cell: 12000, minR: 1200, maxR: 4500, prob: 0.65, depth: 0.18, mare: 0.87 },
+  { cell: 3500, minR: 350, maxR: 1300, prob: 0.7, depth: 0.2, mare: 0.83 },
+  { cell: 1000, minR: 90, maxR: 380, prob: 0.75, depth: 0.2, mare: 0.67 },
+  { cell: 280, minR: 25, maxR: 100, prob: 0.8, depth: 0.2, mare: 0 },
+  { cell: 80, minR: 6, maxR: 28, prob: 0.8, depth: 0.18, mare: 0 },
 ];
 
 function craterProfile(d: number, depth: number, rim: number): number {
@@ -161,16 +163,20 @@ function craterProfile(d: number, depth: number, rim: number): number {
 export function moonHeight(ctx: HeightContext, dx: number, dy: number, dz: number, out: HeightSample, minFeature = 0): HeightSample {
   const R = ctx.radius;
   let h = 0;
+  // maria (dark basalt plains) are smooth and young: little rolling relief, few large craters
+  let mare = 0;
   if (ctx.moonMap) {
     const lat = Math.asin(Math.max(-1, Math.min(1, dz)));
     const lon = Math.atan2(dy, dx);
     const m = ctx.moonMap;
     const v = sampleMap({ width: m.width, height: m.height, data: m.data, channels: 1 }, lat, lon, 0);
     h = (v - 0.55) * 5200; // maria ~ -2.8 km, highlands ~ +2.3 km
+    const t = Math.max(0, Math.min(1, (0.5 - v) / 0.14));
+    mare = t * t * (3 - 2 * t);
   }
-  // gentle rolling regolith relief
-  h += simplex.fbm(dx * 900, dy * 900, dz * 900, 5) * 380;
-  h += simplex2.fbm(dx * 9000, dy * 9000, dz * 9000, 4) * 22;
+  // rolling regolith relief: hummocky highlands, nearly level basalt plains (a few degrees of slope)
+  h += simplex.fbm(dx * 900, dy * 900, dz * 900, 5, 2, 0.45) * 380 * (1 - 0.8 * mare);
+  h += simplex2.fbm(dx * 9000, dy * 9000, dz * 9000, 4) * 22 * (1 - 0.75 * mare);
   // craters on a 3D grid of cells per level
   for (const L of CRATER_LEVELS) {
     if (L.maxR * 2 < minFeature) break;
@@ -179,7 +185,7 @@ export function moonHeight(ctx: HeightContext, dx: number, dy: number, dz: numbe
     for (let i = -1; i <= 1; i++) for (let j = -1; j <= 1; j++) for (let k = -1; k <= 1; k++) {
       const gx = cx + i, gy = cy + j, gz = cz + k;
       const r0 = hash3(gx, gy, gz * 7 + L.cell);
-      if (r0 > L.prob) continue;
+      if (r0 > L.prob * (1 - L.mare * mare)) continue;
       // crater centre inside the cell, projected onto the sphere
       let ox = (gx + hash3(gx + 11, gy, gz)) * cs;
       let oy = (gy + hash3(gx, gy + 17, gz)) * cs;

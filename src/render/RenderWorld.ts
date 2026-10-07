@@ -27,22 +27,25 @@ import { createTileableNoise } from './util/ProceduralTextures';
 
 const _v = new Vector3();
 const _v2 = new Vector3();
+const _v3 = new Vector3();
 const _q = new Quaternion();
 const _m3 = new Matrix3();
 const _m4 = new Matrix4();
+
+/** one cycle of the cross-faded zonal-flow layers on gas giants (s of flow-clock time) */
+const FLOW_PERIOD = 43_200;
 
 /** Simple textured sphere for distant planets and moons (gas giants get banded flow). */
 class SimpleBody {
   readonly mesh: Mesh;
   readonly material: ShaderMaterial;
   rings: Mesh | null = null;
-  constructor(readonly body: CelestialBody, map: Texture, opts: { rim?: [number, number, number]; rimStrength?: number; gas?: boolean; ring?: Texture }) {
+  constructor(readonly body: CelestialBody, map: Texture, opts: { rim?: [number, number, number]; rimStrength?: number; gas?: boolean; wind?: number; ring?: Texture }) {
     this.material = new ShaderMaterial({
-      
       uniforms: {
         uMap: { value: map }, uSunDir: { value: new Vector3() }, uSunIrr: { value: new Vector3(110, 108, 103) },
         uRim: { value: new Vector3(...(opts.rim ?? [0, 0, 0])) }, uRimStrength: { value: opts.rimStrength ?? 0 }, uGas: { value: opts.gas ? 1 : 0 },
-        uTime: { value: 0 },
+        uWind: { value: opts.wind ?? 0 }, uRadius: { value: body.radius }, uFlow: { value: 0 }, uFlowPeriod: { value: FLOW_PERIOD },
       },
       vertexShader: /* glsl */ `
         out vec3 vLocal; out vec3 vNormalW; out vec3 vViewW; out float vFragDepth;
@@ -57,17 +60,42 @@ class SimpleBody {
       fragmentShader: /* glsl */ `
         precision highp float;
         in vec3 vLocal; in vec3 vNormalW; in vec3 vViewW; in float vFragDepth;
-        uniform sampler2D uMap; uniform vec3 uSunDir; uniform vec3 uSunIrr; uniform vec3 uRim; uniform float uRimStrength; uniform float uGas; uniform float uTime;
+        uniform sampler2D uMap; uniform vec3 uSunDir; uniform vec3 uSunIrr; uniform vec3 uRim; uniform float uRimStrength; uniform float uGas;
+        uniform float uWind; uniform float uRadius; uniform float uFlow; uniform float uFlowPeriod;
         uniform float logDepthBufFC;
         #define PI 3.14159265358979
+        // zonal wind (m/s, relative to the interior rotation) after the Voyager/Cassini profile:
+        // the equatorial jets, the 24°N jet, retrograde flows beside the belts, weaker jets poleward
+        float zonalWind(float latDeg) {
+          float u = 100.0 * exp(-pow((latDeg - 7.0) / 6.0, 2.0)) + 90.0 * exp(-pow((latDeg + 7.0) / 6.0, 2.0));
+          u += 160.0 * exp(-pow((latDeg - 23.7) / 2.5, 2.0)) - 45.0 * exp(-pow((latDeg - 17.0) / 2.5, 2.0));
+          u += 45.0 * exp(-pow((latDeg + 26.0) / 2.5, 2.0)) - 60.0 * exp(-pow((latDeg + 17.5) / 2.5, 2.0));
+          return u + 30.0 * sin(latDeg * 0.42) * smoothstep(28.0, 36.0, abs(latDeg));
+        }
+        // texture derivatives that ignore the wrap of longitude at the date line
+        vec2 seamless(vec2 a, vec2 b) { return abs(a.x) < abs(b.x) ? a : b; }
         void main() {
           vec3 d = normalize(vLocal);
           float lon = atan(d.y, d.x);
           float lat = asin(clamp(d.z, -1.0, 1.0));
-          // gas giants: zonal winds shear the bands slowly with latitude
-          float shear = uGas * sin(lat * 7.0) * uTime * 2.0e-6;
-          vec2 uv = vec2(fract((lon + shear) / (2.0 * PI) + 0.5), 0.5 + lat / PI);
-          vec3 alb = texture(uMap, uv).rgb;
+          float x = lon / (2.0 * PI) + 0.5;
+          vec2 uv = vec2(fract(x), 0.5 + lat / PI);
+          vec2 uvB = vec2(fract(x + 0.5) - 0.5, uv.y);
+          vec2 gx = seamless(dFdx(uv), dFdx(uvB));
+          vec2 gy = seamless(dFdy(uv), dFdy(uvB));
+          vec3 alb;
+          if (uWind > 0.0) {
+            // the bands drift with the zonal winds; two layers half a cycle apart are cross-faded so the
+            // shear never accumulates into smears
+            float omega = uWind * zonalWind(degrees(lat)) / (uRadius * max(0.05, cos(lat)));
+            float p0 = uFlow, p1 = fract(uFlow + 0.5);
+            float s = omega * uFlowPeriod / (2.0 * PI);
+            vec3 a0 = textureGrad(uMap, vec2(uv.x + (p0 - 0.5) * s, uv.y), gx, gy).rgb;
+            vec3 a1 = textureGrad(uMap, vec2(uv.x + (p1 - 0.5) * s, uv.y), gx, gy).rgb;
+            alb = mix(a0, a1, abs(p0 - 0.5) * 2.0);
+          } else {
+            alb = textureGrad(uMap, uv, gx, gy).rgb;
+          }
           vec3 N = normalize(vNormalW);
           vec3 V = normalize(vViewW);
           vec3 L = normalize(uSunDir);
@@ -146,6 +174,9 @@ export class RenderWorld {
   /** camera position, heliocentric inertial metres (double) */
   readonly cameraHelio = new Vector3();
   private simpleBodies: SimpleBody[] = [];
+  /** gas-giant zonal-flow animation clock (s) and the sim time it last advanced from */
+  private flowClock = 0;
+  private lastFlowT = NaN;
   private skyQuad = new FullscreenQuad();
   /** sun direction from the camera (world) */
   readonly sunDir = new Vector3(1, 0, 0);
@@ -226,8 +257,8 @@ export class RenderWorld {
     add('mercury', P.mercury, {});
     add('venus', P.venus, { rim: [1, 0.9, 0.7], rimStrength: 1.2, gas: true });
     add('mars', P.mars, { rim: [0.9, 0.6, 0.45], rimStrength: 0.6 });
-    add('jupiter', P.jupiter, { rim: [0.8, 0.75, 0.7], rimStrength: 0.8, gas: true });
-    add('saturn', P.saturn, { rim: [0.9, 0.85, 0.7], rimStrength: 0.8, gas: true, ring: P.saturn_ring });
+    add('jupiter', P.jupiter, { rim: [0.8, 0.75, 0.7], rimStrength: 0.8, gas: true, wind: 1 });
+    add('saturn', P.saturn, { rim: [0.9, 0.85, 0.7], rimStrength: 0.8, gas: true, wind: 1, ring: P.saturn_ring });
     add('uranus', P.uranus, { rim: [0.6, 0.85, 0.9], rimStrength: 1.0, gas: true });
     add('neptune', P.neptune, { rim: [0.4, 0.5, 1.0], rimStrength: 1.0, gas: true });
     add('io', P.io, {});
@@ -359,6 +390,12 @@ export class RenderWorld {
     (mu.uEarthDirF.value as Vector3).copy(this.earthPos).sub(this.moonPos).normalize().applyQuaternion(mqi);
 
     // ---- distant bodies
+    // the gas-giant flow clock follows simulation time, but no faster than 20,000x real time: beyond
+    // that the cross-faded flow layers would strobe (jumps such as loading a save just continue it)
+    const simStep = Number.isFinite(this.lastFlowT) ? t - this.lastFlowT : 0;
+    this.lastFlowT = t;
+    if (simStep > 0) this.flowClock = (this.flowClock + Math.min(simStep, Math.max(dt, 1 / 240) * 20000)) % FLOW_PERIOD;
+    const flowPhase = this.flowClock / FLOW_PERIOD;
     for (const sb of this.simpleBodies) {
       const b = sb.body;
       b.globalPositionAt(t, _v);
@@ -367,7 +404,10 @@ export class RenderWorld {
       b.orientationAt(t, sb.mesh.quaternion);
       sb.mesh.scale.setScalar(b.radius);
       (sb.material.uniforms.uSunDir.value as Vector3).copy(rel).add(this.cameraHelio).negate().normalize();
-      sb.material.uniforms.uTime.value = t;
+      // sunlight falls off with the square of the distance (Jupiter gets ~1/27 of Earth's)
+      const dAU = _v3.copy(rel).add(this.cameraHelio).length() / 1.495978707e11;
+      (sb.material.uniforms.uSunIrr.value as Vector3).set(110, 108, 103).multiplyScalar(1 / Math.max(1e-4, dAU * dAU));
+      sb.material.uniforms.uFlow.value = flowPhase;
       if (sb.rings) {
         sb.rings.position.copy(rel);
         b.getTilt(sb.rings.quaternion);
@@ -383,13 +423,10 @@ export class RenderWorld {
     (su.uInvProj.value as Matrix4).copy(cam.projectionMatrixInverse);
     (su.uCamRot.value as Matrix3).setFromMatrix4(_m4.extractRotation(cam.matrixWorld));
     (su.uSunDir.value as Vector3).copy(this.sunDir);
-    const distAU = this.cameraHelio.length() / 1.495978707e11;
     const sunR = Math.atan(696340e3 / Math.max(1, this.cameraHelio.length()));
     su.uSunAngularRadius.value = sunR;
     // irradiance falls with distance^2; disc radiance stays constant (clamped for fp16)
     (su.uSunRadiance.value as Vector3).set(1, 0.97, 0.92).multiplyScalar(52000);
-    const irr = 110 / (distAU * distAU);
-    for (const sb of this.simpleBodies) (sb.material.uniforms.uSunIrr.value as Vector3).set(irr, irr * 0.98, irr * 0.94);
     const stu = this.stars.material.uniforms;
     (stu.uViewRot.value as Matrix4).copy(cam.matrixWorldInverse);
     (stu.uProj.value as Matrix4).copy(cam.projectionMatrix);

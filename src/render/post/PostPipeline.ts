@@ -392,7 +392,13 @@ export class PostPipeline {
         vec3 col;
         if (uChromatic > 0.0) {
           vec2 off = dc * uChromatic;
-          col = vec3(texture(tColor, uv + off).r, texture(tColor, uv).g, texture(tColor, uv - off).b);
+          vec3 c0 = texture(tColor, uv).rgb;
+          float r = texture(tColor, uv + off).r, b = texture(tColor, uv - off).b;
+          // this runs on scene radiance: a sub-pixel shift of a sunlit edge into a black shadow (1000:1)
+          // would survive tone mapping as a saturated band, so each shifted channel stays within a
+          // stop of the unshifted one
+          float l0 = dot(c0, vec3(0.2126, 0.7152, 0.0722)) * 0.05 + 1e-6;
+          col = vec3(clamp(r, c0.r * 0.5, c0.r * 2.0 + l0), c0.g, clamp(b, c0.b * 0.5, c0.b * 2.0 + l0));
         } else col = texture(tColor, uv).rgb;
         // energy-conserving glow: a small fraction of the light is spread by the lens
         col = mix(col, texture(tBloom, uv).rgb * uBloomNorm, uBloom);

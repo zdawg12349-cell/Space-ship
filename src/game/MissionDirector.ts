@@ -117,6 +117,7 @@ export class MissionDirector {
 
   private optionalStillPossible(o: ObjectiveDef): boolean {
     if (o.kind === 'boosterLanded' || o.kind === 'allBoostersLanded') return this.s.boosters.some((b) => !b.v.landed && !b.v.destroyed);
+    if (o.kind === 'droneshipLanding') return this.s.boosters.some((b) => b.zone.kind === 'droneship' && !b.v.landed && !b.v.destroyed);
     if (o.kind === 'orbit') return !this.s.vessel.destroyed && this.s.phase !== 'orbit';
     if (o.kind === 'earthReturn') return true;
     return false;
@@ -143,6 +144,12 @@ export class MissionDirector {
         const side = s.boosters.filter((b) => b.zone.kind === 'pad');
         if (side.length >= 2 && side.every((b) => b.v.landed && !b.v.destroyed)) return 'done';
         if (side.some((b) => b.v.destroyed)) return 'failed';
+        return 'open';
+      }
+      case 'droneshipLanding': {
+        const d = s.boosters.find((b) => b.zone.kind === 'droneship');
+        if (d?.v.landed && !d.v.destroyed) return 'done';
+        if (d?.v.destroyed) return o.optional ? 'open' : 'failed';
         return 'open';
       }
       case 'towerCatch': {

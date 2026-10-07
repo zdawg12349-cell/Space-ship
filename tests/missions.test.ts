@@ -81,8 +81,8 @@ describe('manoeuvre planning', () => {
     expect(Math.abs(Number(m![1]) - 300)).toBeLessThan(400);
   });
 
-  it('TEI from lunar orbit returns to an Earth entry corridor', () => {
-    const { world: w, sys } = world('2026-10-14T18:00:00Z');
+  it.each(['2026-10-14T18:00:00Z', '2026-10-18T07:00:00Z'])('TEI from lunar orbit returns to an Earth entry corridor (%s)', (date) => {
+    const { world: w, sys } = world(date);
     const def = getVehicle('lrv');
     const v = w.createVessel(def, w.system.moon);
     w.addVessel(v);
