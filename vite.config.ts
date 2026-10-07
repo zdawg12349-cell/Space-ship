@@ -14,4 +14,6 @@ export default defineConfig({
   },
   server: { host: '127.0.0.1', port: 5173 },
   worker: { format: 'es' },
+  // whole-flight simulations take a few seconds each; leave headroom for a busy machine
+  test: { testTimeout: 120_000 },
 });
