@@ -13,7 +13,9 @@ const params = new URLSearchParams(location.search);
 
 window.addEventListener('error', (e) => { (window as any).__state = { ...(window as any).__state, error: String(e.message) }; });
 
-if (params.get('debug') === 'view') {
+if (params.get('debug') === 'flight') {
+  import('./debug/flightTest').then((m) => m.runFlightTest(canvas)).catch((e) => { console.error(e); (window as any).__state = { error: String(e) }; });
+} else if (params.get('debug') === 'view') {
   import('./debug/viewer').then((m) => m.runViewer(canvas)).catch((e) => { console.error(e); (window as any).__state = { error: String(e) }; });
 } else {
   import('./core/App').then((m) => m.startApp(canvas)).catch((e) => { console.error(e); (window as any).__state = { error: String(e) }; });
