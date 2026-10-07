@@ -163,6 +163,7 @@ export class Effects {
       if (v.destroyed || v.body !== this.anchorBody) continue;
       this.exhaust(v, dt, complex);
       this.rcsPuffs(v, dt);
+      if (v.auxBurns.length) this.auxMotors(v, dt);
     }
     if (complex && this.anchorDirFixed.distanceTo(_d.set(...siteDir(complex))) < 1e-4) {
       this.deluge(dt, complex);
@@ -506,6 +507,48 @@ export class Effects {
             kind: 'vapor', pos: pl, vel: dw.multiplyScalar(vac ? 260 : 40).add(vel), spread: vac ? 90 : 6,
             size: 0.12, grow: vac ? 9 : 1.6, life: vac ? 0.28 : 0.6, opacity: vac ? 0.4 : 0.5, drag: vac ? 0 : 1,
           });
+        }
+      }
+    }
+  }
+
+  /**
+   * Solid auxiliary motors: the escape tower's canted nozzles (a ring of fire and a dense
+   * white smoke trail as it drags the crew module clear) and the soft-landing retro-rockets
+   * (a flash and a burst of dust under the capsule a moment before touchdown).
+   */
+  private auxMotors(v: Vessel, dt: number): void {
+    const P = this.particles;
+    const vel = this.surfaceVelLocal(v, new Vector3());
+    const air = v.atm.pressure > 100;
+    for (const b of v.auxBurns) {
+      if (b.kind === 'escape') {
+        const les = v.assemblies.find((a) => a.def.separation?.kind === 'les');
+        if (!les) continue;
+        const y = les.bottomY + (les.topY - les.bottomY) * 0.62;
+        for (let k = 0; k < 4; k++) {
+          const ang = (k / 4) * Math.PI * 2 + Math.PI / 4;
+          const out = _e.set(Math.cos(ang), 0, Math.sin(ang));
+          const nozzle = this.vehiclePoint(v, _c.set(les.offX + out.x * 0.45, y, les.offZ + out.z * 0.45), new Vector3());
+          const pl = P.toLocal(nozzle, new Vector3());
+          // jets canted ~35° outward from straight down
+          const dirV = _d.set(out.x * 0.57, -0.82, out.z * 0.57).applyQuaternion(v.rot);
+          const dl = P.dirToLocal(dirV, new Vector3()).normalize();
+          const n = this.rate(`les${v.id}-${k}`, 70, dt);
+          for (let i = 0; i < n; i++) {
+            P.emit({ kind: 'fire', pos: pl, vel: dl.clone().multiplyScalar(260).add(vel), spread: 25, size: 0.6, grow: 5, life: 0.35, heat: 1, drag: air ? 1 : 0 });
+            if (air) P.emit({ kind: 'srbsmoke', pos: pl, vel: dl.clone().multiplyScalar(90).add(vel.clone().multiplyScalar(0.6)), spread: 12, jitter: 0.4, size: 1.0, grow: 3.5, life: 14, opacity: 0.85, heat: 0.7 });
+          }
+        }
+      } else {
+        const sc = v.rootAssembly;
+        const base = this.vehiclePoint(v, _c.set(sc.offX, sc.bottomY + 0.2, sc.offZ), new Vector3());
+        const pl = P.toLocal(base, new Vector3());
+        const down = P.dirToLocal(_d.set(0, -1, 0).applyQuaternion(v.rot), new Vector3()).normalize();
+        const n = this.rate(`retro${v.id}`, 900, dt);
+        for (let i = 0; i < n; i++) {
+          P.emit({ kind: 'fire', pos: pl, vel: down.clone().multiplyScalar(120), spread: 60, jitter: sc.maxRadius * 0.6, size: 0.5, grow: 6, life: 0.3, heat: 1, drag: 1 });
+          P.emit({ kind: v.splashed || v.atm.pressure <= 100 ? 'vapor' : 'dust', pos: pl, vel: down.clone().multiplyScalar(30), spread: 35, jitter: sc.maxRadius, size: 1.2, grow: 4, life: 5, opacity: 0.7, drag: 1 });
         }
       }
     }

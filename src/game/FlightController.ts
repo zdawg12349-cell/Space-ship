@@ -189,7 +189,12 @@ export class FlightController {
       case 'screenshot': this.screenshot(); break;
       case 'help': this.toggleOverlay(HUD.helpPanel(() => this.toggleOverlay(null))); break;
       case 'quicksave': this.quicksave(); break;
-      case 'abort': this.hud.log('Abort requires a launch escape system (crew vehicles only)', s.met, 'warn'); break;
+      case 'abort': {
+        const why = s.abort();
+        if (why) this.hud.log(why, s.met, 'warn');
+        else { this.app.audio.play('alarm'); this.app.audio.play('pyro', 0, true); }
+        break;
+      }
       default:
         if (a.startsWith('ap')) {
           const i = Number(a.slice(2));

@@ -9,7 +9,7 @@ const page = await browser.newPage({ viewport: { width: Number(w), height: Numbe
 const logs = [];
 page.on('console', (m) => { if (m.type() === 'error' || m.type() === 'warning') logs.push(`[${m.type()}] ${m.text()}`); });
 page.on('pageerror', (e) => logs.push(`[pageerror] ${e.message}`));
-const url = `http://127.0.0.1:5173/?${query}&w=${w}&h=${h}`;
+const url = `${process.env.APP_URL ?? "http://127.0.0.1:5173/"}?${query}&w=${w}&h=${h}`;
 await page.goto(url, { waitUntil: 'load', timeout: 120000 });
 const t0 = Date.now();
 let state = null;

@@ -97,8 +97,8 @@ function vaporMaterial(): ShaderMaterial {
         float a = uI * smoothstep(0.0, 0.06, v) * tail * (0.35 + 0.85 * n) * (0.75 + 0.5 * n2);
         // the collar is a thin sheet: denser where we look along it
         vec3 N = normalize(vN), V = normalize(vView);
-        a *= 0.3 + 0.7 * pow(1.0 - abs(dot(N, V)), 1.5);
-        a = clamp(a, 0.0, 0.85);
+        a *= 0.45 + 0.75 * pow(1.0 - abs(dot(N, V)), 1.5);
+        a = clamp(a * 1.6, 0.0, 0.92);
         gl_FragColor = vec4(uLight * a, a);
       }`,
     transparent: true, depthWrite: false, side: DoubleSide,
@@ -225,8 +225,8 @@ export class AeroShells {
       s.vapor.visible = s.vi > 0.01;
       if (s.vapor.visible) {
         s.vapor.position.set(0, s.station, 0);
-        const k = s.stationR * (1 + 0.35 * s.vi);
-        s.vapor.scale.set(k, s.stationR * (0.8 + 1.2 * s.vi), k);
+        const k = s.stationR * (1.05 + 0.45 * s.vi);
+        s.vapor.scale.set(k, s.stationR * (1.0 + 1.6 * s.vi), k);
         const u = s.vaporMat.uniforms;
         u.uI.value = s.vi;
         u.uTime.value = this.time;

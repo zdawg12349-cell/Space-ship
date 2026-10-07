@@ -88,6 +88,13 @@ export class MissionDirector {
     const pe = o.periapsis - v.body.radius;
     const top = v.body.atmosphereTop || 10_000;
     if (!v.landed && pe > top && o.e < 1) { this.wasInOrbit = true; this.orbitPe = Math.max(this.orbitPe, pe); }
+    // after a launch abort the mission is over; the outcome is the crew's
+    if (s.aborted && this.result === 'running' && (v.landed || v.splashed)) {
+      this.result = 'failed';
+      this.failReason = 'Launch aborted — the crew module landed safely';
+      this.onChange?.();
+      return;
+    }
     if (!this.mission || this.result !== 'running') return;
     let changed = false;
     this.mission.objectives.forEach((obj, i) => {

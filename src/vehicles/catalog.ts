@@ -285,7 +285,7 @@ function vostok(): VehicleDef {
       }),
       asm('om', 'Orbital module', 'dm', om.sections, [], { separation: { kind: 'stack', impulse: 0.8 } }),
       ...fairingHalves('block_i', s3.top, 9.3, 1.5, 3000, { material: 'white' }).map((f) => ({ ...f, separation: { kind: 'fairing' as const, impulse: 2.5, spin: 0.4 } })),
-      asm('les', 'Escape tower', 'fairing_a', new Stack(s3.top + 9.3).add('les', 3.0, 0.42, { material: 'grey', mass: 1500, shape: 'cone' }).sections, [], { separation: { kind: 'les', impulse: 28 } }),
+      asm('les', 'Escape tower', 'om', new Stack(s3.top + 9.3).add('les', 3.0, 0.42, { material: 'grey', mass: 1500, shape: 'cone' }).sections, [], { separation: { kind: 'les', impulse: 28 } }),
     ],
     staging: [
       [{ action: 'ignite', targets: ['core', 'blk_1', 'blk_2', 'blk_3', 'blk_4'], label: 'Ignition' }, { action: 'release', targets: [], label: 'Liftoff' }],

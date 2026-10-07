@@ -615,6 +615,9 @@ export class Vessel {
     // ---------------- control torques (RCS / wheels / aero surfaces)
     this.applyControlTorques(q, torque, force);
 
+    // ---------------- auxiliary solid motors (escape tower, soft-landing retros)
+    this.applyAuxThrust(dt, altitude - surfaceH, vSurf, force);
+
     // ---------------- ground contact
     let contact = 0;
     if (body.def.hasSurface && altitude - surfaceH < this.aero.refLength + 200) {
@@ -860,6 +863,45 @@ export class Vessel {
     force.add(_v2);
     return (aoa * 180) / Math.PI;
   }
+
+  // ---------------------------------------------------------------- auxiliary thrust
+
+  /** Short solid-motor pulses along the vehicle axis (+Y): [force N, seconds left]. */
+  auxBurns: { force: number; time: number; kind: 'escape' | 'retro' }[] = [];
+
+  private applyAuxThrust(dt: number, heightAboveSurface: number, vSurf: Vector3, force: Vector3): void {
+    // soft-landing retro-rockets: fire a fraction of a second before touchdown under the main canopy
+    for (const a of this.assemblies) {
+      const rr = a.def.features?.retroRockets;
+      if (!rr || a.retroFired || a.chuteState !== 'main' || a.mainInflation < 0.9) continue;
+      const clearance = heightAboveSurface - Math.max(0, this.com.y - this.lowestY());
+      const vz = vSurf.dot(_v1.copy(this.pos).normalize());
+      // fire at the height the pulse needs to bring the descent down to ~1.5 m/s, so it ends
+      // right at the ground (~0.8 m for a Soyuz-class module under its main canopy)
+      const decel = Math.max(5, rr.thrust / this.mass - 0.5 * 9.81);
+      const stopDist = Math.max(0, vz * vz - 2.25) / (2 * decel);
+      if (vz < -2 && clearance < Math.min(rr.altitude, stopDist + 0.12) && clearance > -1) {
+        a.retroFired = true;
+        // take the descent from ~7 m/s down to ~1.5 m/s in one short pulse
+        const dv = Math.max(0, -vz - 1.5);
+        this.auxBurns.push({ force: rr.thrust, time: Math.min(0.4, (dv * this.mass) / rr.thrust), kind: 'retro' });
+        this.events.push({ type: 'retro_fire' });
+      }
+    }
+    if (!this.auxBurns.length) return;
+    let f = 0;
+    for (const b of this.auxBurns) {
+      const step = Math.min(dt, b.time);
+      f += (b.force * step) / dt;
+      b.time -= step;
+    }
+    this.auxBurns = this.auxBurns.filter((b) => b.time > 1e-6);
+    force.add(_v1.set(0, 1, 0).applyQuaternion(this.rot).multiplyScalar(f));
+    this.telemetry.thrust += f;
+  }
+
+  /** Thrust currently delivered by auxiliary motors (N), for effects and audio. */
+  get auxThrust(): number { return this.auxBurns.reduce((s, b) => s + b.force, 0); }
 
   // ---------------------------------------------------------------- thermal
 

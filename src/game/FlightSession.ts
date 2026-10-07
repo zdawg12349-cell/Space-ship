@@ -397,6 +397,83 @@ export class FlightSession {
 
   // ------------------------------------------------------------------------------ controls
 
+  // ------------------------------------------------------------------------------ abort
+
+  /** the launch escape system has fired */
+  aborted = false;
+  private abortT = 0;
+  private abortStep = 0;
+
+  /**
+   * Launch abort: cut the launcher's engines, pull the crew module clear on the escape tower's
+   * solid motor (about eight times the module's weight for three seconds), jettison the tower
+   * near the top of the arc and come down under parachutes. Returns why it can't, if it can't.
+   */
+  abort(): string | null {
+    const v = this.vessel;
+    if (this.aborted) return null;
+    if (v.destroyed) return 'Too late to abort';
+    const scId = this.def.spacecraft;
+    const sc = scId ? v.getAssembly(scId) : null;
+    if (!sc || !sc.def.features?.crew) return 'Abort needs a crewed spacecraft with a launch escape system';
+    const les = v.assemblies.find((a) => a.def.separation?.kind === 'les');
+    if (!les) return 'The escape tower has already been jettisoned — abort by staging instead';
+    this.aborted = true;
+    this.abortT = this.world.t;
+    this.abortStep = 0;
+    const onPad = v.clamped;
+    const padAlt = v.padSupportAlt;
+    for (const e of v.engines) if (!e.isSolid) e.armed = false;
+    v.controls.throttle = 0;
+    this.throttle = 0;
+    this.autopilot.setMode('off');
+    this.manual = true;
+    // the crew module and everything above it (the tower) leave the launcher
+    const launcher = this.world.separate(v, [sc.def.id]);
+    v.clamped = false;
+    v.landed = false;
+    v.padSupportAlt = NaN;
+    v.hasLiftedOff = true;
+    for (const lv of launcher) {
+      if (onPad) { lv.padSupportAlt = padAlt; lv.clampToSurface(this.world.t); }
+      lv.isDebris = true;
+    }
+    this.rangeSafety = onPad ? [] : launcher;
+    v.auxBurns.push({ force: v.mass * 9.81 * 8, time: 3, kind: 'escape' });
+    v.events.push({ type: 'les_fire' });
+    if (this.phase === 'countdown') this.seq.held = true;
+    this.setPhase('descent');
+    this.emit({ type: 'radio', id: 'abort', priority: 3 });
+    this.emit({ type: 'message', text: 'ABORT — launch escape system fired', level: 'alert' });
+    this.director.cue('separation');
+    this.director.shake.kick(1.2, 2);
+    return null;
+  }
+
+  /** launcher pieces to destroy a few seconds after an in-flight abort */
+  private rangeSafety: Vessel[] = [];
+
+  private abortSequencer(v: Vessel): void {
+    if (!this.aborted) return;
+    const since = this.world.t - this.abortT;
+    if (this.abortStep === 0 && since > 6 && this.rangeSafety.length) {
+      // range safety: the abandoned launcher is destroyed before it can stray
+      for (const lv of this.rangeSafety) if (!lv.destroyed) lv.destroy('Range safety destruct');
+      this.rangeSafety = [];
+    }
+    if (this.abortStep === 0 && since > 4 && (v.telemetry.verticalSpeed < 15 || since > 14)) {
+      // tower jettison near the top of the arc, then shed anything but the crew module
+      this.abortStep = 1;
+      const les = v.assemblies.find((a) => a.def.separation?.kind === 'les');
+      if (les) this.world.separate(v, [les.def.id]);
+      const scId = this.def.spacecraft;
+      const rest = v.assemblies.filter((a) => a.def.id !== scId).map((a) => a.def.id);
+      if (rest.length) this.world.separate(v, rest);
+      this.emit({ type: 'radio', id: 'les_fire' });
+      this.emit({ type: 'message', text: 'Escape tower jettisoned — parachutes armed', level: 'info' });
+    }
+  }
+
   stageNow(): void {
     const v = this.active;
     if (this.phase === 'countdown') return;
@@ -504,6 +581,7 @@ export class FlightSession {
     }
     if (v.hasLiftedOff && !isNaN(v.padSupportAlt) && tm.altitude > this.padAlt + 45) v.padSupportAlt = NaN;
     this.autoWarp();
+    this.abortSequencer(v);
     this.entrySequencer(v);
     // world events -> session events
     for (const we of this.world.drainEvents()) this.handleWorldEvent(we.vessel, we.event);
@@ -519,10 +597,10 @@ export class FlightSession {
     }
   }
 
-  /** While a manoeuvre is pending, warp toward it and drop out in time to turn and burn. */
   /** coast to an event under automatic time warp (lunar arrival, periapsis, entry) */
   warpTarget: { t: number; label: string } | null = null;
 
+  /** While a manoeuvre is pending, warp toward it and drop out in time to turn and burn. */
   private autoWarp(): void {
     const ap = this.autopilot;
     const n = ap.node;
