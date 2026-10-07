@@ -36,40 +36,52 @@ export function keplerPropagate(r0: Vector3, v0: Vector3, mu: number, dt: number
   const rdotv = r0x * v0x + r0y * v0y + r0z * v0z;
   const sqrtMu = Math.sqrt(mu);
   const alpha = 2 / r0m - v0m2 / mu; // 1/a
+  const k = rdotv / sqrtMu;
 
-  // Initial guess for chi
-  let chi: number;
-  if (alpha > 1e-12) {
-    chi = sqrtMu * dt * alpha;
-  } else if (alpha < -1e-12) {
-    const a = 1 / alpha;
-    const sgn = dt > 0 ? 1 : -1;
-    const num = -2 * mu * alpha * dt;
-    const den = rdotv + sgn * Math.sqrt(-mu * a) * (1 - r0m * alpha);
-    const arg = num / den;
-    chi = arg > 0 ? sgn * Math.sqrt(-a) * Math.log(arg) : sgn * Math.sqrt(Math.abs(a));
-    if (!isFinite(chi)) chi = sqrtMu * dt / r0m;
-  } else {
-    chi = sqrtMu * dt / r0m;
+  // Elliptic orbits are periodic: reduce the interval to less than one period.
+  if (alpha > 1e-15) {
+    const T = (2 * Math.PI) / (sqrtMu * Math.pow(alpha, 1.5));
+    if (Math.abs(dt) > T) dt = dt - T * Math.trunc(dt / T);
+    if (dt === 0) { outR.copy(r0); outV.copy(v0); return; }
   }
 
-  let psi = 0, c2 = 0.5, c3 = 1 / 6, r = r0m;
-  for (let iter = 0; iter < 60; iter++) {
+  // time of flight as a function of the universal anomaly (monotonic: dt/dchi = r / sqrt(mu) > 0)
+  let psi = 0, c2 = 0.5, c3 = 1 / 6;
+  const tof = (chi: number): number => {
     psi = chi * chi * alpha;
     c2 = stumpffC(psi);
     c3 = stumpffS(psi);
     const chi2 = chi * chi;
-    r = chi2 * c2 + (rdotv / sqrtMu) * chi * (1 - psi * c3) + r0m * (1 - psi * c2);
-    const t = chi2 * chi * c3 + (rdotv / sqrtMu) * chi2 * c2 + r0m * chi * (1 - psi * c3);
-    const dChi = (sqrtMu * dt - t) / r;
-    chi += dChi;
-    if (Math.abs(dChi) < 1e-9 * Math.max(1, Math.abs(chi))) break;
+    return (chi2 * chi * c3 + k * chi2 * c2 + r0m * chi * (1 - psi * c3)) / sqrtMu;
+  };
+  const radius = (chi: number): number => {
+    psi = chi * chi * alpha;
+    c2 = stumpffC(psi);
+    c3 = stumpffS(psi);
+    return chi * chi * c2 + k * chi * (1 - psi * c3) + r0m * (1 - psi * c2);
+  };
+
+  // bracket the root, then safeguarded Newton (bisection whenever a step leaves the bracket)
+  const sgn = dt > 0 ? 1 : -1;
+  let lo = 0, hi = sgn * Math.max(1, (sqrtMu * Math.abs(dt)) / r0m);
+  if (alpha > 1e-15) hi = sgn * Math.min(Math.abs(hi), (2 * Math.PI) / Math.sqrt(alpha));
+  for (let i = 0; i < 200 && sgn * (tof(hi) - dt) < 0; i++) { lo = hi; hi *= 2; }
+  if (sgn < 0) { const tmp = lo; lo = hi; hi = tmp; }
+  let chi = 0.5 * (lo + hi);
+  for (let iter = 0; iter < 100; iter++) {
+    const f = tof(chi) - dt;
+    if (f > 0) hi = chi; else lo = chi;
+    const r = radius(chi);
+    let next = chi - (f * sqrtMu) / Math.max(1e-9, r);
+    if (!(next > lo && next < hi) || !isFinite(next)) next = 0.5 * (lo + hi);
+    if (Math.abs(next - chi) < 1e-10 * Math.max(1, Math.abs(chi))) { chi = next; break; }
+    chi = next;
   }
   psi = chi * chi * alpha;
   c2 = stumpffC(psi);
   c3 = stumpffS(psi);
   const chi2 = chi * chi;
-  r = chi2 * c2 + (rdotv / sqrtMu) * chi * (1 - psi * c3) + r0m * (1 - psi * c2);
+  const r = chi2 * c2 + k * chi * (1 - psi * c3) + r0m * (1 - psi * c2);
   const f = 1 - chi2 / r0m * c2;
   const g = dt - chi2 * chi / sqrtMu * c3;
   const gdot = 1 - chi2 / r * c2;

@@ -825,7 +825,7 @@ function lunarReturnVehicle(): VehicleDef {
     analog: 'Direct-ascent lunar return concept', payloadLEO: 0, crewed: true,
     assemblies: [
       asm('base', 'Landing platform', null, base.sections, [], { features: { landingLegs: { y: 2.0, length: 3.4, count: 4 }, legsLunar: true }, separation: { kind: 'lander', impulse: 0.3 } }),
-      asm('ascent', 'Ascent & return stage', 'base', stage.sections, center(E.aps, base.top), { features: { rcs: { thrust: 400, arm: 2 }, reactionWheel: { torque: 600 } }, separation: { kind: 'stack', impulse: 0.8 } }),
+      asm('ascent', 'Ascent & return stage', 'base', stage.sections, center({ ...E.dps, name: 'Ascent & return engine (throttleable)', restarts: 20 }, base.top), { features: { rcs: { thrust: 400, arm: 2 }, reactionWheel: { torque: 600 } }, separation: { kind: 'stack', impulse: 0.8 } }),
       asm('cm', 'Return capsule', 'ascent', cm.sections, [], {
         features: {
           heatShield: { radius: 1.9, ablatorMass: 450, maxTemp: 3000, noseRadius: 4.5 },

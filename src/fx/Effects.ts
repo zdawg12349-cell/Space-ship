@@ -155,6 +155,7 @@ export class Effects {
     // wind: gentle sea breeze at the pad (the physics weather supplies the real profile in flight)
     P.wind.set(air ? 3.5 : 0, 0, air ? -1.2 : 0);
     P.groundY = 0;
+    P.bodyRadius = this.anchorBody.radius;
 
     for (const v of vessels) {
       if (v.destroyed || v.body !== this.anchorBody) continue;

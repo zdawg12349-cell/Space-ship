@@ -292,6 +292,8 @@ export class ParticleSystem {
   readonly framePos = new Vector3();
   /** ground height in the local frame (smoke stops at the ground) */
   groundY = 0;
+  /** radius of the anchor body (ground curvature in the tangent frame) */
+  bodyRadius = 6_371_000;
   /** wind in the local frame (m/s) */
   readonly wind = new Vector3();
   private resolution = new Vector2(1, 1);
@@ -436,9 +438,12 @@ export class ParticleSystem {
       this.pz[i] += this.vz[i] * dt;
       // the ground: clouds roll along it, water splashes and dies
       const r = this.size[i] * 0.35;
-      if (this.py[i] < this.groundY + r) {
+      // the local frame is a tangent plane: the ground falls away with distance (curvature)
+      const h2 = this.px[i] * this.px[i] + this.pz[i] * this.pz[i];
+      const gy = this.groundY - h2 / (2 * this.bodyRadius);
+      if (h2 < 4e10 && this.py[i] < gy + r) {
         if (kd.gravity > 5) { this.kill(i); i--; continue; }
-        this.py[i] = this.groundY + r;
+        this.py[i] = gy + r;
         if (this.vy[i] < 0) {
           // convert downward momentum into radial spread
           const sp = -this.vy[i] * 0.6;

@@ -1,7 +1,7 @@
 import { Matrix4, Quaternion, Vector3 } from 'three';
 import { CameraDirector, CamContext } from '../camera/CameraDirector';
 import type { CelestialBody, SolarSystem } from '../physics/bodies';
-import type { AssemblyRuntime, Vessel } from '../physics/vessel';
+import { AssemblyRuntime, Vessel } from '../physics/vessel';
 import { MAX_PHYSICS_WARP, PhysicsWorld, WARP_LEVELS } from '../physics/world';
 import type { RenderWorld } from '../render/RenderWorld';
 import type { LaunchComplex } from '../render/site/LaunchComplex';
@@ -14,6 +14,9 @@ import { FlightSoftware, launchAzimuth } from './guidance';
 import { buildCountdown, CountdownEvent, LaunchSequence } from './LaunchSequence';
 import { GameTerrain, GameWeather, WEATHER_PRESETS, WeatherKind } from './providers';
 import { BoosterGuidance } from './recovery';
+import type { MissionStart } from './missions';
+import { FlightSnapshot, restoreVessel } from './SaveGame';
+import { keplerPropagate } from '../physics/orbit';
 
 /**
  * One flight, from the terminal count to wherever it ends. Owns the physics world, the
@@ -40,6 +43,12 @@ export interface FlightConfig {
   /** fly reusable boosters home */
   recovery?: boolean;
   missionId?: string;
+  /** where the flight begins */
+  start?: MissionStart;
+  /** resume from a saved snapshot */
+  snapshot?: FlightSnapshot;
+  /** vegetation density 0..1 */
+  vegetation?: number;
 }
 
 export type SessionEvent =
@@ -64,14 +73,14 @@ export class FlightSession {
   readonly system: SolarSystem;
   readonly def: VehicleDef;
   readonly site: LaunchSite;
-  readonly vessel: Vessel;
+  vessel!: Vessel;
   readonly autopilot: Autopilot;
   readonly fsw: FlightSoftware;
   readonly director: CameraDirector;
   readonly weather: GameWeather;
   readonly zones: ZoneSpec[];
   readonly seq: LaunchSequence;
-  readonly complex: LaunchComplex | null;
+  complex: LaunchComplex | null = null;
   readonly boosters: { v: Vessel; g: BoosterGuidance; zone: ZoneSpec }[] = [];
   phase: FlightPhase = 'countdown';
   /** simulation time of liftoff (NaN before) */
@@ -87,11 +96,13 @@ export class FlightSession {
   private maxQDone = false;
   private lastMach = 0;
   private towerTopAlt = 0;
-  private padAlt: number;
+  private padAlt = 0;
   private realTime = 0;
   paused = false;
   /** the player has taken manual control (stops orbit assist from overriding) */
   manual = false;
+  /** player stick input for this frame (overrides the autopilot's attitude commands) */
+  manualOverride: { pitch: number; yaw: number; roll: number } | null = null;
   private ignitedAssemblies = new Set<AssemblyRuntime>();
   private wasInAtmo = true;
   private delugeT = -1e9;
@@ -106,23 +117,33 @@ export class FlightSession {
     rw.cloudCover = preset.clouds;
     const t0 = system.epoch;
     this.world = new PhysicsWorld(system, t0, terrain, this.weather);
-    // pad + vehicle
-    this.complex = rw.setComplex(this.site, this.def, 1);
-    const deck = this.complex ? this.complex.deckHeight : 0;
-    this.padAlt = this.site.padHeight + deck;
-    const v = this.world.createVessel(this.def, system.earth);
-    this.vessel = v;
-    this.world.addVessel(v);
-    this.world.active = v;
     const lat = (this.site.lat * Math.PI) / 180, lon = (this.site.lon * Math.PI) / 180;
-    this.world.placeOnSurface(v, system.earth, lat, lon, this.padAlt, 0);
-    v.padSupportAlt = this.padAlt;
-    v.clampToSurface(this.world.t);
-    v.step(1e-4, { t: this.world.t, terrain, weather: this.weather });
+    const startKind = config.snapshot ? 'snapshot' : (config.start ?? 'pad');
     rw.vessels.clear();
     rw.plumes.clear();
+    rw.effects.clear();
+    let v: Vessel;
+    if (startKind === 'pad') {
+      // pad + vehicle on the launch mount, held by the clamps
+      this.complex = rw.setComplex(this.site, this.def, config.vegetation ?? 1);
+      const deck = this.complex ? this.complex.deckHeight : 0;
+      this.padAlt = this.site.padHeight + deck;
+      v = this.world.createVessel(this.def, system.earth);
+      this.world.addVessel(v);
+      this.world.placeOnSurface(v, system.earth, lat, lon, this.padAlt, 0);
+      v.padSupportAlt = this.padAlt;
+      v.clampToSurface(this.world.t);
+      this.towerTopAlt = this.padAlt + (this.complex ? this.complex.towerTop.y - deck : 60) + 5;
+    } else {
+      this.complex = rw.setComplex(null, null);
+      this.padAlt = 0;
+      v = this.createInSpace(startKind, terrain, config);
+      this.liftoffT = this.world.t - (config.snapshot ? config.snapshot.t - config.snapshot.liftoffT : 0);
+    }
+    this.vessel = v;
+    this.world.active = v;
+    v.step(1e-4, { t: this.world.t, terrain, weather: this.weather });
     rw.vessels.attach(v, this.def, { flightProven: this.def.assemblies.some((a) => a.recovery && a.recovery !== 'none') && config.vehicleId !== 'leviathan' });
-    this.towerTopAlt = this.padAlt + (this.complex ? this.complex.towerTop.y - deck : 60) + 5;
     const incl = ((config.inclination ?? Math.abs(this.site.lat)) * Math.PI) / 180;
     this.azimuth = launchAzimuth(lat, Math.max(incl, Math.abs(lat)));
     // flight software, autopilot
@@ -150,14 +171,104 @@ export class FlightSession {
       this.emit({ type: 'separation', kind, vessel: nv });
     };
     // countdown
-    const events = buildCountdown(this.def, { weatherMarginal: config.weather === 'breezy' || config.weather === 'storm', crewed: this.def.crewed });
-    this.seq = new LaunchSequence(events, config.countdownStart ?? -120);
+    if (startKind === 'pad') {
+      const events = buildCountdown(this.def, { weatherMarginal: config.weather === 'breezy' || config.weather === 'storm', crewed: this.def.crewed });
+      this.seq = new LaunchSequence(events, config.countdownStart ?? -120);
+      rw.effects.setAnchor(system.earth, lat, lon, this.site.padHeight);
+      rw.effects.flags.venting = 1;
+    } else {
+      this.seq = new LaunchSequence([], 0);
+      const ll = v.computeLatLon(this.world.t);
+      rw.effects.setAnchor(v.body, ll.lat, ll.lon, Math.max(0, v.telemetry.terrainHeight));
+      if (config.snapshot) {
+        for (const m of config.snapshot.milestones) this.milestones.add(m);
+        this.phase = config.snapshot.phase as FlightPhase;
+        this.throttle = config.snapshot.throttle;
+      }
+    }
     // effects / camera
-    rw.effects.setAnchor(system.earth, lat, lon, this.site.padHeight);
-    rw.effects.flags.venting = 1;
     this.director = new CameraDirector(rw.camera);
     this.director.orbitAz = 2.4;
   }
+
+  /** Build the vehicle somewhere other than the pad (mission starts and saved flights). */
+  private createInSpace(kind: string, terrain: GameTerrain, config: FlightConfig): Vessel {
+    const sys = this.system;
+    const t = this.world.t;
+    if (kind === 'snapshot' && config.snapshot) {
+      const snap = config.snapshot;
+      const ids = new Set(snap.assemblies.map((a) => a.id));
+      const body = sys.get(snap.body);
+      const v = new Vessel(this.def.name, this.def, this.def.assemblies.filter((a) => ids.has(a.id)), body);
+      this.world.addVessel(v);
+      restoreVessel(v, snap);
+      if (snap.landed) v.settleLanded(t, false);
+      this.phase = snap.phase as FlightPhase;
+      return v;
+    }
+    const v = this.world.createVessel(this.def, kind === 'leo' ? sys.earth : kind === 'jupiterApproach' ? sys.get('jupiter') : sys.moon);
+    this.world.addVessel(v);
+    const body = v.body;
+    const rot = new Quaternion();
+    body.orientationAt(t, rot);
+    const pole = new Vector3(0, 0, 1).applyQuaternion(rot);
+    // reference direction in the equatorial plane
+    const ref = new Vector3(1, 0, 0).applyQuaternion(rot);
+    const side = new Vector3().crossVectors(pole, ref);
+    v.hasLiftedOff = true;
+    if (kind === 'leo' || kind === 'lunarOrbit') {
+      const alt = kind === 'leo' ? (config.targetOrbit ?? 300_000) : 100_000;
+      const r = body.radius + alt;
+      const vc = Math.sqrt(body.gm / r);
+      const inc = ((config.inclination ?? (kind === 'leo' ? 28.6 : 2)) * Math.PI) / 180;
+      // for the lunar descent, start ~30 deg before Tranquility Base (0.67N, 23.47E)
+      const phase0 = kind === 'lunarOrbit' ? ((23.47 - 32) * Math.PI) / 180 : 0;
+      const nrm = pole.clone().applyAxisAngle(ref, inc);
+      const p = ref.clone().applyAxisAngle(nrm, phase0).multiplyScalar(r);
+      const vel = new Vector3().crossVectors(nrm, p).normalize().multiplyScalar(vc);
+      // nose retrograde, ready for a deorbit / descent burn
+      this.world.placeInOrbit(v, body, p, vel, kind === 'lunarOrbit' ? vel.clone().negate() : vel);
+      this.phase = 'orbit';
+      this.milestones.add('orbit');
+    } else if (kind === 'moonSurface') {
+      const la = (0.674 * Math.PI) / 180, lo = (23.473 * Math.PI) / 180;
+      const dir = new Vector3(Math.cos(la) * Math.cos(lo), Math.cos(la) * Math.sin(lo), Math.sin(la));
+      const h = terrain.heightAt(body, dir);
+      this.world.placeOnSurface(v, body, la, lo, h + 0.05, 0);
+      for (const a of v.assemblies) if (a.def.features?.landingLegs) { a.legsDeployed = 1; a.legsTarget = 1; }
+      v.settleLanded(t, false);
+      this.phase = 'landed';
+    } else if (kind === 'jupiterApproach') {
+      // hyperbolic approach: v_inf 5.8 km/s, perijove 2.6 Rj, starting 2 days out
+      const mu = body.gm;
+      const rp = body.radius * 2.6;
+      const vinf = 5800;
+      const vp = Math.sqrt(vinf * vinf + (2 * mu) / rp);
+      const r0 = ref.clone().multiplyScalar(rp);
+      const v0 = side.clone().multiplyScalar(vp);
+      const outR = new Vector3(), outV = new Vector3();
+      keplerPropagate(r0, v0, mu, -2 * 86400, outR, outV);
+      this.world.placeInOrbit(v, body, outR, outV, outV.clone().normalize());
+      this.phase = 'transfer';
+      for (const a of v.assemblies) if (a.def.features?.solarPanels) { a.solarDeployed = 1; a.solarTarget = 1; }
+    }
+    return v;
+  }
+
+  milestoneList(): string[] { return [...this.milestones]; }
+
+  /** Render with the camera as it is (photo mode drives the camera itself). */
+  renderStatic(realDt: number): void {
+    const rw = this.rw;
+    const v = this.active;
+    rw.focusHelio.copy(v.pos).add(this.bodyPos(v.body));
+    rw.focusRadius = Math.max(40, Math.min(400, this.vesselLength(v) * 1.2));
+    rw.update(this.world.t, realDt);
+    rw.updateVehicles(0, this.world.t, this.world.vessels, v, (x) => this.bodyPos(x.body));
+  }
+
+  /** Record a milestone without side effects (mission logic bookkeeping). */
+  markMilestone(id: string): void { this.milestones.add(id); }
 
   on(fn: (e: SessionEvent) => void): () => void {
     this.listeners.push(fn);
@@ -267,10 +378,25 @@ export class FlightSession {
   private preStep(dt: number): void {
     const v = this.vessel;
     if (v.destroyed) return;
-    const steering = this.autopilot.update(dt);
-    if (!steering && !this.manual) { /* player controls only */ }
+    const ap = this.autopilot;
+    // modes that fly engines need them armed: light the next stage if nothing is
+    if ((ap.mode === 'node' || ap.mode === 'land' || ap.mode === 'ascend') && !v.engines.some((e) => e.armed && !e.failed && (e.isSolid ? e.srbBurned < 1 : e.assembly.propellant > 0))) {
+      const next = v.nextStage;
+      if (next && next.some((e) => e.action === 'ignite' || e.action === 'separate')) ap.wantStage = true;
+    }
+    ap.update(dt);
+    if (ap.wantStage) { ap.wantStage = false; this.stageNow(); }
+    if (ap.completed) {
+      // orbit assist / burns hand back a vehicle with its engines off
+      ap.completed = false;
+      this.throttle = 0;
+      this.emit({ type: 'message', text: ap.status || 'Autopilot sequence complete — engines safed, stability assist on', level: 'good' });
+      if (ap.status.includes('injection') || ap.status.includes('Deorbit')) this.emit({ type: 'radio', id: 'burn_end' });
+    }
     const apThrottle = this.autopilot.mode === 'orbit' ? null : this.autopilot.throttleCmd;
     if (this.autopilot.mode !== 'orbit' && this.phase !== 'countdown') v.controls.throttle = apThrottle ?? this.throttle;
+    const mo = this.manualOverride;
+    if (mo) { v.controls.pitch = mo.pitch; v.controls.yaw = mo.yaw; v.controls.roll = mo.roll; } else if (this.autopilot.mode === 'off') { v.controls.pitch = 0; v.controls.yaw = 0; v.controls.roll = 0; }
     if (this.phase === 'countdown') v.controls.throttle = 1;
     this.fsw.update(this.world.t, v.hasLiftedOff);
   }
@@ -284,6 +410,8 @@ export class FlightSession {
       this.liftoffT = this.world.t;
     }
     if (v.hasLiftedOff && !isNaN(v.padSupportAlt) && tm.altitude > this.padAlt + 45) v.padSupportAlt = NaN;
+    this.autoWarp();
+    this.entrySequencer(v);
     // world events -> session events
     for (const we of this.world.drainEvents()) this.handleWorldEvent(we.vessel, we.event);
     if (this.phase !== 'countdown' && !v.destroyed) this.milestones_(v);
@@ -295,6 +423,57 @@ export class FlightSession {
       const thrustMN = tm.thrust / 1e6;
       if (v.telemetry.radarAltitude < 300 && thrustMN > 0) this.complex.mats.scorch.value = Math.min(1, this.complex.mats.scorch.value + 0.02 * thrustMN * 0.016);
       this.complex.mats.wet.value = Math.max(this.complex.mats.wet.value * 0.9995, fx.deluge * 0.9);
+    }
+  }
+
+  /** While a manoeuvre is pending, warp toward it and drop out in time to turn and burn. */
+  private autoWarp(): void {
+    const ap = this.autopilot;
+    const n = ap.node;
+    if (ap.mode !== 'node' || !n || ap.burning) return;
+    const bt = ap.burnTime(ap.nodeRemaining);
+    const tStart = n.t - (isFinite(bt) ? bt / 2 : 0) - 25;
+    const remain = tStart - this.world.t;
+    let idx = 0;
+    for (let i = WARP_LEVELS.length - 1; i >= 0; i--) {
+      if (remain > WARP_LEVELS[i] * 3) { idx = i; break; }
+    }
+    if (idx !== this.world.warpIndex) {
+      this.world.setWarpIndex(idx);
+    }
+  }
+
+  /** Crewed capsules: shed the service module before entry and arm the parachutes. */
+  private entrySequencer(v: Vessel): void {
+    const sc = this.def.spacecraft;
+    if (!sc || v.landed || v.destroyed || v.body.id !== 'earth') return;
+    const cap = v.getAssembly(sc);
+    if (!cap?.def.features?.heatShield) return;
+    const tm = v.telemetry;
+    const o = v.updateOrbit(this.world.t);
+    const entering = tm.altitude < 140_000 && tm.verticalSpeed < 0 && o.periapsis - v.body.radius < 70_000;
+    if (entering && v.assemblies.length > 1 && !this.hasMilestone('entry_prep')) {
+      this.markMilestone('entry_prep');
+      // stage until only the capsule is left (stop before parachutes)
+      for (let guard = 0; guard < 6 && v.assemblies.length > 1; guard++) {
+        const next = v.nextStage;
+        if (!next || next.some((e) => e.action === 'deploy_chutes')) break;
+        this.stageNow();
+      }
+      if (v.assemblies.length > 1) {
+        // separate everything but the capsule directly
+        this.world.separate(v, v.assemblies.filter((a) => a !== cap).map((a) => a.id));
+      }
+      this.autopilot.setMode('retrograde');
+      this.emit({ type: 'message', text: 'Entry configuration: service module jettisoned, heat shield forward', level: 'info' });
+      this.emit({ type: 'radio', id: 'entry_interface' });
+    }
+    if (cap.def.features.parachutes && cap.chuteState === 'stowed' && tm.altitude < 11_000 && tm.speedSurface < 300 && tm.verticalSpeed < 0) {
+      if (v.deployChutes()) {
+        // drop any remaining staging step for the chutes so the player doesn't fire them twice
+        if (v.nextStage?.some((e) => e.action === 'deploy_chutes')) v.stageIndex++;
+        this.autopilot.setMode('off');
+      }
     }
   }
 

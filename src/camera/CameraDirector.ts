@@ -511,7 +511,8 @@ export class CameraDirector {
         // ground level among the scrub, long lens compressing pad and vehicle
         const ang = this.padAngle(st.a);
         const dist = 900 + st.b * 500;
-        this.sitePoint(ctx, Math.cos(ang) * dist, 1.4, Math.sin(ang) * dist, out.pos);
+        // on a camera mast above the scrub, long lens compressing pad and vehicle
+        this.sitePoint(ctx, Math.cos(ang) * dist, 7, Math.sin(ang) * dist, out.pos);
         this.vPoint(ctx, v, 0, L * 0.45, 0, out.look);
         out.up.copy(siteUp());
         out.fov = MathUtils.radToDeg(2 * Math.atan((L * 1.5) / 2 / dist));
@@ -564,12 +565,13 @@ export class CameraDirector {
       case 'engine_bay': {
         if (!site || !near) return false;
         st.dur = 7;
+        // on the deck beside the hold-down clamps, looking across the engine section
         const ang = this.padAngle(st.a, 0.7);
         const r = v.rootAssembly.maxRadius;
-        this.sitePoint(ctx, Math.cos(ang) * (r + 9), deck * 0.55, Math.sin(ang) * (r + 9), out.pos);
-        this.vPoint(ctx, v, 0, v.rootAssembly.bottomY + 0.5, 0, out.look);
+        this.sitePoint(ctx, Math.cos(ang) * (r + 11), deck + 1.6, Math.sin(ang) * (r + 11), out.pos);
+        this.vPoint(ctx, v, 0, 2.5, 0, out.look);
         out.up.copy(siteUp());
-        out.fov = 55;
+        out.fov = 58;
         return true;
       }
       case 'engine_close': {
@@ -578,10 +580,10 @@ export class CameraDirector {
         // beside the flame trench, low, looking at the nozzles as they light
         const r = v.rootAssembly.maxRadius;
         const ang = this.padAngle(0.4 + st.a * 0.2, 0.5);
-        this.sitePoint(ctx, Math.cos(ang) * (r + 15), Math.max(1.6, deck * 0.6), Math.sin(ang) * (r + 15), out.pos);
-        this.vPoint(ctx, v, 0, v.rootAssembly.bottomY + 1.0, 0, out.look);
+        this.sitePoint(ctx, Math.cos(ang) * (r + 26), deck + 0.6, Math.sin(ang) * (r + 26), out.pos);
+        this.vPoint(ctx, v, 0, 1.0, 0, out.look);
         out.up.copy(siteUp());
-        out.fov = 58;
+        out.fov = 48;
         return true;
       }
       case 'liftoff_low': {
@@ -662,11 +664,15 @@ export class CameraDirector {
       case 'interstage': {
         // camera on the upper stage looking aft at the departing booster
         st.dur = 7;
+        // lowest engine-bearing assembly still attached (the stage that just took over)
         let a = v.rootAssembly;
-        for (const x of v.assemblies) if (x.engines.length && !x.def.offset) a = a.topY < x.topY ? a : x;
+        for (const x of v.assemblies) if (x.engines.length && !x.def.offset && x.bottomY < a.bottomY) a = x;
+        let skirt = a.bottomY;
+        for (const s of a.def.sections) skirt = Math.min(skirt, s.y);
         const r = a.maxRadius;
-        this.vPoint(ctx, v, r * 0.7, a.bottomY + 0.8, 0, out.pos);
-        out.dirOverride = _c.set(0.08, -1, 0).normalize().applyQuaternion(v.rot).clone();
+        // on the skirt edge, looking aft past the engine bell at the departing booster
+        this.vPoint(ctx, v, r * 0.98 + 0.15, skirt + 0.4, 0, out.pos);
+        out.dirOverride = _c.set(0.22, -1, 0.05).normalize().applyQuaternion(v.rot).clone();
         out.up.copy(_d.set(1, 0, 0).applyQuaternion(v.rot));
         out.fov = 80;
         out.mount = 'vehicle';

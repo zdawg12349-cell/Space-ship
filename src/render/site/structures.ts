@@ -233,20 +233,31 @@ export function palmGeometry(): { trunk: BufferGeometry; crown: BufferGeometry }
   return { trunk: t.build(), crown };
 }
 
-/** Lumpy crown blob (subdivided octahedron with radial noise), for tree canopies. */
+/** Lumpy crown blob: a squashed sphere whose vertices are pushed in and out by a hash of their position. */
 function crownBlob(gb: GeoBuilder, c: Vector3, rx: number, ry: number, seed: number): void {
-  // icosphere-ish: lathe of a squashed sphere with jittered rings
   let sd = seed;
   const rnd = () => { sd = (sd * 16807) % 2147483647; return sd / 2147483647; };
   const prof: [number, number][] = [];
-  const rings = 6;
+  const rings = 8;
   for (let i = 0; i <= rings; i++) {
     const a = -Math.PI / 2 + (i / rings) * Math.PI;
-    const j = i === 0 || i === rings ? 0 : 0.85 + rnd() * 0.3;
-    prof.push([Math.cos(a) * rx * j, c.y + Math.sin(a) * ry * (i === 0 ? 0.6 : 1)]);
+    prof.push([Math.cos(a) * rx, c.y + Math.sin(a) * ry * (i < rings / 2 ? 0.7 : 1)]);
   }
   prof[0][0] = 0; prof[rings][0] = 0;
-  lathe(gb, prof, { segments: 7, offset: [c.x, c.z], thetaStart: rnd() * 6.28 });
+  const v0 = gb.vertexCount;
+  lathe(gb, prof, { segments: 12, offset: [c.x, c.z], thetaStart: rnd() * 6.28 });
+  // displace: clumps of foliage (hash of the rounded position keeps seam vertices together)
+  const hash = (x: number, y: number, z: number) => {
+    const h = Math.sin(x * 12.9898 + y * 78.233 + z * 37.719 + seed) * 43758.5453;
+    return h - Math.floor(h);
+  };
+  for (let i = v0; i < gb.vertexCount; i++) {
+    const px = gb.pos[i * 3], py = gb.pos[i * 3 + 1], pz = gb.pos[i * 3 + 2];
+    const k = 0.78 + 0.44 * hash(Math.round(px * 4), Math.round(py * 4), Math.round(pz * 4));
+    gb.pos[i * 3] = c.x + (px - c.x) * k;
+    gb.pos[i * 3 + 1] = c.y + (py - c.y) * (0.9 + 0.2 * k);
+    gb.pos[i * 3 + 2] = c.z + (pz - c.z) * k;
+  }
 }
 
 /** Slash pine: tall straight trunk, flat irregular crown of clustered blobs. */
@@ -262,7 +273,9 @@ export function pineGeometry(): { trunk: BufferGeometry; crown: BufferGeometry }
     [0.2, H + 0.3, 0.1, 2.4, 1.3], [1.6, H - 0.6, 0.6, 1.6, 0.9], [-1.4, H - 0.2, -0.5, 1.7, 1.0], [0.4, H - 1.6, -1.3, 1.4, 0.8], [-0.3, H + 1.2, 0.6, 1.5, 0.9],
   ];
   blobs.forEach(([x, y, z, rx, ry], i) => crownBlob(c, new Vector3(x, y, z), rx, ry, 97 + i * 13));
-  return { trunk: t.build(), crown: c.build() };
+  const crown = c.build();
+  crown.computeVertexNormals();
+  return { trunk: t.build(), crown };
 }
 
 /** Broadleaf hammock tree (live oak / tropical): short trunk, broad domed canopy. */
@@ -276,7 +289,9 @@ export function broadleafGeometry(): { trunk: BufferGeometry; crown: BufferGeome
     [0, 6.4, 0, 3.6, 2.2], [2.3, 5.6, 1.0, 2.4, 1.6], [-2.1, 5.9, -1.0, 2.5, 1.7], [0.6, 7.4, -1.6, 2.1, 1.4], [-0.8, 5.2, 2.0, 2.2, 1.5],
   ];
   blobs.forEach(([x, y, z, rx, ry], i) => crownBlob(c, new Vector3(x, y, z), rx, ry, 31 + i * 7));
-  return { trunk: t.build(), crown: c.build() };
+  const crown = c.build();
+  crown.computeVertexNormals();
+  return { trunk: t.build(), crown };
 }
 
 /** Saw-palmetto / scrub clump: fan-shaped leaf cards around a centre. */

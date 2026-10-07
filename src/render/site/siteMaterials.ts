@@ -101,10 +101,10 @@ export function createSiteMaterials(): SiteMaterials {
   const std = (c: [number, number, number], rough: number, metal: number) => new MeshStandardMaterial({ color: new Color(...c), roughness: rough, metalness: metal });
   // foliage albedos (linear): saw palmetto ~0.05-0.08, sabal palm fronds a little brighter
   const foliage = (c: [number, number, number], rough = 0.78) => new MeshStandardMaterial({ color: new Color(c[0], c[1], c[2]), roughness: rough, metalness: 0, side: DoubleSide });
-  const leaf = foliage([0.06, 0.075, 0.04]);
-  const palmLeaf = foliage([0.08, 0.1, 0.045], 0.7);
-  const pineLeaf = foliage([0.05, 0.064, 0.04], 0.85);
-  const canopy = foliage([0.05, 0.07, 0.036], 0.82);
+  const leaf = foliage([0.07, 0.09, 0.045]);
+  const palmLeaf = foliage([0.09, 0.115, 0.05], 0.7);
+  const pineLeaf = foliage([0.065, 0.085, 0.05], 0.85);
+  const canopy = foliage([0.075, 0.1, 0.05], 0.82);
   const grass = foliage([0.085, 0.1, 0.05], 0.85);
   const dryGrass = foliage([0.2, 0.17, 0.09], 0.9);
   const dryShrub = foliage([0.12, 0.11, 0.07], 0.9);
