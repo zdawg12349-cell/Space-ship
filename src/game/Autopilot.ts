@@ -84,6 +84,9 @@ export class Autopilot {
   ascentTarget = 18_000;
   /** request staging (the session performs it) */
   wantStage = false;
+  /** RCS translation command (body axes, -1..1) for trim burns, or null when not translating */
+  translateCmd: Vector3 | null = null;
+  private trimming = false;
 
   constructor(readonly world: PhysicsWorld, readonly vessel: Vessel) {}
 
@@ -96,6 +99,8 @@ export class Autopilot {
     this.nodeStarted = false;
     this.nodeAim = null;
     this.lastVg.set(0, 0, 0);
+    this.translateCmd = null;
+    this.trimming = false;
     if (!n) return;
     this.nodeDir.copy(n.dv).normalize();
     // aim point on the planned conic, far enough past the node to outlast the burn but well
@@ -161,10 +166,39 @@ export class Autopilot {
     return (m0 - m1) / mdot;
   }
 
+  /** Acceleration (m/s²) the main engines that can still light could give right now (vacuum). */
+  private mainAccel(): number {
+    const v = this.vessel;
+    let thrust = 0;
+    for (const e of v.engines) {
+      if (!e.armed || e.failed || e.isSolid || e.assembly.propellant <= 0) continue;
+      if (!e.running && e.restartsLeft <= 0) continue;
+      thrust += e.mount.spec.thrustVac;
+    }
+    return thrust / Math.max(1, v.mass);
+  }
+
+  /** Acceleration (m/s²) of the RCS jets translating along one axis. */
+  private rcsAccel(): number {
+    const v = this.vessel;
+    let f = 0;
+    for (const a of v.assemblies) if (a.def.features?.rcs && a.rcsFuel > 0) f += a.def.features.rcs.thrust * 2;
+    return f / Math.max(1, v.mass);
+  }
+
+  /** deepest throttle the running main engines allow (1 for engines that can't throttle) */
+  private minThrottle(): number {
+    let m = 0;
+    for (const e of this.vessel.engines) if (e.running && !e.isSolid) m = Math.max(m, e.mount.spec.minThrottle > 0 ? e.mount.spec.minThrottle : 1);
+    return m;
+  }
+
   setMode(m: AutopilotMode): void {
     if (m === this.mode) return;
     this.mode = m;
     this.throttleCmd = null;
+    this.translateCmd = null;
+    this.trimming = false;
     this.altIntegral = 0;
     const v = this.vessel;
     if (m === 'heading') {
@@ -230,16 +264,23 @@ export class Autopilot {
       }
       case 'node': {
         const n = this.node;
+        this.translateCmd = null;
         if (!n) { this.mode = 'stability'; this.att.killRotation(v); return true; }
         const t = this.world.t;
-        const bt = this.burnTime(this.nodeRemaining);
+        // Small corrections — and the last of a big burn — go on the RCS jets: a large engine
+        // can't be lit for a fraction of a second, and its shutdown transient alone is worth
+        // tenths of a m/s, which a course correction days from the Moon can't afford.
+        const aMain = this.mainAccel();
+        const aRcs = this.rcsAccel();
+        const trimBurn = aRcs > 0 && this.nodeRemaining / aRcs < 400 && (aMain <= 0 || this.nodeRemaining < Math.max(0.4, aMain * 1.5));
+        const bt = trimBurn && !this.nodeStarted ? this.nodeRemaining / aRcs : this.burnTime(this.nodeRemaining);
         const start = n.t - (isFinite(bt) ? bt / 2 : 0);
         target.copy(this.nodeDir);
         if (!this.nodeStarted) {
           this.throttleCmd = 0;
-          this.status = t < start ? `${n.label} in ${Math.max(0, start - t).toFixed(0)} s · ${this.nodeRemaining.toFixed(0)} m/s` : '';
-          if (t >= start && this.att.error < 0.08) { this.nodeStarted = true; }
-          else if (t >= start + 30 && this.att.error < 0.2) this.nodeStarted = true;
+          this.status = t < start ? `${n.label} in ${Math.max(0, start - t).toFixed(0)} s · ${this.nodeRemaining.toFixed(trimBurn ? 1 : 0)} m/s${trimBurn ? ' (RCS)' : ''}` : '';
+          if (t >= start && this.att.error < 0.08) { this.nodeStarted = true; this.trimming = trimBurn; }
+          else if (t >= start + 30 && this.att.error < 0.2) { this.nodeStarted = true; this.trimming = trimBurn; }
         }
         if (this.nodeStarted) {
           const acc = v.telemetry.thrust / Math.max(1, v.mass);
@@ -248,24 +289,40 @@ export class Autopilot {
             // velocity-to-be-gained steering: thrust along Vg until it is nulled
             const vg = _d.length();
             if (this.lastVg.lengthSq() > 0 && _d.dot(this.lastVg) < 0) finished = true; // overshoot: Vg flipped
-            if (vg < 1 && this.att.error > 0.3) finished = true; // residual too small to chase
+            if (vg < 1 && this.att.error > 0.3 && !this.trimming) finished = true; // residual too small to chase
             this.lastVg.copy(_d);
             this.nodeRemaining = vg;
             if (vg > 0.05) this.nodeDir.copy(_d).multiplyScalar(1 / vg);
             target.copy(this.nodeDir);
           } else {
             // fallback: integrate delivered Δv along the fixed burn direction
-            const along = acc * dt * Math.max(0, _h.set(0, 1, 0).applyQuaternion(v.rot).dot(this.nodeDir));
+            const along = (acc + (this.translateCmd ? aRcs : 0)) * dt * Math.max(0, _h.set(0, 1, 0).applyQuaternion(v.rot).dot(this.nodeDir));
             this.nodeRemaining -= along;
           }
-          const thrMax = v.telemetry.thrust > 0 ? v.telemetry.thrust / Math.max(0.05, v.controls.throttle) : 0;
-          const aMax = thrMax / Math.max(1, v.mass);
-          // throttle down for the last second of the burn
-          this.throttleCmd = this.att.error > 0.25 ? 0 : aMax > 0 ? Math.max(0.05, Math.min(1, this.nodeRemaining / Math.max(0.5, aMax))) : 1;
-          this.status = `${n.label}: ${this.nodeRemaining.toFixed(1)} m/s remaining`;
-          if (v.stagePropellant().current <= 0 && v.nextStage) this.wantStage = true;
-          if (this.nodeRemaining <= 0.15 || finished) {
+          // the main engine hands over to the jets for the final few tenths of a second
+          if (!this.trimming && aRcs > 0 && v.telemetry.thrust <= 0 && this.nodeRemaining / aRcs < 60 && this.nodeRemaining < Math.max(0.4, aMain * 0.3)) this.trimming = true;
+          if (this.trimming) {
             this.throttleCmd = 0;
+            const k = this.att.error < 0.1 ? Math.min(1, this.nodeRemaining / Math.max(0.02, aRcs * 0.8)) : 0;
+            this.translateCmd = new Vector3(0, k, 0);
+            this.status = `${n.label}: RCS ${this.nodeRemaining.toFixed(2)} m/s remaining`;
+          } else {
+            const thrMax = v.telemetry.thrust > 0 ? v.telemetry.thrust / Math.max(0.05, v.controls.throttle) : 0;
+            const aMax = thrMax / Math.max(1, v.mass);
+            // throttle down for the last second of the burn
+            this.throttleCmd = this.att.error > 0.25 ? 0 : aMax > 0 ? Math.max(0.05, Math.min(1, this.nodeRemaining / Math.max(0.5, aMax))) : 1;
+            // an engine that can't throttle that deep stops early and leaves the rest to the jets
+            if (aRcs > 0 && aMax > 0 && this.nodeRemaining < aMax * 0.25 && this.nodeRemaining / aRcs < 60 && this.minThrottle() > this.nodeRemaining / aMax) {
+              this.throttleCmd = 0;
+              this.trimming = true;
+            }
+            this.status = `${n.label}: ${this.nodeRemaining.toFixed(1)} m/s remaining`;
+          }
+          if (v.stagePropellant().current <= 0 && v.nextStage && !this.trimming) this.wantStage = true;
+          if (this.nodeRemaining <= (this.trimming ? 0.03 : 0.15) || finished) {
+            this.throttleCmd = 0;
+            this.translateCmd = null;
+            this.trimming = false;
             this.node = null;
             this.mode = 'stability';
             this.completed = true;

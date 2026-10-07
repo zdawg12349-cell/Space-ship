@@ -103,15 +103,10 @@ export class MapView {
     const P = { x: 0, y: 0, z: 0 };
     const Q = { x: 0, y: 0, z: 0 };
     const rel = (b: CelestialBody) => b.globalPositionAt(t, new Vector3()).sub(fpos);
-    // body disc
+    // body disc: sunlit hemisphere, terminator and graticule
     this.project(_a.set(0, 0, 0), scale, P);
     const rpx = Math.max(3, focus.radius * scale);
-    const [cr, cg, cb] = focus.def.color;
-    const grad = c.createRadialGradient(P.x - rpx * 0.3, P.y - rpx * 0.3, rpx * 0.1, P.x, P.y, rpx);
-    grad.addColorStop(0, `rgba(${cr * 255},${cg * 255},${cb * 255},0.95)`);
-    grad.addColorStop(1, `rgba(${cr * 90},${cg * 90},${cb * 110},0.9)`);
-    c.fillStyle = grad;
-    c.beginPath(); c.arc(P.x, P.y, rpx, 0, Math.PI * 2); c.fill();
+    this.drawBody(focus, fpos, t, P.x, P.y, rpx, scale);
     if (focus.atmosphereTop > 0) {
       c.strokeStyle = 'rgba(120,180,255,0.35)';
       c.lineWidth = 1;
@@ -153,7 +148,8 @@ export class MapView {
       this.label(ch.name, Q.x, Q.y - 12, '#b394ff');
     }
     // vessel trajectory
-    if (v.body === focus || v.body.parent === focus || focus.parent === v.body) this.drawTrajectory(v, focus, fpos, scale);
+    const flying = v.hasLiftedOff && !v.landed && !v.splashed;
+    if (flying && (v.body === focus || v.body.parent === focus || focus.parent === v.body)) this.drawTrajectory(v, focus, fpos, scale);
     // other vessels
     for (const x of s.world.vessels) {
       if (x === v || x.destroyed) continue;
@@ -174,16 +170,94 @@ export class MapView {
     // info panel
     const R = v.body.radius;
     const per = o.e < 1 ? 2 * Math.PI * Math.sqrt(Math.pow(o.a, 3) / v.body.gm) : NaN;
-    const [ap, apu] = o.e < 1 ? fmtDist(o.apoapsis - R) : ['∞', ''];
+    const sub = o.periapsis < R;
+    const [ap, apu] = o.e < 1 ? fmtDist(o.apoapsis - R) : ['∞', 'escape'];
     const [pe, peu] = fmtDist(o.periapsis - R);
+    v.body.orientationAt(t, _q);
+    const inc = (Math.acos(Math.max(-1, Math.min(1, o.W.dot(_a.set(0, 0, 1).applyQuaternion(_q))))) * 180) / Math.PI;
     this.info.innerHTML = '';
     const row = (k: string, val: string) => this.info.appendChild(h('div', { class: 'tel', style: 'width:260px' }, h('span', { class: 'label' }, k), h('span', { class: 'value', style: 'font-size:14px' }, val)));
     row('Reference', v.body.name);
-    row('Apoapsis', `${ap} ${apu}`);
-    row('Periapsis', `${pe} ${peu}`);
-    row('Eccentricity', o.e.toFixed(4));
-    row('Period', isNaN(per) ? '—' : fmtTime(per));
-    row('Speed', `${(v.vel.length() / 1000).toFixed(3)} km/s`);
+    if (v.landed || v.splashed || (!v.hasLiftedOff && s.phase === 'countdown')) {
+      row('Status', v.splashed ? 'Splashed down' : s.phase === 'countdown' ? 'On the pad' : 'Landed');
+      row('Surface speed', `${v.telemetry.speedSurface.toFixed(1)} m/s`);
+    } else {
+      row('Status', o.e >= 1 ? 'Escape trajectory' : sub ? 'Sub-orbital' : 'In orbit');
+      row('Apoapsis', `${ap} ${apu}`);
+      row('Periapsis', sub ? 'below the surface' : `${pe} ${peu}`);
+      row('Inclination', `${inc.toFixed(2)}°`);
+      row('Eccentricity', o.e.toFixed(4));
+      row('Period', isNaN(per) || sub ? '—' : fmtTime(per));
+      row('Speed', `${(v.vel.length() / 1000).toFixed(3)} km/s`);
+    }
+  }
+
+  /** A lit globe: night side, the sunlit part bounded by the projected terminator, limb shading, graticule. */
+  private drawBody(b: CelestialBody, fpos: Vector3, t: number, cx: number, cy: number, r: number, scale: number): void {
+    const c = this.ctx;
+    const [cr, cg, cb] = b.def.color;
+    const rgb = (k: number, a = 1) => `rgba(${Math.round(Math.min(255, cr * 255 * k))},${Math.round(Math.min(255, cg * 255 * k))},${Math.round(Math.min(255, cb * 255 * k))},${a})`;
+    if (b.id === 'sun') {
+      const g = c.createRadialGradient(cx, cy, 0, cx, cy, r * 1.6);
+      g.addColorStop(0, 'rgba(255,244,220,1)'); g.addColorStop(0.62, 'rgba(255,214,150,0.95)'); g.addColorStop(1, 'rgba(255,180,90,0)');
+      c.fillStyle = g;
+      c.beginPath(); c.arc(cx, cy, r * 1.6, 0, Math.PI * 2); c.fill();
+      return;
+    }
+    // night side
+    c.fillStyle = rgb(0.16, 0.95);
+    c.beginPath(); c.arc(cx, cy, r, 0, Math.PI * 2); c.fill();
+    // sun direction in view space (the Sun sits at the heliocentric origin)
+    const sd = _a.copy(fpos).negate().normalize();
+    const cyw = Math.cos(this.yaw), syw = Math.sin(this.yaw), cp = Math.cos(this.pitch), sp = Math.sin(this.pitch);
+    const x1 = sd.x * cyw - sd.y * syw, y1 = sd.x * syw + sd.y * cyw;
+    const sx = x1, sy = y1 * cp - sd.z * sp, sz = y1 * sp + sd.z * cp;
+    const phi = Math.atan2(sy, sx);
+    // lit region: the sunward half of the disc plus (or minus) half the terminator ellipse
+    const k = -sz * r;
+    const cph = Math.cos(phi), sph = Math.sin(phi);
+    c.save();
+    c.beginPath();
+    c.arc(cx, cy, r, phi - Math.PI / 2, phi + Math.PI / 2);
+    for (let i = 0; i <= 48; i++) {
+      const a = Math.PI / 2 - (i / 48) * Math.PI;
+      const lx = k * Math.cos(a), ly = r * Math.sin(a);
+      c.lineTo(cx + lx * cph - ly * sph, cy + lx * sph + ly * cph);
+    }
+    c.closePath();
+    const g = c.createRadialGradient(cx + cph * r * 0.35, cy + sph * r * 0.35, r * 0.05, cx, cy, r * 1.05);
+    g.addColorStop(0, rgb(1.25));
+    g.addColorStop(0.7, rgb(0.85));
+    g.addColorStop(1, rgb(0.45));
+    c.fillStyle = g;
+    c.fill();
+    c.restore();
+    // graticule on the near hemisphere (body-fixed, so it turns with the planet)
+    if (r > 24) {
+      b.orientationAt(t, _q);
+      const P = { x: 0, y: 0, z: 0 };
+      const pt = new Vector3();
+      const line = (f: (u: number) => [number, number], strong: boolean) => {
+        c.strokeStyle = strong ? 'rgba(255,255,255,0.22)' : 'rgba(255,255,255,0.09)';
+        c.lineWidth = 1;
+        c.beginPath();
+        let pen = false;
+        for (let i = 0; i <= 72; i++) {
+          const [la, lo] = f(i / 72);
+          pt.set(Math.cos(la) * Math.cos(lo), Math.cos(la) * Math.sin(lo), Math.sin(la)).multiplyScalar(b.radius).applyQuaternion(_q);
+          this.project(pt, scale, P);
+          if (P.z < 0) { pen = false; continue; }
+          if (!pen) { c.moveTo(P.x, P.y); pen = true; } else c.lineTo(P.x, P.y);
+        }
+        c.stroke();
+      };
+      for (let lat = -60; lat <= 60; lat += 30) line((u) => [(lat * Math.PI) / 180, u * Math.PI * 2], lat === 0);
+      for (let lon = 0; lon < 360; lon += 30) line((u) => [(u - 0.5) * Math.PI, (lon * Math.PI) / 180], lon === 0);
+    }
+    // rim
+    c.strokeStyle = rgb(1.1, 0.5);
+    c.lineWidth = 1;
+    c.beginPath(); c.arc(cx, cy, r, 0, Math.PI * 2); c.stroke();
   }
 
   private drawTrajectory(v: import('../physics/vessel').Vessel, focus: CelestialBody, fpos: Vector3, scale: number): void {
@@ -210,8 +284,22 @@ export class MapView {
     for (let i = 0; i <= steps; i++) {
       const tt = t0 + (i / steps) * span;
       keplerPropagate(base, baseV, body.gm, tt - baseT, outR, outV);
-      // ground / atmosphere impact
-      if (outR.length() < body.radius) break;
+      // ground impact: mark where and when the trajectory meets the surface
+      if (outR.length() < body.radius && i > 0) {
+        const world = outR.clone().setLength(body.radius).add(body.globalPositionAt(tt, new Vector3())).sub(fpos);
+        this.project(world, scale, P);
+        c.lineTo(P.x, P.y);
+        c.stroke();
+        c.strokeStyle = '#ff6b5a';
+        c.lineWidth = 2;
+        c.beginPath();
+        c.moveTo(P.x - 5, P.y - 5); c.lineTo(P.x + 5, P.y + 5); c.moveTo(P.x + 5, P.y - 5); c.lineTo(P.x - 5, P.y + 5);
+        c.stroke();
+        this.label(`Impact · T−${fmtTime(tt - t0)}`, P.x + 10, P.y + 4, '#ff6b5a', 'left');
+        c.beginPath();
+        moved = false;
+        break;
+      }
       // SOI change (Moon from Earth)
       if (body.id === 'earth') {
         const moon = s.system.moon;

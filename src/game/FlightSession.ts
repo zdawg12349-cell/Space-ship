@@ -509,8 +509,8 @@ export class FlightSession {
   }
 
   /** Skip the count forward (applies the actions of skipped events silently). */
-  skipCountdown(toT: number): void {
-    if (this.phase !== 'countdown' || this.seq.T >= toT) return;
+  skipCountdown(toT = -10): void {
+    if (this.phase !== 'countdown' || !Number.isFinite(toT) || this.seq.T >= toT) return;
     for (const e of this.seq.skipTo(toT)) this.handleCountdown(e, true);
     // let the arms finish moving instantly
     if (this.complex) for (let i = 0; i < 120; i++) this.complex.update(0.25, this.rw.siteNight);
@@ -547,17 +547,31 @@ export class FlightSession {
     this.postStep();
   }
 
+  private apTranslating = false;
+
   private preStep(dt: number): void {
     const v = this.vessel;
     if (v.destroyed) return;
     const ap = this.autopilot;
-    // modes that fly engines need them armed: light the next stage if nothing is
-    if ((ap.mode === 'node' || ap.mode === 'land' || ap.mode === 'ascend') && !v.engines.some((e) => e.armed && !e.failed && (e.isSolid ? e.srbBurned < 1 : e.assembly.propellant > 0))) {
+    // modes that fly engines need one that can fire: light (or separate to) the next stage if
+    // nothing armed has propellant and an ignition left — e.g. the spacecraft leaves a third
+    // stage whose engine has used its restarts
+    const canFire = (e: Vessel['engines'][number]) => e.armed && !e.failed && (e.isSolid ? e.srbBurned < 1 : e.assembly.propellant > 0 && (e.running || e.restartsLeft > 0));
+    if ((ap.mode === 'node' || ap.mode === 'land' || ap.mode === 'ascend') && !v.engines.some(canFire)) {
       const next = v.nextStage;
       if (next && next.some((e) => e.action === 'ignite' || e.action === 'separate')) ap.wantStage = true;
     }
     ap.update(dt);
     if (ap.wantStage) { ap.wantStage = false; this.stageNow(); }
+    // trim burns translate on the RCS jets
+    if (ap.translateCmd) {
+      v.controls.rcs = true;
+      v.controls.tx = ap.translateCmd.x; v.controls.ty = ap.translateCmd.y; v.controls.tz = ap.translateCmd.z;
+      this.apTranslating = true;
+    } else if (this.apTranslating) {
+      v.controls.tx = 0; v.controls.ty = 0; v.controls.tz = 0;
+      this.apTranslating = false;
+    }
     if (ap.completed) {
       // orbit assist / burns hand back a vehicle with its engines off
       ap.completed = false;

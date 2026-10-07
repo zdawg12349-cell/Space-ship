@@ -5,7 +5,8 @@ import { getVehicle } from '../src/vehicles/catalog';
 import { AscentGuidance, FlightSoftware, launchAzimuth } from '../src/game/guidance';
 import { BoosterGuidance, LandingZone } from '../src/game/recovery';
 import type { TerrainProvider, Vessel } from '../src/physics/vessel';
-import { GameTerrain } from '../src/game/providers';
+import { GameTerrain, GameWeather, WEATHER_PRESETS } from '../src/game/providers';
+import type { WeatherProvider } from '../src/physics/vessel';
 import { landingZonesFor } from '../src/world/zones';
 import { LAUNCH_SITES } from '../src/world/sites';
 import { PhysicsWorld } from '../src/physics/world';
@@ -75,7 +76,8 @@ describe('booster recovery', () => {
 });
 
 describe('drone ship recovery', () => {
-  it('KESTREL HEAVY: side boosters land at the zones, the centre core on the drone ship deck', () => {
+  const fair = new GameWeather({ kind: 'fair', windDir: (270 * Math.PI) / 180, ...WEATHER_PRESETS.fair });
+  it.each([['calm air', calm], ['fair weather (jet stream, gusts)', fair]] as [string, WeatherProvider][])('KESTREL HEAVY in %s: side boosters land at the zones, the centre core on the drone ship deck', (_name, weather) => {
     // open ocean everywhere, except the landing pads and the ship's deck (the game's platforms)
     const gt = new GameTerrain(null as never, null as never);
     const terrain: TerrainProvider = {
@@ -84,7 +86,7 @@ describe('drone ship recovery', () => {
     };
     const site = LAUNCH_SITES.find((s) => s.id === 'cape')!;
     const t0 = dateToJ2000Seconds(new Date('2026-10-06T22:30:00Z'));
-    const world = new PhysicsWorld(new SolarSystem(t0), t0, terrain, calm);
+    const world = new PhysicsWorld(new SolarSystem(t0), t0, terrain, weather);
     const def = getVehicle('kestrel_heavy');
     const v = world.createVessel(def, world.system.earth);
     world.addVessel(v);
@@ -152,5 +154,63 @@ describe('drone ship recovery', () => {
       const d = Math.acos(Math.min(1, b.v.fixedDirection(world.t, new Vector3()).dot(b.g.zone.dir))) * 6371000;
       expect(d).toBeLessThan(40);
     }
+  }, 300_000);
+});
+
+describe('tower catch', () => {
+  it('LEVIATHAN booster flies back to the tower and is caught', () => {
+    const site = LAUNCH_SITES.find((s) => s.id === 'boca')!;
+    const { world } = makeWorld();
+    const def = getVehicle('leviathan');
+    const v = world.createVessel(def, world.system.earth);
+    world.addVessel(v);
+    world.active = v;
+    const lat = (site.lat * Math.PI) / 180, lon = (site.lon * Math.PI) / 180;
+    world.placeOnSurface(v, world.system.earth, lat, lon, 5, 0);
+    v.padSupportAlt = 5;
+    const az = launchAzimuth(lat, 26.5 * Math.PI / 180);
+    const zones = landingZonesFor(site, def, az, () => 5);
+    expect(zones.map((z) => z.kind)).toEqual(['tower']);
+    const boosters: { v: Vessel; g: BoosterGuidance }[] = [];
+    const said: string[] = [];
+    world.guidanceFactory = (bv) => {
+      const zone = zones.find((z) => !z.occupied);
+      if (!zone) return null;
+      zone.occupied = true;
+      const g = new BoosterGuidance(bv, world, zone);
+      g.onEvent = (id) => said.push(`${id}@${world.t.toFixed(0)}`);
+      boosters.push({ v: bv, g });
+      return { update: (vv, dt, env) => g.update(vv, dt, env) };
+    };
+    const g = new AscentGuidance(world, v, def.targetOrbit ?? 200000, az);
+    const fsw = new FlightSoftware(v);
+    world.stage(v);
+    const dt = 1 / 60;
+    let liftoff = false;
+    let peakQA = 0;
+    const t0 = world.t;
+    for (let i = 0; i < 900 / dt; i++) {
+      g.update(dt);
+      fsw.update(world.t, liftoff);
+      world.update(dt);
+      if (!liftoff && v.telemetry.verticalSpeed > 0.5) { liftoff = true; v.hasLiftedOff = true; }
+      if (liftoff && v.telemetry.altitude > 45) v.padSupportAlt = NaN;
+      for (const b of boosters) {
+        const tm = b.v.telemetry;
+        const qa = (tm.dynamicPressure / 1000) * Math.min(tm.aoa, 180 - tm.aoa);
+        if (!b.v.destroyed && !b.v.landed) peakQA = Math.max(peakQA, qa);
+        if (i % 120 === 0 && !b.v.landed && !b.v.destroyed) console.log(`t=${(world.t - t0).toFixed(0)} ${b.g.phase.padEnd(9)} alt ${(tm.altitude / 1000).toFixed(1)}km v ${tm.speedSurface.toFixed(0)} vz ${tm.verticalSpeed.toFixed(0)} q ${(tm.dynamicPressure / 1000).toFixed(1)} aoa ${Math.min(tm.aoa, 180 - tm.aoa).toFixed(1)} qa ${qa.toFixed(0)} miss ${(b.g.missDistance / 1000).toFixed(2)}km prop ${b.v.stagePropellant().current.toFixed(0)}`);
+      }
+      if (boosters.length && boosters.every((b) => b.v.landed || b.v.destroyed)) break;
+      world.drainEvents();
+    }
+    console.log(said.join(' '));
+    const b = boosters[0];
+    expect(b).toBeTruthy();
+    const dist = Math.acos(Math.min(1, b.v.fixedDirection(world.t, new Vector3()).dot(b.g.zone.dir))) * 6371000;
+    console.log('caught', b.v.landed, 'destroyed', b.v.destroyReason, 'dist', dist.toFixed(1), 'peak q·α', peakQA.toFixed(0), 'kPa·deg');
+    expect(b.v.destroyed, b.v.destroyReason).toBe(false);
+    expect(b.v.landed).toBe(true);
+    expect(dist).toBeLessThan(30);
   }, 300_000);
 });

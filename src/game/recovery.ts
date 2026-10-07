@@ -1,6 +1,6 @@
 import { Quaternion, Vector3 } from 'three';
 import { keplerPropagate } from '../physics/orbit';
-import { machDragFactor } from '../physics/aero';
+import { cd0ForShape, machDragFactor } from '../physics/aero';
 import type { PhysicsEnv, Vessel } from '../physics/vessel';
 import type { PhysicsWorld } from '../physics/world';
 import { AttitudeController } from './attitude';
@@ -34,6 +34,8 @@ const _b = new Vector3();
 const _c = new Vector3();
 const _d = new Vector3();
 const _q = new Quaternion();
+const _wq = new Quaternion();
+const _wp = new Vector3(), _wf = new Vector3(), _we = new Vector3(), _wu = new Vector3(), _wE = new Vector3(), _wN = new Vector3(), _ww = new Vector3();
 const _e = new Vector3();
 const _n = new Vector3();
 const _u = new Vector3();
@@ -79,18 +81,18 @@ export class BoosterGuidance {
     return out.copy(this.zone.dir).multiplyScalar(body.radius + h).applyQuaternion(_q);
   }
 
-  private predCache: { t: number; dir: Vector3; tof: number } | null = null;
+  private predCache: { t: number; dir: Vector3; tof: number; qMax: number } | null = null;
 
   /**
    * Impact prediction with gravity, drag and the rotating atmosphere (point mass, RK2, 0.5 s steps).
    * Returns the body-fixed impact direction and time of flight.
    */
-  predictImpact(t: number): { dir: Vector3; tof: number } {
+  predictImpact(t: number): { dir: Vector3; tof: number; qMax: number } {
     const cacheDt = this.phase === 'boostback' ? 0.04 : 0.2;
     if (this.predCache && Math.abs(t - this.predCache.t) < cacheDt) return this.predCache;
     const res = this.integrateImpact(t, null);
     this.impact.copy(res.dir);
-    this.predCache = { t, dir: this.impact, tof: res.tof };
+    this.predCache = { t, dir: this.impact, tof: res.tof, qMax: res.qMax };
     return this.predCache;
   }
 
@@ -106,22 +108,22 @@ export class BoosterGuidance {
   predictWithEntryBurn(t: number, startAlt: number): { dir: Vector3; tof: number } {
     if (this.burnCache && Math.abs(t - this.burnCache.t) < 0.25) return this.burnCache;
     const v = this.vessel;
-    const { three } = this.engineSets(v.engines);
+    const entrySet = this.entryEngines(v);
     let thrust = 0;
-    for (const e of three) thrust += e.mount.spec.thrustVac;
+    for (const e of entrySet) thrust += e.mount.spec.thrustVac;
     const dry = v.mass - v.stagePropellant().current;
     const reserve = dry * (Math.exp(450 / 3000) - 1);
     const usable = Math.max(0, v.stagePropellant().current - reserve);
     // Δv the burn can deliver before hitting the landing reserve
     let isp = 3000;
-    for (const e of three) isp = e.mount.spec.ispVac * 9.80665;
+    for (const e of entrySet) isp = e.mount.spec.ispVac * 9.80665;
     const res = this.integrateImpact(t, { thrust, ve: isp, gMax: 5.5 * 9.80665, stopSpeed: 650, startAlt, propUsable: usable });
     this.burnCache = { t, dir: res.dir, tof: res.tof };
     return this.burnCache;
   }
 
   /** Point-mass impact integration (gravity, drag in the rotating atmosphere, optional retro burn). */
-  private integrateImpact(t: number, burn: { thrust: number; ve: number; gMax: number; stopSpeed: number; startAlt: number; propUsable: number } | null): { dir: Vector3; tof: number } {
+  private integrateImpact(t: number, burn: { thrust: number; ve: number; gMax: number; stopSpeed: number; startAlt: number; propUsable: number } | null): { dir: Vector3; tof: number; qMax: number } {
     const v = this.vessel;
     const body = v.body;
     const R = body.radius + this.zone.height + (this.zone.catchHeight ?? 0);
@@ -139,14 +141,34 @@ export class BoosterGuidance {
     let propLeft = burn ? burn.propUsable : 0;
     let burnAcc = 0;
     let burning = false;
+    let qMax = 0;
+    // the mean wind (jet stream, boundary layer) pushes a falling stage hundreds of metres
+    const weather = this.world.weather;
+    body.orientationAt(t, _wq);
+    const pole = _wp.set(0, 0, 1).applyQuaternion(_wq);
+    _wq.invert();
+    const windAt = (rr: Vector3, rl: number, out: Vector3): Vector3 => {
+      out.set(0, 0, 0);
+      const alt = rl - body.radius;
+      if (!atm || alt > 60_000) return out;
+      const f = _wf.copy(rr).applyQuaternion(_wq);
+      weather.windAt(body, Math.asin(Math.max(-1, Math.min(1, f.z / rl))), Math.atan2(f.y, f.x), alt, t, _we);
+      const up = _wu.copy(rr).multiplyScalar(1 / rl);
+      const east = _wE.crossVectors(pole, up);
+      if (east.lengthSq() < 1e-12) return out;
+      east.normalize();
+      const north = _wN.crossVectors(up, east);
+      return out.copy(east).multiplyScalar(_we.x).addScaledVector(north, _we.y).addScaledVector(up, _we.z);
+    };
     const acc = (rr: Vector3, vv: Vector3, out: Vector3) => {
       const rl = rr.length();
       out.copy(rr).multiplyScalar(-body.gm / (rl * rl * rl));
-      const vAir = _c.copy(vv).sub(_a.crossVectors(omega, rr));
+      const vAir = _c.copy(vv).sub(_a.crossVectors(omega, rr)).sub(windAt(rr, rl, _ww));
       const sp = vAir.length();
       if (atm) {
         atm.sample(rl - body.radius, sample);
         if (sample.density > 0) {
+          qMax = Math.max(qMax, 0.5 * sample.density * sp * sp);
           const cd = cdBase * machDragFactor(sp / Math.max(1, sample.speedOfSound));
           out.addScaledVector(vAir, (-0.5 * sample.density * sp * cd * area) / mass);
         }
@@ -178,7 +200,7 @@ export class BoosterGuidance {
     }
     body.orientationAt(t + tof, _q);
     const dir = r.applyQuaternion(_q.invert()).normalize();
-    return { dir, tof };
+    return { dir, tof, qMax };
   }
 
   /**
@@ -220,8 +242,7 @@ export class BoosterGuidance {
     const alt = v.pos.length() - body.radius - (this.zone.height + (this.zone.catchHeight ?? 0));
     const ctl = v.controls;
     const engines = v.engines;
-    const { three, landing: landEngines } = this.engineSets(engines);
-    const boost3 = three;
+    const { three, landing: landEngines, boost: boost3 } = this.engineSets(engines);
 
     // predicted impact vs zone
     const pred = this.predictImpact(t);
@@ -291,7 +312,7 @@ export class BoosterGuidance {
         // the burn finishes before the air gets thick)
         const entryAlt = tm.speedSurface > 2600 ? 78000 : tm.speedSurface > 2000 ? 70000 : 62000;
         if (!this.entryDone && tm.verticalSpeed < 0 && alt < entryAlt && tm.speedSurface > 1300) {
-          this.phase = 'entry'; this.timer = 0; this.arm(three); this.say('entry_burn_start');
+          this.phase = 'entry'; this.timer = 0; this.arm(this.entryEngines(v)); this.say('entry_burn_start');
         }
         if (alt < 45000 && tm.verticalSpeed < 0 && (this.entryDone || tm.speedSurface <= 1300)) { this.phase = 'glide'; this.timer = 0; }
         break;
@@ -302,8 +323,10 @@ export class BoosterGuidance {
         // guide; on a fast, shallow descent to the ship the burn itself moves the impact point a
         // long way, so steer on where the stage will come down once this burn is finished.
         const ship = this.zone.kind === 'droneship';
+        // a hard-braking burn (a heavy booster on many engines) moves the impact point fast as well
+        const burnAware = ship || this.entryGain < 1;
         let errE: Vector3;
-        if (ship) {
+        if (burnAware) {
           const pb = this.predictWithEntryBurn(t, Infinity);
           body.orientationAt(t, _q);
           errE = zonePos.clone().sub(_d.copy(pb.dir).multiplyScalar(body.radius + this.zone.height).applyQuaternion(_q));
@@ -311,14 +334,20 @@ export class BoosterGuidance {
         errE.addScaledVector(_u, -errE.dot(_u));
         const em = errE.length();
         const burnDir = retro.clone();
-        if (em > 15) burnDir.addScaledVector(errE.normalize(), ship ? Math.min(0.3, em / 3000) : Math.min(0.6, em / 1200)).normalize();
+        // the tilt is an angle of attack: keep it inside the unpowered q·α budget, which is what the
+        // structure is left with the moment the burn ends
+        const tiltMax = Math.tan(Math.max(0.5, Math.min(35, 190000 / Math.max(1, tm.dynamicPressure))) * Math.PI / 180);
+        if (em > 15) burnDir.addScaledVector(errE.normalize(), Math.min(tiltMax, ship ? Math.min(0.3, em / 3000) : Math.min(0.6 * this.entryGain, em / (1200 / this.entryGain)))).normalize();
         this.att.update(v, { dir: burnDir }, dt);
-        ctl.engineMask = new Set(three);
-        ctl.throttle = (this.att.error < 0.2 ? 1 : 0.4) * this.gLimitThrottle(v, three, 5.5);
-        // burn down toward ~650 m/s but keep enough propellant for the landing burn
+        const entrySet = this.entryEngines(v);
+        ctl.engineMask = new Set(entrySet);
+        ctl.throttle = (this.att.error < 0.2 ? 1 : 0.4) * this.gLimitThrottle(v, entrySet, 5.5);
+        // burn down toward ~650 m/s — and on, for a dense stage, until the fall that follows stays
+        // inside the dynamic-pressure limit — but keep enough propellant for the landing burn
         const dry = v.mass - v.stagePropellant().current;
         const landingReserve = dry * (Math.exp(450 / 3000) - 1);
-        if (tm.speedSurface < 650 || v.stagePropellant().current < landingReserve || this.timer > 75) {
+        const slowEnough = tm.speedSurface < 650 && (tm.speedSurface < 300 || pred.qMax < 70000);
+        if (slowEnough || v.stagePropellant().current < landingReserve || this.timer > 75) {
           ctl.throttle = 0; this.entryDone = true; this.phase = 'glide'; this.timer = 0; this.say('entry_burn_end');
         }
         break;
@@ -326,18 +355,32 @@ export class BoosterGuidance {
       case 'glide': {
         ctl.throttle = 0;
         ctl.engineMask = null;
-        // engines-first with a small angle of attack that moves the impact point toward the zone:
-        // tilt the leading (engine) end toward the target — like a wing's leading edge — so the
-        // body's normal force pushes the trajectory that way.
+        // Engines-first with a small angle of attack that moves the impact point toward the zone.
+        // A stage falling end-first is a blunt body: at small angles the tilted axial drag beats
+        // the cross-flow and the lift points away from the leading end's tilt; past a few degrees
+        // the cross-flow wins and it points toward it. Use the stage's own lift curve to choose the
+        // tilt (and which way to lean) that pushes hardest toward the zone.
         const lead = vSurf.clone().normalize();
         const errH = zonePos.clone().sub(this.predictedPointInertial(t, pred.tof));
         errH.addScaledVector(_u, -errH.dot(_u));
         const errMag = errH.length();
-        // steering authority up to ~93% of the structural q·α limit
-        const maxA = Math.max(0.5, Math.min(12, 205000 / Math.max(1, tm.dynamicPressure))) * Math.PI / 180;
+        // steering authority up to ~80% of the structural q·α limit (gusts and the attitude loop's
+        // overshoot use the rest)
+        const maxA = Math.max(0.5, Math.min(12, 175000 / Math.max(1, tm.dynamicPressure))) * Math.PI / 180;
         if (errMag > 1) {
           const k = Math.min(1, errMag / 90);
-          lead.addScaledVector(errH.normalize(), Math.tan(maxA) * k).normalize();
+          const cdAx = cd0ForShape(v.aero.bottomShape) * machDragFactor(tm.mach);
+          let dNeg = 0, lNeg = 0, dZero = maxA;
+          for (let i = 1; i <= 16; i++) {
+            const d = (maxA * i) / 16;
+            const l = this.liftPerQ(v, d, cdAx);
+            if (l < lNeg) { lNeg = l; dNeg = d; }
+            if (l < 0) dZero = Math.min(maxA, (maxA * (i + 1)) / 16);
+          }
+          const lMax = this.liftPerQ(v, maxA, cdAx);
+          const toward = lMax > 0 && lMax >= -lNeg;
+          const tilt = toward ? dZero + (maxA - dZero) * k : dNeg * k;
+          lead.addScaledVector(errH.normalize(), (toward ? 1 : -1) * Math.tan(tilt)).normalize();
         }
         // nose = -lead (engines lead)
         this.att.update(v, { dir: lead.clone().negate() }, dt);
@@ -370,7 +413,9 @@ export class BoosterGuidance {
         // (firing into the flow relieves bending loads, so the burn may tilt further than the glide)
         // close to the ground the stage must be upright for the legs to take the load evenly
         const tiltCap = h < 80 ? 1.5 + (h / 80) * 8 : 20;
-        const maxTilt = Math.min(tiltCap, Math.max(4, Math.min(20, 420000 / qNow))) * Math.PI / 180;
+        // until the engines have spooled up there is no plume to relieve the loads
+        const powered = tm.thrust > 0.3 * thrustMax;
+        const maxTilt = Math.min(tiltCap, Math.max(powered ? 4 : 0.5, Math.min(20, (powered ? 420000 : 175000) / qNow))) * Math.PI / 180;
         const latMax = Math.min(0.5 * aReq, Math.tan(maxTilt) * aReq);
         if (latCmd.length() > latMax) latCmd.setLength(latMax);
         const thrustDir = _u.clone().multiplyScalar(aReq).add(latCmd);
@@ -398,10 +443,14 @@ export class BoosterGuidance {
     void distH;
   }
 
-  private sets: { three: Vessel['engines']; landing: Vessel['engines'] } | null = null;
+  private sets: { three: Vessel['engines']; landing: Vessel['engines']; boost: Vessel['engines'] } | null = null;
 
-  /** Engine subsets: a three-engine set (centre + two opposite) and the landing set. */
-  private engineSets(engines: Vessel['engines']): { three: Vessel['engines']; landing: Vessel['engines'] } {
+  /**
+   * Engine subsets: a three-engine set (centre + two opposite) for the entry burn, the boostback set
+   * (the engines a vehicle marks for it — a 33-engine booster turns back on its 13 inner engines —
+   * otherwise the three) and the landing set.
+   */
+  private engineSets(engines: Vessel['engines']): { three: Vessel['engines']; landing: Vessel['engines']; boost: Vessel['engines'] } {
     if (this.sets) return this.sets;
     const dist = (e: Vessel['engines'][number]) => Math.hypot(e.mount.pos[0], e.mount.pos[2]);
     const sorted = [...engines].sort((a, b) => dist(a) - dist(b));
@@ -421,8 +470,27 @@ export class BoosterGuidance {
       three = [c, a, b];
     } else three = sorted.slice(0, Math.min(3, sorted.length));
     const landing = inner.length >= 3 ? inner.slice(0, 3) : dist(sorted[0]) < 0.3 ? [sorted[0]] : sorted.slice(0, Math.min(2, sorted.length));
-    this.sets = { three, landing };
+    const marked = engines.filter((e) => e.mount.roles?.includes('boostback'));
+    this.sets = { three, landing, boost: marked.length >= 3 ? marked : three };
     return this.sets;
+  }
+
+  private entrySet: Vessel['engines'] | null = null;
+  /** steering gain of the entry burn: a hard-braking burn moves the ballistic impact point quickly */
+  private entryGain = 1;
+
+  /**
+   * Entry-burn engines: the three-engine set, unless it can't reach ~4 g on this stage (a heavy
+   * booster with many smaller engines), in which case the boostback set does the job.
+   */
+  private entryEngines(v: Vessel): Vessel['engines'] {
+    if (this.entrySet) return this.entrySet;
+    const { three, boost } = this.engineSets(v.engines);
+    let thrust = 0;
+    for (const e of three) thrust += e.mount.spec.thrustVac;
+    this.entrySet = thrust / v.mass < 4 * 9.80665 && boost.length > three.length ? boost : three;
+    if (this.entrySet === boost && boost !== three) this.entryGain = 0.35;
+    return this.entrySet;
   }
 
   /** throttle factor that keeps the burn under `gMax` g */
@@ -472,6 +540,20 @@ export class BoosterGuidance {
     const body = this.vessel.body;
     body.orientationAt(t, _q);
     return this.impact.clone().multiplyScalar(body.radius + this.zone.height).applyQuaternion(_q);
+  }
+
+  /**
+   * Lift per unit dynamic pressure (N/Pa, positive toward the leading end's tilt) for engines-first
+   * flight at angle of attack `d`, from the same normal-force and cross-flow terms the vessel's
+   * aerodynamics use, minus the sideways share of the tilted axial drag.
+   */
+  private liftPerQ(v: Vessel, d: number, cdAx: number): number {
+    const a = v.aero;
+    let cn = 0, side = 0;
+    for (const el of a.elements) { cn += el.cnAlpha; side += el.sideArea; }
+    const sn = Math.sin(d), cs = Math.cos(d);
+    const normal = cn * a.refArea * cs * sn + 1.2 * side * sn * sn;
+    return normal * cs - cdAx * a.refArea * cs * sn;
   }
 
   /** current aerodynamic deceleration estimate (engines-first, Cd ≈ 1) */
