@@ -13,7 +13,7 @@ import type { AutopilotMode } from './Autopilot';
 import { FlightSession, SessionEvent } from './FlightSession';
 import { Action, Input } from './Input';
 import { MissionDirector } from './MissionDirector';
-import { getMission, MissionDef, MISSIONS } from './missions';
+import { getMission, MissionDef, MissionStart, MISSIONS } from './missions';
 import type { WeatherKind } from './providers';
 import { FlightSnapshot, saveProgress, snapshotVessel, writeSnapshot } from './SaveGame';
 import type { Settings } from './Settings';
@@ -35,6 +35,8 @@ export interface FlightLaunchOptions {
   targetOrbit?: number;
   inclination?: number;
   planeTarget?: 'moon';
+  /** where a sandbox flight begins (missions define their own) */
+  start?: MissionStart;
   countdownStart?: number;
   recovery?: boolean;
   orbitAssist?: boolean;
@@ -91,7 +93,7 @@ export class FlightController {
       orbitAssist: opts.orbitAssist ?? mission?.orbitAssist ?? true,
       recovery: opts.recovery ?? mission?.recovery ?? true,
       missionId: mission?.id,
-      start: mission?.start,
+      start: mission?.start ?? opts.start,
       snapshot: snap,
       vegetation: g.vegetation,
     });
@@ -608,7 +610,7 @@ export class FlightController {
     const btn = (label: string, fn: () => void, primary = false) => { const b = h('button', { class: `btn${primary ? ' primary' : ''}` }, label); b.addEventListener('click', fn); buttons.appendChild(b); };
     if (ok && next) btn(`Next: ${next.title}`, () => this.app.endFlightTo({ missionId: next.id }), true);
     btn('Retry', () => this.app.endFlightTo(this.opts), !ok);
-    btn('Keep flying', () => { panel.remove(); });
+    btn('Keep flying', () => { panel.remove(); this.hud.setVisible(!this.cinematicHud); });
     btn('Main menu', () => this.app.endFlight());
     const panel = h('div', { class: 'overlay summary' },
       h('div', { class: 'crumb' }, m ? `Mission ${m.number} · ${m.subtitle}` : 'Sandbox'),
@@ -633,7 +635,10 @@ export class FlightController {
       ),
       buttons,
     );
-    setTimeout(() => this.app.ui.appendChild(panel), ok ? 2500 : 4000);
+    setTimeout(() => {
+      this.app.ui.appendChild(panel);
+      this.hud.setVisible(false);
+    }, ok ? 2500 : 4000);
   }
 
   dispose(): void {

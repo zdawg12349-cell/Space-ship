@@ -7,18 +7,60 @@ import { HeightContext, HeightSample, sampleHeight } from '../render/planet/heig
  * Physics-side terrain and weather. Terrain uses exactly the same height functions as the
  * renderer's terrain mesher, so the ground the vehicle touches is the ground that is drawn.
  */
+/**
+ * A flat landing surface laid over the terrain (landing-zone pad, drone-ship deck): inside its
+ * footprint the ground is at `height` and never water. Body-fixed; the footprint is a rectangle
+ * in the local tangent plane (half sizes along `axis` and across it).
+ */
+export interface Platform {
+  bodyId: string;
+  /** body-fixed unit direction of the centre */
+  dir: Vector3;
+  /** deck height above the body's reference radius (m) */
+  height: number;
+  halfLength: number;
+  halfWidth: number;
+  /** body-fixed unit vector of the long axis (tangent at the centre) */
+  axis: Vector3;
+  /** circular footprint instead of a rectangle (radius = halfLength) */
+  round?: boolean;
+}
+
+const _pd = new Vector3();
+
 export class GameTerrain implements TerrainProvider {
   private hs: HeightSample = { h: 0, water: 0, sand: 0, flat: 0 };
+  platforms: Platform[] = [];
   constructor(private readonly earth: HeightContext, private readonly moon: HeightContext) {}
+
+  /** Platform under a body-fixed direction, if any. */
+  platformAt(body: CelestialBody, dir: Vector3): Platform | null {
+    for (const p of this.platforms) {
+      if (p.bodyId !== body.id) continue;
+      const R = body.radius;
+      // tangent-plane offset from the centre (metres)
+      _pd.copy(dir).sub(p.dir).multiplyScalar(R);
+      const along = _pd.dot(p.axis);
+      const across = Math.sqrt(Math.max(0, _pd.lengthSq() - along * along - Math.pow(_pd.dot(p.dir), 2)));
+      if (p.round ? Math.hypot(along, across) <= p.halfLength : Math.abs(along) <= p.halfLength && across <= p.halfWidth) return p;
+    }
+    return null;
+  }
 
   heightAt(body: CelestialBody, dir: Vector3): number {
     const ctx = body.id === 'earth' ? this.earth : body.id === 'moon' ? this.moon : null;
     if (!ctx) return 0;
-    return sampleHeight(ctx, dir.x, dir.y, dir.z, this.hs, 1, 0).h;
+    const h = sampleHeight(ctx, dir.x, dir.y, dir.z, this.hs, 1, 0).h;
+    if (this.platforms.length) {
+      const p = this.platformAt(body, dir);
+      if (p) return Math.max(p.height, this.hs.water > 0.5 ? p.height : h);
+    }
+    return h;
   }
 
   isWater(body: CelestialBody, dir: Vector3): boolean {
     if (body.id !== 'earth') return false;
+    if (this.platforms.length && this.platformAt(body, dir)) return false;
     sampleHeight(this.earth, dir.x, dir.y, dir.z, this.hs, 1, 0);
     return this.hs.water > 0.5;
   }

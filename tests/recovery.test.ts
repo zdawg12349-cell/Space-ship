@@ -4,7 +4,14 @@ import { makeWorld, CAPE } from './helpers';
 import { getVehicle } from '../src/vehicles/catalog';
 import { AscentGuidance, FlightSoftware, launchAzimuth } from '../src/game/guidance';
 import { BoosterGuidance, LandingZone } from '../src/game/recovery';
-import type { Vessel } from '../src/physics/vessel';
+import type { TerrainProvider, Vessel } from '../src/physics/vessel';
+import { GameTerrain } from '../src/game/providers';
+import { landingZonesFor } from '../src/world/zones';
+import { LAUNCH_SITES } from '../src/world/sites';
+import { PhysicsWorld } from '../src/physics/world';
+import { SolarSystem } from '../src/physics/bodies';
+import { dateToJ2000Seconds } from '../src/physics/constants';
+import { calm } from './helpers';
 
 function zoneAt(lat: number, lon: number, id: string): LandingZone {
   return { id, name: id, dir: new Vector3(Math.cos(lat) * Math.cos(lon), Math.cos(lat) * Math.sin(lon), Math.sin(lat)), height: 0, radius: 40, kind: 'pad' };
@@ -62,6 +69,88 @@ describe('booster recovery', () => {
     console.log('landed', b.v.landed, 'destroyed', b.v.destroyReason, 'dist', dist.toFixed(1), 'impact', b.v.lastImpactSpeed.toFixed(2));
     expect(b.v.destroyed, b.v.destroyReason).toBe(false);
     expect(b.v.landed).toBe(true);
-    expect(dist).toBeLessThan(300);
+    // on the pad (48 m radius), not beside it
+    expect(dist).toBeLessThan(40);
   });
+});
+
+describe('drone ship recovery', () => {
+  it('KESTREL HEAVY: side boosters land at the zones, the centre core on the drone ship deck', () => {
+    // open ocean everywhere, except the landing pads and the ship's deck (the game's platforms)
+    const gt = new GameTerrain(null as never, null as never);
+    const terrain: TerrainProvider = {
+      heightAt: (b, d) => gt.platformAt(b, d)?.height ?? 0,
+      isWater: (b, d) => !gt.platformAt(b, d),
+    };
+    const site = LAUNCH_SITES.find((s) => s.id === 'cape')!;
+    const t0 = dateToJ2000Seconds(new Date('2026-10-06T22:30:00Z'));
+    const world = new PhysicsWorld(new SolarSystem(t0), t0, terrain, calm);
+    const def = getVehicle('kestrel_heavy');
+    const v = world.createVessel(def, world.system.earth);
+    world.addVessel(v);
+    world.active = v;
+    const lat = (site.lat * Math.PI) / 180, lon = (site.lon * Math.PI) / 180;
+    world.placeOnSurface(v, world.system.earth, lat, lon, 5, 0);
+    v.padSupportAlt = 5;
+    const az = launchAzimuth(lat, 28.6 * Math.PI / 180);
+    const zones = landingZonesFor(site, def, az, (d) => terrain.heightAt(world.system.earth, d));
+    for (const z of zones) {
+      const east = new Vector3(0, 0, 1).cross(z.dir).normalize();
+      const north = new Vector3().crossVectors(z.dir, east);
+      const axis = north.clone().multiplyScalar(Math.cos(az)).addScaledVector(east, Math.sin(az)).normalize();
+      gt.platforms.push(z.kind === 'droneship'
+        ? { bodyId: 'earth', dir: z.dir.clone(), height: z.height, halfLength: 45.5, halfWidth: 26, axis }
+        : { bodyId: 'earth', dir: z.dir.clone(), height: z.height, halfLength: 48, halfWidth: 48, axis, round: true });
+    }
+    expect(zones.some((z) => z.kind === 'droneship')).toBe(true);
+    const boosters: { v: Vessel; g: BoosterGuidance }[] = [];
+    world.guidanceFactory = (bv) => {
+      const zone = zones.find((z) => !z.occupied && (z.kind !== 'droneship' || bv.assemblies.some((a) => a.def.recovery === 'droneship'))) ?? zones.find((z) => !z.occupied);
+      if (!zone) return null;
+      zone.occupied = true;
+      const g = new BoosterGuidance(bv, world, zone);
+      const shipDir = g.stationAtImpact(world.t);
+      if (shipDir) {
+        const plat = gt.platforms.find((p) => !p.round)!;
+        plat.dir.copy(shipDir);
+        const east = new Vector3(0, 0, 1).cross(shipDir).normalize();
+        const north = new Vector3().crossVectors(shipDir, east);
+        plat.axis.copy(north).multiplyScalar(Math.cos(az)).addScaledVector(east, Math.sin(az)).normalize();
+        console.log('drone ship stationed', (Math.acos(Math.min(1, shipDir.dot(bv.fixedDirection(world.t, new Vector3())))) * 6371).toFixed(0), 'km downrange of the core');
+      }
+      boosters.push({ v: bv, g });
+      return { update: (vv, dt, env) => g.update(vv, dt, env) };
+    };
+    const g = new AscentGuidance(world, v, def.targetOrbit ?? 220000, az);
+    const fsw = new FlightSoftware(v);
+    world.stage(v);
+    const dt = 1 / 60;
+    let liftoff = false;
+    for (let i = 0; i < 1300 / dt; i++) {
+      g.update(dt);
+      fsw.update(world.t, liftoff);
+      world.update(dt);
+      if (!liftoff && v.telemetry.verticalSpeed > 0.5) { liftoff = true; v.hasLiftedOff = true; }
+      if (liftoff && v.telemetry.altitude > 45) v.padSupportAlt = NaN;
+      if (boosters.length >= 3 && boosters.every((b) => b.v.landed || b.v.destroyed)) break;
+      world.drainEvents();
+    }
+    for (const b of boosters) {
+      const fix = b.v.fixedDirection(world.t, new Vector3());
+      const dist = Math.acos(Math.min(1, fix.dot(b.g.zone.dir))) * 6371000;
+      console.log(b.g.zone.id, 'landed', b.v.landed, 'splashed', b.v.splashed, 'destroyed', b.v.destroyReason, 'dist', dist.toFixed(1), 'impact', b.v.lastImpactSpeed.toFixed(2));
+    }
+    expect(boosters.length).toBe(3);
+    const core = boosters.find((b) => b.g.zone.kind === 'droneship');
+    expect(core).toBeTruthy();
+    expect(core!.v.destroyed, core!.v.destroyReason).toBe(false);
+    expect(core!.v.landed).toBe(true);
+    expect(core!.v.splashed).toBe(false);
+    for (const b of boosters.filter((x) => x.g.zone.kind === 'pad')) {
+      expect(b.v.destroyed, b.v.destroyReason).toBe(false);
+      expect(b.v.landed).toBe(true);
+      const d = Math.acos(Math.min(1, b.v.fixedDirection(world.t, new Vector3()).dot(b.g.zone.dir))) * 6371000;
+      expect(d).toBeLessThan(40);
+    }
+  }, 300_000);
 });

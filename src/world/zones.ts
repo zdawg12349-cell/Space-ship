@@ -32,7 +32,7 @@ export function landingZonesFor(site: LaunchSite, def: VehicleDef, launchAzimuth
   const [lzE, lzN] = site.lz;
   const rtls = recoverable.filter((a) => a.recovery === 'rtls');
   rtls.forEach((_, i) => zones.push(mk(`LZ-${i + 1}`, `Landing Zone ${i + 1}`, lzE + i * 380, lzN - i * 120, 'pad')));
-  if (recoverable.some((a) => a.recovery === 'droneship')) {
+  if (recoverable.some((a) => a.recovery === 'droneship') && !site.inland) {
     // ~600 km downrange along the launch azimuth, at sea
     const dist = 610_000;
     zones.push(mk('ASDS', 'Drone ship "Tidewater Resolve"', Math.sin(launchAzimuthRad) * dist, Math.cos(launchAzimuthRad) * dist, 'droneship'));

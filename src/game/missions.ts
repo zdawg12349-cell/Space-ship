@@ -5,7 +5,7 @@ import type { WeatherKind } from './providers';
  * plus the sandbox. Objectives are evaluated by the MissionDirector against the live flight.
  */
 
-export type MissionStart = 'pad' | 'leo' | 'lunarOrbit' | 'moonSurface' | 'jupiterApproach';
+export type MissionStart = 'pad' | 'leo' | 'lunarOrbit' | 'moonSurface' | 'jupiterApproach' | 'entry';
 
 export type ObjectiveKind =
   | 'liftoff' | 'maxq' | 'karman' | 'orbit' | 'payload' | 'boosterLanded' | 'allBoostersLanded' | 'towerCatch' | 'srbSep' | 'lesJettison'

@@ -106,16 +106,19 @@ function vaporMaterial(): ShaderMaterial {
   });
 }
 
+const VERT_X = VERT.replace('varying vec2 vUv;', 'varying vec2 vUv;\nvarying float vX;').replace('vUv = uv;', 'vUv = uv;\n  vX = position.y;');
+
 function plasmaMaterial(): ShaderMaterial {
   return new ShaderMaterial({
-    uniforms: { uI: { value: 0 }, uTime: { value: 0 }, uLum: { value: 120 }, uSeed: { value: 0 } },
-    vertexShader: VERT,
+    uniforms: { uI: { value: 0 }, uTime: { value: 0 }, uLum: { value: 40 }, uSeed: { value: 0 } },
+    vertexShader: VERT_X,
     fragmentShader: /* glsl */ `
       uniform float uI;
       uniform float uTime;
       uniform float uLum;
       uniform float uSeed;
       varying vec2 vUv;
+      varying float vX;
       varying vec3 vN;
       varying vec3 vView;
       #include <common>
@@ -123,16 +126,21 @@ function plasmaMaterial(): ShaderMaterial {
       ${NOISE}
       void main() {
         #include <logdepthbuf_fragment>
-        float s = vUv.y;
+        // x: distance downstream of the stagnation point (body radii)
+        float x = -vX;
         vec3 N = normalize(vN), V = normalize(vView);
         // optically thin glowing layer: brightest where the line of sight grazes it
-        float fr = pow(1.0 - abs(dot(N, V)), 1.6);
-        float core = exp(-s * 3.2);
-        float n = ae_fbm(vec2(vUv.x * 18.0 + uSeed, s * 4.0 - uTime * 10.0));
-        float glow = uI * (core * 1.3 + fr * 0.9) * (0.6 + 0.8 * n) * (1.0 - smoothstep(0.55, 1.0, s));
-        vec3 hot = vec3(1.0, 0.93, 0.8), mid = vec3(1.0, 0.48, 0.2), edge = vec3(0.92, 0.32, 0.72);
-        vec3 col = mix(hot, mid, smoothstep(0.02, 0.35, s));
-        col = mix(col, edge, clamp(smoothstep(0.3, 0.9, s) * 0.65 + fr * 0.2, 0.0, 1.0));
+        float fr = pow(1.0 - abs(dot(N, V)), 1.4);
+        float n = ae_fbm(vec2(vUv.x * 18.0 + uSeed, x * 2.2 - uTime * 9.0));
+        float n2 = ae_noise(vec2(vUv.x * 46.0 - uSeed, x * 6.0 - uTime * 15.0));
+        // stagnation cap, shoulder (where the shock layer wraps round the edge) and the wake
+        float cap = exp(-x * 5.0);
+        float shoulder = exp(-pow((x - 0.45) / 0.25, 2.0));
+        float wake = exp(-x * 0.75) * smoothstep(0.3, 0.8, x) * (1.0 - smoothstep(3.6, 4.6, x));
+        float glow = uI * (cap * 1.4 + shoulder * 0.8 * (0.5 + fr) + wake * (0.35 + 0.9 * fr) * (0.5 + 0.9 * n2)) * (0.65 + 0.7 * n);
+        vec3 hot = vec3(1.0, 0.86, 0.62), mid = vec3(1.0, 0.46, 0.16), edge = vec3(0.9, 0.3, 0.62);
+        vec3 col = mix(hot, mid, smoothstep(0.03, 0.4, x));
+        col = mix(col, edge, smoothstep(0.6, 2.6, x) * 0.8 + fr * 0.15);
         gl_FragColor = vec4(col * glow * uLum, 1.0);
       }`,
     transparent: true, depthWrite: false, side: DoubleSide, blending: AdditiveBlending,
@@ -168,10 +176,12 @@ export class AeroShells {
     const s = i / 13;
     return [1.02 + 0.95 * Math.pow(s, 0.65), -s * 1.7] as [number, number];
   }), 48);
-  private sheathGeo = shell(Array.from({ length: 16 }, (_, i) => {
-    const s = i / 15;
-    return [0.02 + 1.45 * Math.sqrt(s), -s * 2.6] as [number, number];
-  }), 40);
+  // bow shock hugging the leading face (r = sqrt(2 Rs x), Rs ~ 2.4 body radii), then the
+  // luminous wake converging behind the vehicle
+  private sheathGeo = shell([
+    [0, 0], [0.31, -0.02], [0.54, -0.06], [0.76, -0.12], [0.98, -0.2], [1.2, -0.3], [1.38, -0.4], [1.47, -0.5],
+    [1.45, -0.7], [1.3, -1.0], [1.08, -1.5], [0.82, -2.2], [0.55, -3.0], [0.32, -3.8], [0.12, -4.6],
+  ], 40);
   private time = 0;
   /** 0..1 moisture available for condensation (weather) */
   humidity = 0.8;
@@ -237,14 +247,14 @@ export class AeroShells {
         _h.set(a.x, 0, a.z);
         if (_h.lengthSq() > 1e-8) _h.normalize().multiplyScalar(s.R * Math.min(1, ah * 3));
         const reff = Math.max(s.R, s.R * Math.abs(ay) + 0.5 * (s.y1 - s.y0) * ah);
-        const standoff = 0.14 * reff;
+        const standoff = 0.12 * reff;
         s.sheath.position.set(_h.x, yS, _h.z).addScaledVector(a, standoff);
         s.sheath.quaternion.setFromUnitVectors(_Y, a);
-        s.sheath.scale.setScalar(reff * (1 + 0.15 * s.pi));
+        s.sheath.scale.setScalar(reff * (1 + 0.1 * s.pi));
         const u = s.sheathMat.uniforms;
         u.uI.value = Math.min(1.2, s.pi);
         u.uTime.value = this.time;
-        u.uLum.value = 60 + 140 * Math.min(1, s.pi);
+        u.uLum.value = 14 + 50 * Math.min(1, s.pi);
       }
     }
     for (const [v, s] of this.items) {

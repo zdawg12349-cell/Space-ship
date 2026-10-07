@@ -115,7 +115,12 @@ export class MainMenu {
   // ------------------------------------------------------------------------------ sandbox
 
   private openSandbox(): void {
-    const cfg = { vehicle: 'kestrel9', site: 'cape', hour: 21.5, day: 7, weather: 'fair' as WeatherKind, orbit: 220, recovery: true, countdown: -60 };
+    const cfg = { vehicle: 'kestrel9', site: 'cape', hour: 21.5, day: 7, weather: 'fair' as WeatherKind, orbit: 220, recovery: true, countdown: -60, start: 'pad' as 'pad' | 'leo' | 'entry' };
+    const hasEntryCapsule = (id: string) => {
+      const v = LAUNCHERS.find((x) => x.id === id)!;
+      const sc = v.spacecraft ? v.assemblies.find((a) => a.id === v.spacecraft) : null;
+      return !!sc?.features?.heatShield;
+    };
     const detail = h('div', {});
     const list = h('div', { class: 'vehicle-list' });
     const renderDetail = () => {
@@ -143,6 +148,9 @@ export class MainMenu {
         else if (v.id === 'vostok') cfg.site = 'baikonur';
         else if (cfg.site === 'boca' || cfg.site === 'baikonur') cfg.site = 'cape';
         siteSeg.replaceWith(siteSeg = makeSiteSeg());
+        if (cfg.start === 'entry' && !hasEntryCapsule(v.id)) cfg.start = 'pad';
+        startSeg.replaceWith(startSeg = makeStartSeg());
+        updateGo();
         renderDetail();
         this.app.audio.play('ui');
       });
@@ -159,11 +167,21 @@ export class MainMenu {
     const orbit = h('input', { type: 'range', min: 160, max: 600, step: 10, value: cfg.orbit });
     orbit.addEventListener('input', () => { cfg.orbit = Number(orbit.value); orbitVal.textContent = `${cfg.orbit} km`; });
     const go = h('button', { class: 'btn primary', style: 'margin-top:20px' }, 'Roll out to the pad');
+    const updateGo = () => { go.textContent = cfg.start === 'pad' ? 'Roll out to the pad' : cfg.start === 'leo' ? 'Begin in orbit' : 'Begin at entry interface'; };
+    const makeStartSeg = () => {
+      const opts = [{ value: 'pad', label: 'Launch pad' }, { value: 'leo', label: 'Earth orbit' }];
+      if (hasEntryCapsule(cfg.vehicle)) opts.push({ value: 'entry', label: 'Entry interface' });
+      return segmented(opts, cfg.start, (x) => { cfg.start = x as typeof cfg.start; updateGo(); });
+    };
+    let startSeg = makeStartSeg();
     go.addEventListener('click', () => {
       this.app.audio.play('ui_select');
       const hh = Math.floor(cfg.hour), mm = Math.round((cfg.hour % 1) * 60);
       const date = new Date(Date.UTC(2026, 9, cfg.day, hh, mm, 0));
-      this.app.startFlight({ vehicleId: cfg.vehicle, siteId: cfg.site, date, weather: cfg.weather, targetOrbit: cfg.orbit * 1000, recovery: cfg.recovery, countdownStart: cfg.countdown });
+      this.app.startFlight({
+        vehicleId: cfg.vehicle, siteId: cfg.site, date, weather: cfg.weather, targetOrbit: cfg.orbit * 1000, recovery: cfg.recovery, countdownStart: cfg.countdown,
+        start: cfg.start,
+      });
     });
     renderDetail();
     const field = (label: string, el: HTMLElement, extra?: HTMLElement) => h('div', { class: 'field' }, h('div', { style: 'display:flex;justify-content:space-between;align-items:baseline' }, h('span', { class: 'label' }, label), extra ?? ''), el);
@@ -172,6 +190,7 @@ export class MainMenu {
       h('div', { class: 'two-col' },
         h('div', { style: 'display:grid;grid-template-columns:minmax(220px,0.8fr) 1fr;gap:28px' }, list, detail),
         h('div', {},
+          field('Begin at', startSeg),
           field('Launch site', siteSeg),
           field('Time of day', hour, hourVal),
           field('Weather', segmented([{ value: 'clear', label: 'Clear' }, { value: 'fair', label: 'Fair' }, { value: 'breezy', label: 'Breezy' }, { value: 'overcast', label: 'Overcast' }, { value: 'storm', label: 'Storm' }], cfg.weather, (x) => { cfg.weather = x as WeatherKind; })),

@@ -1,3 +1,4 @@
+import { RecoveryZones } from './site/RecoveryZones';
 import { AeroShells } from '../fx/AeroShells';
 import {
   AmbientLight, DirectionalLight, HemisphereLight, Matrix3, Matrix4, Mesh, PerspectiveCamera, Quaternion, RingGeometry, Scene,
@@ -158,6 +159,8 @@ export class RenderWorld {
   starBoost = 1;
   /** vehicles (camera-relative groups) */
   readonly vessels = new VesselVisuals();
+  /** landing-zone pads and the drone ship */
+  readonly zones = new RecoveryZones();
   readonly envProbe: EnvironmentProbe;
   /** heliocentric position of the object the lighting/shadows should centre on */
   readonly focusHelio = new Vector3();
@@ -242,6 +245,7 @@ export class RenderWorld {
     this.scene.add(this.sunLight);
     this.scene.add(this.sunLight.target);
     this.scene.add(this.vessels.root);
+    this.scene.add(this.zones.group);
     this.envProbe = new EnvironmentProbe(renderer, this.atmosphere, 64);
     this.plumes = new PlumeSystem(this.fxScene, this.scene, this.detailTex, () => this.post.linearDepth);
     this.effects = new Effects(this, 6000);

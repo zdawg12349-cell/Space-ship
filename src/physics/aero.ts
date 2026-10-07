@@ -71,9 +71,24 @@ export function buildAeroConfig(
     if (t > top || (t === top && lateral === 0)) { top = t; topSection = s; }
     if (s.y < bottom || (s.y === bottom && lateral === 0)) { bottom = s.y; bottomSection = s; }
   }
-  // Reference area: core diameter (largest axisymmetric radius on the axis) — side boosters add side area.
-  let coreR = 0.1;
+  // Reference area: core diameter (largest axisymmetric radius on the axis) — side boosters add
+  // side area. A body with nothing on the vehicle axis (a strap-on booster after separation keeps
+  // its lateral offset) uses its own main stack instead.
+  let coreR = 0;
   for (const { s, offX, offZ } of sections) if (offX === 0 && offZ === 0) coreR = Math.max(coreR, s.radius, s.topRadius ?? 0);
+  if (coreR === 0) {
+    const stacks = new Map<string, { len: number; r: number }>();
+    for (const { s, offX, offZ } of sections) {
+      const k = `${offX.toFixed(2)},${offZ.toFixed(2)}`;
+      const g = stacks.get(k) ?? { len: 0, r: 0 };
+      g.len += s.length;
+      g.r = Math.max(g.r, s.radius, s.topRadius ?? 0);
+      stacks.set(k, g);
+    }
+    let best = 0;
+    for (const g of stacks.values()) if (g.len > best) { best = g.len; coreR = g.r; }
+  }
+  coreR = Math.max(0.1, coreR);
   const refArea = Math.PI * coreR * coreR;
   const elements: AeroElement[] = [];
   let isCapsule = false;

@@ -35,6 +35,9 @@ export class PhysicsWorld {
   paused = false;
   events: WorldEvent[] = [];
   guidanceFactory: GuidanceFactory | null = null;
+  private rngState = 0x2f6b1;
+  /** deterministic uniform [0, 1) for physical perturbations */
+  rng(): number { this.rngState = (this.rngState * 16807) % 2147483647; return this.rngState / 2147483647; }
   /** debris older than this (s) and far from the camera is culled */
   debrisLifetime = 1800;
   /** called when vessels are created by separation */
@@ -464,9 +467,9 @@ export class PhysicsWorld {
         child.vel.addScaledVector(_a, dvChild);
         parent.vel.addScaledVector(_a, -dvParent);
         if (sep.spin) child.angVel.x += sep.spin;
-        // small random tumble
-        child.angVel.x += (Math.random() - 0.5) * 0.01;
-        child.angVel.z += (Math.random() - 0.5) * 0.01;
+        // small tumble (seeded: the same flight separates the same way every time)
+        child.angVel.x += (this.rng() - 0.5) * 0.01;
+        child.angVel.z += (this.rng() - 0.5) * 0.01;
       }
     }
     child.orbitDirty = true;

@@ -33,6 +33,7 @@ export async function runFlightTest(canvas: HTMLCanvasElement): Promise<void> {
   const session = new FlightSession(rw, system, terrain, {
     vehicleId: q.get('vehicle') ?? 'kestrel9', siteId: q.get('site') ?? 'cape', date, weather: (q.get('weather') as never) ?? 'fair',
     countdownStart: num('T', -120), recovery: q.get('recovery') !== '0',
+    start: (q.get('start') as never) ?? 'pad', targetOrbit: q.has('orbit') ? num('orbit', 220) * 1000 : undefined,
   });
   session.director.setMode((q.get('cam') as CameraMode) ?? 'cinematic');
   const log: string[] = [];

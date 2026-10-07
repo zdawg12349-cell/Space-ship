@@ -65,6 +65,7 @@ export class AscentGuidance {
   private stageCooldown = 0;
   private padAltitude = 0;
   private mecoHold = 0;
+  private becoHold = 0;
   enabled = true;
   /** fraction of propellant kept in a recoverable booster for its return */
   recoveryReserve = 0.155;
@@ -240,7 +241,7 @@ export class AscentGuidance {
       const recover = sepTargets.map((id) => v.getAssembly(id)).filter((a) => a && a.def.recovery && a.def.recovery !== 'none');
       for (const a of recover) {
         if (!a) continue;
-        const reserve = a.def.recovery === 'droneship' ? this.recoveryReserve * 0.62 : this.recoveryReserve;
+        const reserve = this.recoveryReserve;
         if (a === v.rootAssembly && a.engines.some((e) => e.running) && a.fuelFraction < reserve) {
           throttle = 0; // MECO
           this.mecoHold += dt;
@@ -304,6 +305,19 @@ export class AscentGuidance {
     const allSpent = sepAsm.every((a) => a.engines.length === 0 ? false : a.engines.every((e) => (e.isSolid ? e.srbBurned >= 0.999 : a.propellant <= 1) || e.failed));
     const rootSep = sepAsm.includes(v.rootAssembly);
     const recoverMeco = rootSep && sepAsm.some((a) => a.def.recovery && a.def.recovery !== 'none') && this.mecoHold > 2.0;
+    // reusable liquid side boosters keep a reserve to fly home: booster engine cut-off at the
+    // reserve, a second for the thrust to tail off, then separation
+    const liquidRecoverableSides = !rootSep && sepAsm.length > 0
+      && sepAsm.every((a) => a.def.recovery && a.def.recovery !== 'none' && a.engines.length > 0 && a.engines.every((e) => !e.isSolid));
+    if (liquidRecoverableSides && !allSpent) {
+      const low = sepAsm.some((a) => a.fuelFraction < this.recoveryReserve);
+      if (low || this.becoHold > 0) {
+        for (const a of sepAsm) for (const e of a.engines) e.armed = false;
+        this.becoHold += dt;
+        if (this.becoHold > 1.0) { this.becoHold = 0; doStage(); }
+        return;
+      }
+    }
     if (allSpent || recoverMeco) {
       // payload deployment and other non-propulsive events wait for orbit
       if (next.some((e) => e.action === 'separate' && e.targets.some((id) => v.getAssembly(id)?.def.separation?.kind === 'payload'))) return;
@@ -311,7 +325,6 @@ export class AscentGuidance {
       return;
     }
     // stages with no engines (e.g. spacecraft separation) wait
-    void dt;
   }
 }
 

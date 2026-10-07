@@ -590,10 +590,14 @@ export class Vessel {
       // turbulence buffeting
       const turb = env.weather.turbulence(altitude);
       if (turb > 0) {
+        // gusts: smooth pseudo-random signals of time (deterministic, no per-step white noise)
         const s = q * this.aero.refArea * 0.02 * turb;
-        torque.x += (Math.random() - 0.5) * s * L * 0.05;
-        torque.z += (Math.random() - 0.5) * s * L * 0.05;
-        force.addScaledVector(_east, (Math.random() - 0.5) * s * 0.5).addScaledVector(_north, (Math.random() - 0.5) * s * 0.5);
+        const tt = env.t + this.id * 13.7;
+        const n1 = Math.sin(tt * 1.7) * Math.sin(tt * 0.61 + 1.3), n2 = Math.sin(tt * 1.31 + 0.7) * Math.sin(tt * 0.47);
+        const n3 = Math.sin(tt * 2.3 + 2.1) * Math.sin(tt * 0.83), n4 = Math.sin(tt * 1.9 + 0.4) * Math.sin(tt * 0.37 + 2.2);
+        torque.x += n1 * 0.5 * s * L * 0.05;
+        torque.z += n2 * 0.5 * s * L * 0.05;
+        force.addScaledVector(_east, n3 * 0.5 * s * 0.5).addScaledVector(_north, n4 * 0.5 * s * 0.5);
       }
     }
     // heating (convective + radiative), leading end

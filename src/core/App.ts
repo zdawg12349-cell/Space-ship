@@ -134,6 +134,7 @@ export class App {
     this.rw.plumes.clear();
     this.rw.effects.clear();
     this.rw.aero.clear();
+    this.rw.zones.clear();
     this.rw.post.settings.letterbox = 0;
     this.system.setEpoch(this.menuTime0);
     this.menuT = 0;

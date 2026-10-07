@@ -169,9 +169,26 @@ export class FlightSession {
     this.autopilot.targetOrbit = config.targetOrbit ?? this.def.targetOrbit ?? 220_000;
     this.autopilot.azimuth = this.azimuth;
     this.autopilot.planeNormal = planeNormal;
-    if (config.orbitAssist !== false) this.autopilot.setMode('orbit');
+    if (startKind === 'pad') {
+      if (config.orbitAssist !== false) this.autopilot.setMode('orbit');
+    } else if (startKind === 'entry') this.autopilot.setMode('retrograde');
+    else if (startKind === 'leo') this.autopilot.setMode('stability');
     // recovery
+    terrain.platforms = [];
     this.zones = landingZonesFor(this.site, this.def, this.azimuth, (dir) => terrain.heightAt(system.earth, dir));
+    rw.zones.set(this.zones.filter((z) => z.kind !== 'tower').map((z) => ({
+      kind: z.kind === 'droneship' ? 'droneship' as const : 'pad' as const, name: z.name, dir: z.dir.clone(), height: z.height, heading: this.azimuth,
+    })));
+    // landing pads and the drone ship's deck are real surfaces for the physics
+    for (const z of this.zones) {
+      if (z.kind === 'tower') continue;
+      const east = new Vector3(0, 0, 1).cross(z.dir).normalize();
+      const north = new Vector3().crossVectors(z.dir, east);
+      const axis = z.kind === 'droneship' ? north.clone().multiplyScalar(Math.cos(this.azimuth)).addScaledVector(east, Math.sin(this.azimuth)).normalize() : north;
+      terrain.platforms.push(z.kind === 'droneship'
+        ? { bodyId: 'earth', dir: z.dir.clone(), height: z.height, halfLength: 45.5, halfWidth: 26, axis }
+        : { bodyId: 'earth', dir: z.dir.clone(), height: z.height, halfLength: 48, halfWidth: 48, axis, round: true });
+    }
     if (config.recovery !== false && this.zones.length) {
       this.world.guidanceFactory = (bv) => {
         const zone = this.zones.find((z) => !z.occupied && (z.kind !== 'droneship' || bv.assemblies.some((a) => a.def.recovery === 'droneship'))) ?? this.zones.find((z) => !z.occupied);
@@ -179,6 +196,18 @@ export class FlightSession {
         zone.occupied = true;
         const g = new BoosterGuidance(bv, this.world, zone);
         g.onEvent = (id) => this.emit({ type: 'booster', vessel: bv, id });
+        const shipDir = g.stationAtImpact(this.world.t);
+        if (shipDir) {
+          // the ship (its deck as a physics platform, and its visual) holds station there
+          const plat = terrain.platforms.find((p) => p.halfWidth < p.halfLength && !p.round);
+          const east = new Vector3(0, 0, 1).cross(shipDir).normalize();
+          const north = new Vector3().crossVectors(shipDir, east);
+          if (plat) {
+            plat.dir.copy(shipDir);
+            plat.axis.copy(north).multiplyScalar(Math.cos(this.azimuth)).addScaledVector(east, Math.sin(this.azimuth)).normalize();
+          }
+          this.rw.zones.move(zone.name, shipDir);
+        }
         this.boosters.push({ v: bv, g, zone });
         bv.name = `${bv.assemblies[0]?.def.name ?? 'Booster'}`;
         return { update: (vv, dt, env) => g.update(vv, dt, env) };
@@ -224,7 +253,19 @@ export class FlightSession {
       this.phase = snap.phase as FlightPhase;
       return v;
     }
-    const v = this.world.createVessel(this.def, kind === 'leo' ? sys.earth : kind === 'jupiterApproach' ? sys.get('jupiter') : sys.moon);
+    if (kind === 'entry') return this.createAtEntry(config);
+    const body0 = kind === 'leo' ? sys.earth : kind === 'jupiterApproach' ? sys.get('jupiter') : sys.moon;
+    // in Earth orbit only the orbital configuration remains (boosters and lower stages gone)
+    const v = kind === 'leo'
+      ? new Vessel(this.def.name, this.def, this.def.assemblies.filter((a) => orbitalAssemblies(this.def).has(a.id)), body0)
+      : this.world.createVessel(this.def, body0);
+    if (kind === 'leo') {
+      v.stageIndex = orbitalStageIndex(this.def);
+      // the upper stage is lit up to orbit: its engines stay armed for later burns
+      for (let i = 0; i < v.stageIndex; i++) for (const e of this.def.staging[i]) if (e.action === 'ignite') {
+        for (const id of e.targets) { const a = v.getAssembly(id); if (a) for (const en of a.engines) en.armed = true; }
+      }
+    }
     this.world.addVessel(v);
     const body = v.body;
     const rot = new Quaternion();
@@ -270,6 +311,38 @@ export class FlightSession {
       this.phase = 'transfer';
       for (const a of v.assemblies) if (a.def.features?.solarPanels) { a.solarDeployed = 1; a.solarTarget = 1; }
     }
+    return v;
+  }
+
+  /**
+   * Entry interface: the crew capsule alone at 122 km, 7.7 km/s, a 1.4° flight-path angle,
+   * heat shield forward, some 1,800 km up-range of the site so it comes down nearby.
+   */
+  private createAtEntry(config: FlightConfig): Vessel {
+    const sys = this.system, earth = sys.earth, t = this.world.t;
+    const scId = this.def.spacecraft ?? this.def.assemblies[this.def.assemblies.length - 1].id;
+    const keep = new Set<string>([scId]);
+    const v = new Vessel(this.def.name, this.def, this.def.assemblies.filter((a) => keep.has(a.id)), earth);
+    v.stageIndex = this.def.staging.findIndex((g) => g.some((e) => e.action === 'deploy_chutes'));
+    if (v.stageIndex < 0) v.stageIndex = this.def.staging.length;
+    this.world.addVessel(v);
+    const rot = new Quaternion();
+    earth.orientationAt(t, rot);
+    const lat = (this.site.lat * Math.PI) / 180, lon = ((this.site.lon - 17) * Math.PI) / 180;
+    const up = new Vector3(Math.cos(lat) * Math.cos(lon), Math.cos(lat) * Math.sin(lon), Math.sin(lat)).applyQuaternion(rot);
+    const north = new Vector3(-Math.sin(lat) * Math.cos(lon), -Math.sin(lat) * Math.sin(lon), Math.cos(lat)).applyQuaternion(rot);
+    const east = new Vector3().crossVectors(north, up);
+    const r = earth.radius + 122_000;
+    const gamma = (-1.4 * Math.PI) / 180;
+    const p = up.clone().multiplyScalar(r);
+    const vel = east.clone().multiplyScalar(Math.cos(gamma)).addScaledVector(up, Math.sin(gamma)).multiplyScalar(7700);
+    this.world.placeInOrbit(v, earth, p, vel, vel.clone().negate());
+    v.hasLiftedOff = true;
+    this.phase = 'coast';
+    this.milestones.add('orbit');
+    // we begin at the interface itself: the entry sequence starts on the first step
+    this.wasInAtmo = false;
+    void config;
     return v;
   }
 
@@ -505,12 +578,17 @@ export class FlightSession {
       this.emit({ type: 'message', text: 'Entry configuration: service module jettisoned, heat shield forward', level: 'info' });
       this.emit({ type: 'radio', id: 'entry_interface' });
     }
-    if (cap.def.features.parachutes && cap.chuteState === 'stowed' && tm.altitude < 11_000 && tm.speedSurface < 300 && tm.verticalSpeed < 0) {
+    const pc = cap.def.features.parachutes;
+    if (pc && cap.chuteState === 'stowed' && tm.altitude < 9_000 && tm.speedSurface < 240 && tm.verticalSpeed < 0) {
+      // drogues first (or the mains straight away on capsules without drogues)
       if (v.deployChutes()) {
         // drop any remaining staging step for the chutes so the player doesn't fire them twice
         if (v.nextStage?.some((e) => e.action === 'deploy_chutes')) v.stageIndex++;
         this.autopilot.setMode('off');
       }
+    } else if (pc && cap.chuteState === 'drogue' && tm.altitude < 3_200 && tm.speedSurface < 100) {
+      // drogues disreefed and cut away: the main canopies take over
+      v.deployChutes();
     }
   }
 
@@ -712,6 +790,8 @@ export class FlightSession {
     rw.focusHelio.copy(v.pos).add(this.bodyPos(v.body));
     rw.focusRadius = Math.max(40, Math.min(400, this.vesselLength(v) * 1.2));
     rw.update(t, realDt);
+    this.system.earth.orientationAt(t, _q);
+    rw.zones.update(realDt, this.bodyPos(this.system.earth), _q, this.system.earth.radius, rw.cameraHelio, rw.siteNight);
     rw.updateVehicles(realDt, t, world.vessels, v, (x) => this.bodyPos(x.body));
     // plasma wakes: the spacecraft on entry and any spent stage burning up within view
     for (const vs of world.vessels) {
@@ -780,4 +860,28 @@ export class FlightSession {
       plumeSourceHelio: w > 0 ? plume.multiplyScalar(1 / w) : null,
     };
   }
+}
+
+/** Assemblies still attached once the vehicle is in orbit: staging is replayed through the
+ *  upper stage's ignition and any jettisons (fairing, escape tower) that follow. */
+function orbitalAssemblies(def: VehicleDef): Set<string> {
+  const keep = new Set(def.assemblies.map((a) => a.id));
+  const n = orbitalStageIndex(def);
+  for (let i = 0; i < n; i++) for (const e of def.staging[i]) if (e.action === 'separate' || e.action === 'jettison') for (const id of e.targets) keep.delete(id);
+  return keep;
+}
+
+function orbitalStageIndex(def: VehicleDef): number {
+  const vacuumOnly = (id: string) => {
+    const a = def.assemblies.find((x) => x.id === id);
+    return !!a && a.engines.length > 0 && a.engines.every((m) => m.spec.nozzle === 'vacuum' || m.spec.thrustSL < m.spec.thrustVac * 0.6);
+  };
+  let i = 0;
+  for (; i < def.staging.length; i++) {
+    const g = def.staging[i];
+    if (i > 0 && g.some((e) => e.action === 'ignite' && e.targets.some(vacuumOnly))) { i++; break; }
+  }
+  // then any jettison-only groups (fairings, escape tower)
+  while (i < def.staging.length && def.staging[i].every((e) => e.action === 'jettison')) i++;
+  return Math.min(i, def.staging.length);
 }
