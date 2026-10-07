@@ -1,5 +1,6 @@
 import { Matrix4, PCFSoftShadowMap, Quaternion, Vector3, WebGLRenderer } from 'three';
 import { PhysicsWorld } from '../physics/world';
+import { EarthAtmosphere } from '../physics/atmosphere';
 import type { Vessel } from '../physics/vessel';
 import { getVehicle, LAUNCHERS } from '../vehicles/catalog';
 import { loadLiveryFonts } from '../render/vehicle/Livery';
@@ -28,6 +29,9 @@ export async function runViewer(canvas: HTMLCanvasElement): Promise<void> {
   const system = new SolarSystem(t0);
   const rw = new RenderWorld(renderer, assets, system, LAUNCH_SITES.map(siteToHeightDef));
   if (q.has('lod')) rw.earth.splitFactor = num('lod', 2.4);
+  // terrain=0: skip planet surfaces (fast iteration on vehicles / FX)
+  const noTerrain = q.get('terrain') === '0';
+  if (noTerrain) { rw.earth.group.visible = false; rw.moon.group.visible = false; rw.earth.splitFactor = 0.05; rw.moon.splitFactor = 0.05; }
   const W = num('w', window.innerWidth), H = num('h', window.innerHeight);
   rw.resize(W, H, num('dpr', 1));
   rw.camera.fov = num('fov', 55);
@@ -84,8 +88,23 @@ export async function runViewer(canvas: HTMLCanvasElement): Promise<void> {
     if (gf && q.get('fins') === '1') gf.gridFinsDeployed = 1;
     for (const a of vessel.assemblies) if (q.get('frost') === '0') a.def.sections.forEach(() => undefined);
     (window as any).__vessel = vessel;
+    // engines firing (static test): ?fire=throttle&palt=pressure-altitude (m)
+    if (q.has('fire')) {
+      const thr = num('fire', 1);
+      const stageIdx = num('stage', 0);
+      vessel.atm.pressure = EarthAtmosphere.sample(num('palt', 0), vessel.atm).pressure;
+      vessel.assemblies.forEach((a, ai) => {
+        const lit = stageIdx === 0 ? (ai === 0 || a.def.ignitesAtLaunch) : a.def.id === q.get('asm');
+        if (!lit) return;
+        for (const e of a.engines) {
+          e.armed = true; e.running = true; e.spool = 1; e.throttle = thr; e.ignitionAge = 5;
+          e.thrust = e.mount.spec.thrustVac * thr; e.temperature = 1500;
+        }
+      });
+    }
   }
   let t = t0;
+  let fxWarmed = false;
   const timeScale = num('timescale', 0);
   let last = performance.now();
   const frame = () => {
@@ -115,10 +134,21 @@ export async function runViewer(canvas: HTMLCanvasElement): Promise<void> {
       rw.focusHelio.copy(origin).addScaledVector(vup, num('ty', 30));
       rw.focusRadius = Math.max(40, num('shadow', 90));
       rw.update(t, dt);
-      rw.vessels.sync([vessel, ...extra], () => bodyPos, rw.cameraHelio, dt);
+      if (!fxWarmed) {
+        fxWarmed = true;
+        const site = LAUNCH_SITES.find((s) => s.id === (q.get('site') ?? 'cape'))!;
+        rw.effects.setAnchor(system.earth, (site.lat * Math.PI) / 180, (site.lon * Math.PI) / 180, site.padHeight);
+        rw.effects.flags.deluge = num('deluge', 0);
+        rw.effects.flags.venting = num('vent', 0);
+        // pre-run the particle simulation so clouds have developed by the first frame
+        const warm = num('fxwarm', 0);
+        for (let s = 0; s < warm * 30; s++) rw.updateVehicles(1 / 30, t, [vessel, ...extra], vessel, () => bodyPos);
+      }
+      rw.updateVehicles(dt, t, [vessel, ...extra], vessel, () => bodyPos);
       rw.render(dt);
+      w.__state.particles = rw.effects.particles.stats;
       w.__state.frames++;
-      w.__state.ready = rw.earth.ready && rw.earth.stats.pending === 0;
+      w.__state.ready = noTerrain || (rw.earth.ready && rw.earth.stats.pending === 0);
       w.__state.stats = { earth: rw.earth.stats };
       requestAnimationFrame(frame);
       return;

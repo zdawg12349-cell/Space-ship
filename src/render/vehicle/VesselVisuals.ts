@@ -37,6 +37,9 @@ export class VesselVisuals {
 
   visualOf(a: AssemblyRuntime): AssemblyVisual | undefined { return this.byRuntime.get(a); }
 
+  /** Render group of a vessel (camera-relative placement, vehicle-frame orientation). */
+  groupOf(v: Vessel): Group | undefined { return this.groups.get(v); }
+
   /** Remove everything (end of flight). */
   clear(): void {
     for (const g of this.groups.values()) this.root.remove(g);

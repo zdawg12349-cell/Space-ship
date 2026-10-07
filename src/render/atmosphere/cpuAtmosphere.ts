@@ -56,3 +56,21 @@ export function sunTransmittance(params: AtmosphereParams, posKm: Vector3, sunDi
 }
 
 function smoothstep(a: number, b: number, x: number): number { const t = Math.min(1, Math.max(0, (x - a) / (b - a))); return t * t * (3 - 2 * t); }
+
+const _d = new Vector3();
+const _od0 = new Vector3();
+/**
+ * Transmittance (RGB) along the straight segment a -> b (km, planet-centred). Uses the
+ * difference of optical depths to the top of the atmosphere along the same direction, which
+ * is exact as long as the segment doesn't pass through the planet.
+ */
+export function segmentTransmittance(params: AtmosphereParams, aKm: Vector3, bKm: Vector3, out = new Vector3()): Vector3 {
+  _d.subVectors(bKm, aKm);
+  const len = _d.length();
+  if (len < 1e-6) return out.set(1, 1, 1);
+  _d.multiplyScalar(1 / len);
+  _od0.copy(opticalDepth(params, aKm, _d, 16));
+  const odB = opticalDepth(params, bKm, _d, 16);
+  const tx = Math.max(0, _od0.x - odB.x), ty = Math.max(0, _od0.y - odB.y), tz = Math.max(0, _od0.z - odB.z);
+  return out.set(Math.exp(-tx), Math.exp(-ty), Math.exp(-tz));
+}

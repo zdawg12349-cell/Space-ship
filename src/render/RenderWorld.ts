@@ -2,7 +2,10 @@ import {
   AmbientLight, DirectionalLight, HemisphereLight, Matrix3, Matrix4, Mesh, PerspectiveCamera, Quaternion, RingGeometry, Scene,
   ShaderMaterial, SphereGeometry, Texture, Vector3, WebGLRenderer, DoubleSide,
 } from 'three';
-import { sunTransmittance } from './atmosphere/cpuAtmosphere';
+import { segmentTransmittance, sunTransmittance } from './atmosphere/cpuAtmosphere';
+import { PlumeSystem } from '../fx/Plume';
+import { Effects } from '../fx/Effects';
+import type { Vessel } from '../physics/vessel';
 import { EnvironmentProbe } from './lighting/EnvironmentProbe';
 import { VesselVisuals } from './vehicle/VesselVisuals';
 import { LaunchComplex } from './site/LaunchComplex';
@@ -162,6 +165,12 @@ export class RenderWorld {
   groundAlbedo = 0.12;
   /** sunlight colour at the focus (transmittance x shadow), exposed for FX/audio */
   readonly sunColorAtFocus = new Vector3(1, 1, 1);
+  /** exhaust plumes (fx scene) + their light on the surroundings */
+  readonly plumes: PlumeSystem;
+  /** particles (smoke, steam, trails, sparks...) and their emitters */
+  readonly effects: Effects;
+  /** atmospheric transmittance camera -> focus (RGB), for FX drawn after the composite */
+  readonly atmToFocus = new Vector3(1, 1, 1);
   /** launch complex at the active site (null in orbit / on the Moon) */
   complex: LaunchComplex | null = null;
   /** complex local frame (x east, y up, z south) -> world rotation, and its origin camera-relative */
@@ -231,6 +240,8 @@ export class RenderWorld {
     this.scene.add(this.sunLight.target);
     this.scene.add(this.vessels.root);
     this.envProbe = new EnvironmentProbe(renderer, this.atmosphere, 64);
+    this.plumes = new PlumeSystem(this.fxScene, this.scene, this.detailTex, () => this.post.linearDepth);
+    this.effects = new Effects(this, 6000);
     this.hemi = new HemisphereLight(0x8899bb, 0x443322, 0.0);
     this.scene.add(this.hemi);
     this.ambient = new AmbientLight(0xffffff, 0.0);
@@ -421,6 +432,7 @@ export class RenderWorld {
       T.multiplyScalar(k * k * (3 - 2 * k));
     }
     this.sunColorAtFocus.copy(T);
+    segmentTransmittance(this.atmosphere.params, camKm, focusKm, this.atmToFocus);
     const mx = Math.max(T.x, T.y, T.z, 1e-6);
     this.sunLight.color.setRGB(T.x / mx, T.y / mx, T.z / mx);
     this.sunLight.intensity = E * mx;
@@ -436,6 +448,13 @@ export class RenderWorld {
     // image-based lighting from the sky / planet below
     const env = this.envProbe.update(dt, camKm, this.sunDir, this.groundAlbedo);
     this.scene.environment = env;
+  }
+
+  /** Vehicles, plumes and particles for this frame (after update(), before render()). */
+  updateVehicles(dt: number, t: number, vessels: Vessel[], active: Vessel | null, bodyPos: (v: Vessel) => Vector3): void {
+    this.vessels.sync(vessels, bodyPos, this.cameraHelio, dt);
+    this.plumes.update(dt, vessels, this.vessels, this.post.size, this.atmToFocus);
+    this.effects.update(dt, t, vessels, active, this.complex);
   }
 
   render(dt: number, extra?: () => void): void {
