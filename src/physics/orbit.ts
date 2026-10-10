@@ -68,12 +68,21 @@ export function keplerPropagate(r0: Vector3, v0: Vector3, mu: number, dt: number
   for (let i = 0; i < 200 && sgn * (tof(hi) - dt) < 0; i++) { lo = hi; hi *= 2; }
   if (sgn < 0) { const tmp = lo; lo = hi; hi = tmp; }
   let chi = 0.5 * (lo + hi);
-  for (let iter = 0; iter < 100; iter++) {
+  // hyperbolic arcs: start from the asymptotic estimate (Vallado). Deep on a hyperbola the time of
+  // flight grows exponentially with chi and each Newton step only moves ~sqrt(-a), so a start at
+  // the bracket midpoint can need hundreds of steps
+  if (alpha < -1e-15) {
+    const a = 1 / alpha;
+    const g0 = sgn * Math.sqrt(-a) * Math.log((-2 * mu * alpha * dt) / (rdotv + sgn * Math.sqrt(-mu * a) * (1 - r0m * alpha)));
+    if (isFinite(g0) && g0 > lo && g0 < hi) chi = g0;
+  }
+  for (let iter = 0; iter < 200; iter++) {
     const f = tof(chi) - dt;
     if (f > 0) hi = chi; else lo = chi;
     const r = radius(chi);
     let next = chi - (f * sqrtMu) / Math.max(1e-9, r);
-    if (!(next > lo && next < hi) || !isFinite(next)) next = 0.5 * (lo + hi);
+    // a stalled Newton sequence (linear convergence) falls back to bisecting every other step
+    if (!(next > lo && next < hi) || !isFinite(next) || (iter > 24 && iter % 2 === 1)) next = 0.5 * (lo + hi);
     if (Math.abs(next - chi) < 1e-10 * Math.max(1, Math.abs(chi))) { chi = next; break; }
     chi = next;
   }

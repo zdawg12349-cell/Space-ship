@@ -35,7 +35,10 @@ function run(w: PhysicsWorld, ap: Autopilot, seconds: number, until?: () => bool
   const dt = 1 / 30;
   for (let i = 0; i < seconds / dt; i++) {
     ap.update(dt);
-    if (ap.mode !== 'orbit' && ap.throttleCmd !== null) ap.vessel.controls.throttle = ap.throttleCmd;
+    const c = ap.vessel.controls;
+    if (ap.mode !== 'orbit' && ap.throttleCmd !== null) c.throttle = ap.throttleCmd;
+    // trim burns translate on the RCS jets (as the flight session applies them)
+    if (ap.translateCmd) { c.rcs = true; c.tx = ap.translateCmd.x; c.ty = ap.translateCmd.y; c.tz = ap.translateCmd.z; } else { c.tx = 0; c.ty = 0; c.tz = 0; }
     if (ap.wantStage) { ap.wantStage = false; w.stage(ap.vessel); }
     w.update(dt);
     if (until?.()) break;
@@ -92,6 +95,42 @@ describe('manoeuvre planning', () => {
     expect(n).not.toBeNull();
     const m = /perigee (-?\d+) km/.exec(n!.result);
     expect(Math.abs(Number(m![1]) - 45)).toBeLessThan(60);
+  });
+});
+
+describe('trans-Earth injection, flown', () => {
+  it('the autopilot flies the TEI burn onto an Earth entry corridor', () => {
+    const { world: w, sys } = world('2026-10-18T07:00:00Z');
+    const def = getVehicle('lrv');
+    const v = w.createVessel(def, w.system.moon);
+    w.addVessel(v);
+    w.active = v;
+    circular(w, v, 60_000, 5);
+    for (const e of v.engines) e.armed = true;
+    v.controls.rcs = true;
+    const n = planTEI(v, sys, w.t)!;
+    expect(n).not.toBeNull();
+    console.log('TEI', n.dv.length().toFixed(0), 'm/s in', ((n.t - w.t) / 60).toFixed(1), 'min,', n.result, '· vehicle', (v.mass / 1000).toFixed(1), 't, accel', (v.engines.reduce((a, e) => a + e.mount.spec.thrustVac, 0) / v.mass).toFixed(2), 'm/s2');
+    w.updateRails(Math.max(0, n.t - w.t - 300));
+    const ap = new Autopilot(w, v);
+    ap.setNode(n);
+    ap.setMode('node');
+    let k = 0;
+    run(w, ap, 2400, () => {
+      if (k++ % 900 === 0) console.log('burn', (w.t - n.t).toFixed(0), ap.status, 'alt', (v.telemetry.altitude / 1000).toFixed(0), 'km');
+      return ap.mode !== 'node' || v.destroyed;
+    });
+    console.log('after TEI: mode', ap.mode, 'remaining', ap.nodeRemaining.toFixed(1), 'destroyed', v.destroyReason, 'body', v.body.name);
+    expect(v.destroyed, v.destroyReason).toBe(false);
+    // coast home on rails and read the Earth perigee
+    let perigee = NaN;
+    for (let i = 0; i < 6 * 24 * 6 && !v.destroyed; i++) {
+      w.updateRails(600);
+      if (v.body === sys.earth) { const o = v.updateOrbit(w.t); perigee = (o.periapsis - sys.earth.radius) / 1000; if (v.pos.length() < 1e8) break; }
+    }
+    console.log('Earth perigee', perigee.toFixed(0), 'km');
+    expect(v.body).toBe(sys.earth);
+    expect(Math.abs(perigee - 45)).toBeLessThan(15);
   });
 });
 
