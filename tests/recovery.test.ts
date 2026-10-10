@@ -188,7 +188,7 @@ describe('tower catch', () => {
     const g = new AscentGuidance(world, v, def.targetOrbit ?? 200000, az);
     const fsw = new FlightSoftware(v);
     world.stage(v);
-    const dt = 1 / 60;
+    const dt = 1 / 30;
     let liftoff = false;
     let peakQA = 0;
     const t0 = world.t;

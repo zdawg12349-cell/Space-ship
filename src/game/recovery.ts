@@ -186,8 +186,10 @@ export class BoosterGuidance {
       if (burn) {
         const sp = _c.copy(vel).sub(_a.crossVectors(omega, r)).length();
         const was = burning;
-        burning = propLeft > 0 && alt < burn.startAlt && r.dot(vel) < 0 && sp > burn.stopSpeed;
-        if (was && !burning) burnEnded = true;
+        // one continuous burn: once it has ended it does not relight when the fall speeds up again
+        burning = !burnEnded && propLeft > 0 && alt < burn.startAlt && r.dot(vel) < 0 && sp > burn.stopSpeed;
+        // the fall "after the burn" also covers a burn that never runs (already below its stop speed)
+        if (!burning && (was || sp <= burn.stopSpeed)) burnEnded = true;
         if (burning) {
           burnAcc = Math.min(burn.thrust / mass, burn.gMax);
           const used = ((burnAcc * mass) / burn.ve) * h;
@@ -355,9 +357,10 @@ export class BoosterGuidance {
         // inside the dynamic-pressure limit — but keep enough propellant for the landing burn
         const dry = v.mass - v.stagePropellant().current;
         const landingReserve = dry * (Math.exp(450 / 3000) - 1);
-        // (closed loop on the predicted fall; the planned stop speed is what the steering's
-        // burn model assumes, so the two end up close)
-        const slowEnough = tm.speedSurface < 650 && (tm.speedSurface < 300 || pred.qMax < 70000);
+        // the stop speed is re-planned from the current state twice a second and used both by the
+        // steering's burn model and for the cutoff, so the burn ends where the steering expects
+        if (t - this.entryPlanT > 0.5) { this.planEntryStop(t); this.entryPlanT = t; }
+        const slowEnough = tm.speedSurface < this.entryStopSpeed;
         if (slowEnough || v.stagePropellant().current < landingReserve || this.timer > 75) {
           ctl.throttle = 0; this.entryDone = true; this.phase = 'glide'; this.timer = 0; this.say('entry_burn_end');
         }
@@ -566,6 +569,7 @@ export class BoosterGuidance {
   private entrySet: Vessel['engines'] | null = null;
   /** airspeed at which the entry burn ends (the predictor and the burn share it) */
   private entryStopSpeed = 650;
+  private entryPlanT = -Infinity;
 
   /**
    * Choose where the entry burn ends: ~650 m/s, or slower for a dense stage, so that the fall
@@ -579,11 +583,15 @@ export class BoosterGuidance {
     const dry = v.mass - v.stagePropellant().current;
     const usable = Math.max(0, v.stagePropellant().current - dry * (Math.exp(450 / 3000) - 1));
     const fly = (stop: number) => this.integrateImpact(t, { thrust, ve: isp, gMax: 5.5 * 9.80665, stopSpeed: stop, startAlt: Infinity, propUsable: usable }).qMaxAfterBurn;
-    if (fly(650) <= 70000) { this.entryStopSpeed = 650; return; }
-    let lo = 250, hi = 650;
-    for (let i = 0; i < 8; i++) { const mid = 0.5 * (lo + hi); if (fly(mid) <= 70000) lo = mid; else hi = mid; }
-    this.entryStopSpeed = lo;
-    this.burnCache = null;
+    // (62 kPa planned against a 90 kPa structure: the model is simpler than the flight)
+    const prev = this.entryStopSpeed;
+    if (fly(650) <= 62000) this.entryStopSpeed = 650;
+    else {
+      let lo = 250, hi = 650;
+      for (let i = 0; i < 8; i++) { const mid = 0.5 * (lo + hi); if (fly(mid) <= 62000) lo = mid; else hi = mid; }
+      this.entryStopSpeed = lo;
+    }
+    if (this.entryStopSpeed !== prev) this.burnCache = null;
   }
   /** landing-burn state for the HUD and diagnostics */
   landingInfo = '';
