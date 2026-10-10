@@ -3,6 +3,7 @@ import { keplerPropagate, lambert } from '../physics/orbit';
 import type { Vessel } from '../physics/vessel';
 import type { PhysicsWorld } from '../physics/world';
 import { AttitudeController } from './attitude';
+import { EntryGuidance } from './entryGuidance';
 import { AscentGuidance } from './guidance';
 import type { ManeuverNode } from './Planner';
 
@@ -12,7 +13,7 @@ import type { ManeuverNode } from './Planner';
  */
 export type AutopilotMode =
   | 'off' | 'stability' | 'prograde' | 'retrograde' | 'radial' | 'antiradial' | 'normal' | 'antinormal'
-  | 'heading' | 'altitude' | 'orbit' | 'node' | 'land' | 'ascend';
+  | 'heading' | 'altitude' | 'orbit' | 'node' | 'land' | 'ascend' | 'entry';
 
 export const AUTOPILOT_LABELS: Record<AutopilotMode, string> = {
   off: 'Manual',
@@ -29,6 +30,7 @@ export const AUTOPILOT_LABELS: Record<AutopilotMode, string> = {
   node: 'Execute manoeuvre',
   land: 'Descent assist',
   ascend: 'Ascent to orbit',
+  entry: 'Guided entry',
 };
 
 const _d = new Vector3();
@@ -84,6 +86,10 @@ export class Autopilot {
   ascentTarget = 18_000;
   /** request staging (the session performs it) */
   wantStage = false;
+  /** landing site for guided entry (body-fixed unit vector), or null to fly a fixed bank */
+  entryTarget: Vector3 | null = null;
+  /** guided entry state while in 'entry' mode */
+  entryGuidance: EntryGuidance | null = null;
   /** RCS translation command (body axes, -1..1) for trim burns, or null when not translating */
   translateCmd: Vector3 | null = null;
   private trimming = false;
@@ -334,6 +340,7 @@ export class Autopilot {
         break;
       }
       case 'land': return this.updateLanding(dt);
+      case 'entry': return this.updateEntry(dt);
       case 'ascend': return this.updateVacuumAscent(dt);
       case 'altitude': {
         // point up (with a little tilt to null horizontal speed) and regulate throttle on vertical speed
@@ -352,6 +359,34 @@ export class Autopilot {
       }
     }
     this.att.update(v, { dir: target }, dt);
+    return true;
+  }
+
+  // ------------------------------------------------------------------------------ guided entry
+
+  /**
+   * Heat shield into the airflow, rolled so the capsule's lift points along the bank the entry
+   * guidance asks for (see entryGuidance.ts).
+   */
+  private updateEntry(dt: number): boolean {
+    const v = this.vessel;
+    const tm = v.telemetry;
+    const air = v.telemetry.airVelocity;
+    const sp = air.length();
+    if (sp < 1) { this.att.killRotation(v); return true; }
+    if (!this.entryGuidance) this.entryGuidance = new EntryGuidance(v, this.entryTarget);
+    const g = this.entryGuidance;
+    g.update(this.world.t);
+    const nose = _d.copy(air).multiplyScalar(-1 / sp);
+    const lift = g.liftDirection(v.pos, air, _h);
+    if (lift.lengthSq() < 0.5) { this.att.update(v, { dir: nose }, dt); return true; }
+    // the capsule's lift acts along its +X axis: roof (-Z) = nose × lift
+    const roof = new Vector3().crossVectors(nose, lift).normalize();
+    this.att.update(v, { dir: nose, up: roof }, dt);
+    const bankDeg = (g.bank * 180) / Math.PI;
+    const side = bankDeg < 3 || bankDeg > 177 ? '' : g.sign > 0 ? ' L' : ' R';
+    const togo = g.last ? ` · ${Math.max(0, g.last.range / 1000).toFixed(0)} km to go` : '';
+    this.status = tm.speedSurface > 600 ? `Entry guidance · bank ${bankDeg.toFixed(0)}°${side}${togo}` : 'Entry · holding bank';
     return true;
   }
 

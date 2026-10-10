@@ -5,7 +5,7 @@ import { EarthAtmosphere } from '../physics/atmosphere';
 import { WARP_LEVELS } from '../physics/world';
 import { CAMERA_MODES } from '../camera/CameraDirector';
 import { HUD } from '../ui/HUD';
-import { h, hide, show } from '../ui/dom';
+import { fmtTime, h, hide, show } from '../ui/dom';
 import { MapView } from '../ui/MapView';
 import { PhotoMode } from '../ui/PhotoMode';
 import { SettingsPanel } from '../ui/SettingsPanel';
@@ -89,6 +89,7 @@ export class FlightController {
       targetOrbit: opts.targetOrbit ?? mission?.targetOrbit,
       inclination: opts.inclination ?? mission?.inclination,
       planeTarget: opts.planeTarget ?? mission?.planeTarget,
+      landingTarget: mission?.landingTarget,
       countdownStart: opts.countdownStart ?? mission?.countdownStart ?? -120,
       orbitAssist: opts.orbitAssist ?? mission?.orbitAssist ?? true,
       recovery: opts.recovery ?? mission?.recovery ?? true,
@@ -293,7 +294,22 @@ export class FlightController {
       case 'cancel': ap.setNode(null); if (ap.mode === 'node') s.setAutopilot('stability'); return;
       case 'land': s.setAutopilot('land'); this.app.audio.radio?.say('pdi_go', 2); return;
       case 'ascend': s.setAutopilot('ascend'); this.app.audio.radio?.say('moon_ascent_go', 2); return;
-      case 'plan_deorbit': node = planDeorbit(v, t); break;
+      case 'plan_deorbit': {
+        const target = s.landingTarget;
+        if (!target || v.body.id !== 'earth') { node = planDeorbit(v, t); break; }
+        // a few days of landing opportunities to search: let the HUD show the message first
+        this.hud.log(`Planning deorbit to ${target.name}…`, s.met);
+        setTimeout(() => {
+          if (this.disposed) return;
+          const nd = planDeorbit(v, s.world.t, 40_000, target);
+          ap.setNode(nd);
+          const la = (target.lat * Math.PI) / 180, lo = (target.lon * Math.PI) / 180;
+          ap.entryTarget = new Vector3(Math.cos(la) * Math.cos(lo), Math.cos(la) * Math.sin(lo), Math.sin(la));
+          const wait = nd.t - s.world.t;
+          this.hud.log(`${nd.label}: ${nd.dv.length().toFixed(0)} m/s · ${nd.result}${wait > 600 ? ` · in ${fmtTime(wait)}` : ''}`, s.met, 'good');
+        }, 60);
+        return;
+      }
       case 'plan_circ': node = planCircularize(v, t); break;
       case 'plan_tli': {
         // a second or so of trajectory search: let the HUD show the message first

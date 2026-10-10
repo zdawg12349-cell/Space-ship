@@ -17,7 +17,7 @@ import { BoosterGuidance } from './recovery';
 import type { MissionStart } from './missions';
 import { FlightSnapshot, restoreVessel } from './SaveGame';
 import { keplerPropagate } from '../physics/orbit';
-import { lunarLaunchPlane } from './Planner';
+import { lunarLaunchPlane, type LandingTarget } from './Planner';
 
 /**
  * One flight, from the terminal count to wherever it ends. Owns the physics world, the
@@ -52,6 +52,8 @@ export interface FlightConfig {
   vegetation?: number;
   /** launch into the plane that contains the Moon at arrival (translunar missions) */
   planeTarget?: 'moon';
+  /** where a crewed return should come down */
+  landingTarget?: LandingTarget;
 }
 
 export type SessionEvent =
@@ -89,6 +91,8 @@ export class FlightSession {
   /** simulation time of liftoff (NaN before) */
   liftoffT = NaN;
   readonly config: FlightConfig;
+  /** where a crewed return should come down: the mission's, or the recovery area of an inland site */
+  readonly landingTarget: LandingTarget | null;
   readonly azimuth: number;
   /** inclination of a computed launch-window plane (deg), if any */
   planeInclination = 0;
@@ -114,6 +118,11 @@ export class FlightSession {
 
   constructor(readonly rw: RenderWorld, system: SolarSystem, terrain: GameTerrain, config: FlightConfig) {
     this.config = config;
+    {
+      const site = LAUNCH_SITES.find((x) => x.id === config.siteId);
+      // crews launched from an inland site come home to the steppe a few hundred km downrange
+      this.landingTarget = config.landingTarget ?? (site?.inland ? { lat: site.lat + 1.4, lon: site.lon + 6.3, name: `the ${site.region} recovery area` } : null);
+    }
     this.system = system;
     this.def = getVehicle(config.vehicleId);
     this.site = LAUNCH_SITES.find((s) => s.id === config.siteId) ?? LAUNCH_SITES[0];
@@ -677,7 +686,9 @@ export class FlightSession {
         // separate everything but the capsule directly
         this.world.separate(v, v.assemblies.filter((a) => a !== cap).map((a) => a.id));
       }
-      this.autopilot.setMode('retrograde');
+      // guided entry: bank the capsule's lift toward the landing site when the deorbit was aimed
+      // at one, otherwise hold a steady 60° bank
+      this.autopilot.setMode('entry');
       this.emit({ type: 'message', text: 'Entry configuration: service module jettisoned, heat shield forward', level: 'info' });
       this.emit({ type: 'radio', id: 'entry_interface' });
     }

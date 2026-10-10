@@ -1,3 +1,4 @@
+import type { LandingTarget } from './Planner';
 import type { WeatherKind } from './providers';
 
 /**
@@ -36,6 +37,8 @@ export interface MissionDef {
   inclination?: number;
   /** launch into the plane containing the Moon at arrival */
   planeTarget?: 'moon';
+  /** where a crewed return should come down (the deorbit planner and entry guidance aim here) */
+  landingTarget?: LandingTarget;
   countdownStart: number;
   orbitAssist: boolean;
   recovery: boolean;
@@ -87,6 +90,7 @@ export const MISSIONS: MissionDef[] = [
     id: 'crew', number: 6, title: 'Crew Rotation', subtitle: 'Steppe launch · orbit · return',
     briefing: 'Three crew on the steppe, a four-booster kerosene rocket and a launch escape tower. Reach orbit, then bring them home: a retrograde deorbit burn, the fireball of entry, parachutes and a soft-landing burn on the grassland.',
     vehicle: 'vostok', site: 'baikonur', date: '2026-10-07T08:12:00Z', weather: 'fair', targetOrbit: 210_000, inclination: 51.6, countdownStart: -60, orbitAssist: true, recovery: false, start: 'pad',
+    landingTarget: { lat: 47.36, lon: 69.6, name: 'the Kazakh steppe' },
     objectives: [{ kind: 'lesJettison', text: 'Escape tower jettison' }, { kind: 'orbit', text: 'Reach orbit' }, { kind: 'deorbit', text: 'Deorbit burn' }, { kind: 'survivedEntry', text: 'Survive entry' }, { kind: 'softLanding', text: 'Land the crew safely' }],
     tags: ['Crew', 'Reentry'], mood: 'tension',
   },

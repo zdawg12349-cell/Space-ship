@@ -1,6 +1,7 @@
 import { Quaternion, Vector3 } from 'three';
 import type { CelestialBody, SolarSystem } from '../physics/bodies';
 import { keplerPropagate } from '../physics/orbit';
+import { predictEntry } from './entryGuidance';
 import type { Vessel } from '../physics/vessel';
 
 /**
@@ -48,19 +49,136 @@ function orbitPeriod(r: Vector3, v: Vector3, mu: number): number {
   return e < 1 && a > 0 ? 2 * Math.PI * Math.sqrt((a * a * a) / mu) : Infinity;
 }
 
-export function planDeorbit(v: Vessel, t: number, targetPe = 40_000): ManeuverNode {
+/** A place on a body's surface for a deorbit to aim at (geodetic degrees). */
+export interface LandingTarget { lat: number; lon: number; name: string }
+
+/**
+ * Deorbit burn: retrograde, lowering perigee into the entry corridor. Without a landing target it
+ * burns in 45 s. With one, it picks the opportunity in the next day whose touchdown falls closest
+ * to the target: a coarse scan follows each candidate's post-burn conic to entry interface and adds
+ * a typical entry ground range, then the best opportunities are refined by flying the entry
+ * through the atmosphere as a ballistic capsule.
+ */
+export function planDeorbit(v: Vessel, t: number, targetPe = 40_000, target?: LandingTarget): ManeuverNode {
   const body = v.body;
   const mu = body.gm;
-  const tb = t + 45;
-  keplerPropagate(v.pos, v.vel, mu, tb - t, _r, _v);
-  const r = _r.length();
-  const rpT = body.radius + targetPe;
-  const a2 = (r + rpT) / 2;
-  const vNew = Math.sqrt(mu * (2 / r - 1 / a2));
-  // retrograde along the current velocity (keeps the flight-path direction)
+  const burnAt = (tb: number, rOut: Vector3, vOut: Vector3) => {
+    keplerPropagate(v.pos, v.vel, mu, tb - t, rOut, vOut);
+    const r = rOut.length();
+    const a2 = (r + body.radius + targetPe) / 2;
+    const vNew = Math.sqrt(mu * (2 / r - 1 / a2));
+    // retrograde along the current velocity (keeps the flight-path direction)
+    const dvMag = vOut.length() - vNew;
+    return dvMag;
+  };
+  let tb = t + 45;
+  let note = `Perigee ${(targetPe / 1000).toFixed(0)} km — entry`;
+  if (target && body.id === 'earth' && body.atmosphere) {
+    const best = bestDeorbitTime(v, t, target, burnAt);
+    if (best) {
+      tb = best.t;
+      note = `Lands near ${target.name} (~${Math.max(5, Math.round(best.miss / 5000) * 5)} km)`;
+    }
+  }
+  const dvMag = burnAt(tb, _r, _v);
   const vHat = _v.clone().normalize();
-  const dvMag = _v.length() - vNew;
-  return { t: tb, dv: vHat.clone().multiplyScalar(-dvMag), prograde: -dvMag, label: 'Deorbit burn', result: `Perigee ${(targetPe / 1000).toFixed(0)} km — entry` };
+  return { t: tb, dv: vHat.clone().multiplyScalar(-dvMag), prograde: -dvMag, label: 'Deorbit burn', result: note };
+}
+
+/** Great-circle distance (m) between a body-fixed unit direction and a lat/lon in degrees. */
+function surfaceDistance(body: CelestialBody, dirFixed: Vector3, lat: number, lon: number): number {
+  const la = (lat * Math.PI) / 180, lo = (lon * Math.PI) / 180;
+  const d = dirFixed.x * Math.cos(la) * Math.cos(lo) + dirFixed.y * Math.cos(la) * Math.sin(lo) + dirFixed.z * Math.sin(la);
+  return Math.acos(Math.max(-1, Math.min(1, d))) * body.radius;
+}
+
+function bestDeorbitTime(v: Vessel, t: number, target: LandingTarget, burnAt: (tb: number, r: Vector3, v: Vector3) => number): { t: number; miss: number } | null {
+  const body = v.body;
+  const mu = body.gm;
+  const entryR = body.radius + 100_000;
+  const q = new Quaternion();
+  const r0 = new Vector3(), v0 = new Vector3(), rE = new Vector3(), vE = new Vector3(), fx = new Vector3();
+  // capsule ballistic coefficient: the module that flies the entry (the service module is shed)
+  const sc = v.assemblies.find((a) => a.def.features?.heatShield);
+  const mass = sc ? Math.max(500, sc.mass) : v.mass;
+  const area = sc ? Math.PI * Math.pow(Math.max(...sc.def.sections.map((x) => x.radius)), 2) : v.aero.refArea;
+  /** post-burn state at entry interface (100 km), or null */
+  const toEntry = (tb: number): { t: number } | null => {
+    const dv = burnAt(tb, r0, v0);
+    if (!isFinite(dv) || dv < 0) return null;
+    v0.addScaledVector(v0.clone().normalize(), -dv);
+    const T = orbitPeriod(r0, v0, mu);
+    if (!isFinite(T)) return null;
+    let lo = 0, hi = T / 2;
+    keplerPropagate(r0, v0, mu, hi, rE, vE);
+    if (rE.length() > entryR) return null;
+    for (let i = 0; i < 40; i++) {
+      const mid = (lo + hi) / 2;
+      keplerPropagate(r0, v0, mu, mid, rE, vE);
+      if (rE.length() > entryR) lo = mid; else hi = mid;
+    }
+    keplerPropagate(r0, v0, mu, hi, rE, vE);
+    return { t: tb + hi };
+  };
+  // coarse: entry point + the ground range of the entry itself along the track. That range is
+  // calibrated once by flying a representative entry (a lifting capsule covers ~2,000 km from
+  // entry interface; the Earth turning beneath it is part of the same correction)
+  let entryRange = 1_800_000;
+  const calibrate = (tb: number) => {
+    const e = toEntry(tb);
+    if (!e) return false;
+    const p = predictEntry(body, rE, vE, e.t, mass, area, 0.5, 2_000);
+    body.orientationAt(e.t, q);
+    const entryFixed = rE.clone().normalize().applyQuaternion(q.invert());
+    entryRange = Math.acos(Math.max(-1, Math.min(1, entryFixed.dot(p.dir)))) * body.radius;
+    return true;
+  };
+  for (let k = 0; k < 20 && !calibrate(t + 120 + k * 300); k++);
+  const coarse = (tb: number): number => {
+    const e = toEntry(tb);
+    if (!e) return Infinity;
+    // advance along the track in the rotating frame: body-fixed entry point and track direction
+    body.orientationAt(e.t, q);
+    q.invert();
+    const pos = rE.clone().normalize().applyQuaternion(q);
+    const omega = body.angularVelocity(new Vector3());
+    const vRel = vE.clone().sub(new Vector3().crossVectors(omega, rE)).applyQuaternion(q);
+    const n = new Vector3().crossVectors(pos, vRel).normalize();
+    const land = pos.applyAxisAngle(n, entryRange / body.radius);
+    return surfaceDistance(body, land, target.lat, target.lon);
+  };
+  // fine: fly the entry as the guidance will, at the nominal 60° bank (the middle of the
+  // capsule's footprint, leaving it room to steer either way)
+  const fine = (tb: number): number => {
+    const e = toEntry(tb);
+    if (!e) return Infinity;
+    const p = predictEntry(body, rE, vE, e.t, mass, area, 0.5, 2_000);
+    return surfaceDistance(body, p.dir, target.lat, target.lon);
+  };
+  // scan three days of opportunities, keep the best few separate passes
+  const passes: { t: number; d: number }[] = [];
+  for (let tb = t + 120; tb < t + 3 * 86_400; tb += 30) {
+    const d = coarse(tb);
+    if (d < 900_000) {
+      const last = passes[passes.length - 1];
+      if (last && tb - last.t < 1200) { if (d < last.d) { last.t = tb; last.d = d; } }
+      else passes.push({ t: tb, d });
+    }
+  }
+  passes.sort((x, y) => x.d - y.d);
+  const refined: { t: number; miss: number }[] = [];
+  for (const p of passes.slice(0, 6)) {
+    // a 10 s ladder around the coarse time, then 1 s
+    let bt = p.t, bd = fine(p.t);
+    for (let k = -12; k <= 12; k++) { const tb = p.t + k * 10; const d = fine(tb); if (d < bd) { bd = d; bt = tb; } }
+    for (let k = -9; k <= 9; k++) { const tb = bt + k; const d = fine(tb); if (d < bd) { bd = d; bt = tb; } }
+    refined.push({ t: bt, miss: bd });
+  }
+  if (!refined.length) return null;
+  // the earliest opportunity that lands within reach of the recovery crews, else the closest
+  const close = refined.filter((x) => x.miss < 60_000).sort((x, y) => x.t - y.t);
+  const best = close[0] ?? refined.sort((x, y) => x.miss - y.miss)[0];
+  return best;
 }
 
 export function planCircularize(v: Vessel, t: number): ManeuverNode | null {
