@@ -332,6 +332,20 @@ export class Autopilot {
             this.status = `${n.label}: ${this.nodeRemaining.toFixed(1)} m/s remaining`;
           }
           if (v.stagePropellant().current <= 0 && v.nextStage && !this.trimming) this.wantStage = true;
+          // nothing left that can finish the burn (no engine that can fire, no stage with one, jets
+          // too weak): end it and say how much is missing rather than hold the attitude forever
+          const nextHasEngines = (v.nextStage ?? []).some((e) => e.action === 'ignite');
+          if (!this.trimming && aMain <= 0 && !nextHasEngines && !this.wantStage && this.nodeRemaining > 0.15 && (aRcs <= 0 || this.nodeRemaining / aRcs > 400)) {
+            const short = this.nodeRemaining;
+            this.throttleCmd = 0;
+            this.translateCmd = null;
+            this.node = null;
+            this.mode = 'stability';
+            this.completed = true;
+            this.status = `${n.label} stopped — out of propellant, ${short.toFixed(0)} m/s short`;
+            this.att.killRotation(v);
+            return true;
+          }
           if (this.nodeRemaining <= (this.trimming ? 0.03 : 0.15) || finished) {
             this.throttleCmd = 0;
             this.translateCmd = null;

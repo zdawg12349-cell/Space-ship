@@ -817,7 +817,8 @@ function seleneLander(): VehicleDef {
 
 function lunarReturnVehicle(): VehicleDef {
   const base = new Stack(0).add('lander', 2.4, 2.4, { material: 'gold_foil', mass: 1800, propellant: 0, style: 'lrv_base' });
-  const stage = new Stack(base.top).add('service', 3.6, 1.9, { material: 'silver_foil', mass: 2100, propellant: 9400, style: 'lrv_stage' });
+  // ~3.2 km/s: lunar ascent (~1.9 km/s with losses) and trans-Earth injection (~0.95) with a margin
+  const stage = new Stack(base.top).add('service', 3.6, 1.9, { material: 'silver_foil', mass: 2100, propellant: 10400, style: 'lrv_stage' });
   const cm = new Stack(stage.top).add('capsule', 2.6, 1.9, { material: 'silver_foil', mass: 3600, shape: 'apollo' });
   return {
     id: 'lrv', name: 'HORIZON RETURN VEHICLE', vehicleClass: 'Lunar launcher',

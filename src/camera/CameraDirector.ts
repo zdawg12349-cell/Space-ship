@@ -622,12 +622,19 @@ export class CameraDirector {
         // tight on the venting tank top with a long lens
         let y = L * 0.6;
         for (const a of v.assemblies) for (const s of a.def.sections) if (s.frost && s.propellant) y = s.y + s.length - 0.6;
-        const ang = this.padAngle(st.a);
-        const dist = 260;
-        this.sitePoint(ctx, Math.cos(ang) * dist, deck + y * 0.5, Math.sin(ang) * dist, out.pos);
+        // out in the vegetation: placed where the line of sight to the tank top is clear
+        const place = (adj: SpotAdj, _tt: number, o: Vector3) => {
+          const ang = this.padAngle(st.a) + adj.da;
+          const dist = 260 * adj.dd;
+          const x = Math.cos(ang) * dist, z = Math.sin(ang) * dist;
+          return o.set(x, Math.max(deck + y * 0.5, this.gy(ctx, x, z) + 2) + adj.dh, z);
+        };
+        const adj = this.clearSpot(ctx, st, [[new Vector3(0, deck + y, 0), Infinity]], place);
+        place(adj, tau, _e);
+        this.sitePoint(ctx, _e.x, _e.y, _e.z, out.pos);
         this.vPoint(ctx, v, 0, y, 0, out.look);
         out.up.copy(siteUp());
-        out.fov = MathUtils.radToDeg(2 * Math.atan(14 / 2 / dist));
+        out.fov = MathUtils.radToDeg(2 * Math.atan(14 / 2 / Math.hypot(_e.x, _e.z)));
         out.handheld = 0.4;
         return true;
       }
@@ -635,9 +642,14 @@ export class CameraDirector {
         if (!site || !near || !ctx.towerTop) return false;
         st.dur = 8;
         const tt = ctx.towerTop;
-        const dist = 120;
-        const ang = Math.atan2(tt.z, tt.x) + 0.9 + st.a * 0.5;
-        this.sitePoint(ctx, Math.cos(ang) * dist, deck + L * 0.5, Math.sin(ang) * dist, out.pos);
+        const place = (adj: SpotAdj, _tt: number, o: Vector3) => {
+          const ang = Math.atan2(tt.z, tt.x) + 0.9 + st.a * 0.5 + adj.da;
+          const dist = 120 * adj.dd;
+          return o.set(Math.cos(ang) * dist, deck + L * 0.5 + adj.dh, Math.sin(ang) * dist);
+        };
+        const adj = this.clearSpot(ctx, st, [[new Vector3(tt.x * 0.4, deck + L * 0.62, tt.z * 0.4), Infinity]], place);
+        place(adj, tau, _e);
+        this.sitePoint(ctx, _e.x, _e.y, _e.z, out.pos);
         this.sitePoint(ctx, tt.x * 0.4, deck + L * 0.62, tt.z * 0.4, out.look);
         out.up.copy(siteUp());
         out.fov = 30;
