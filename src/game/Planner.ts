@@ -355,6 +355,12 @@ function timeToRadius(r0: Vector3, v0: Vector3, mu: number, rT: number, inbound:
 export function oceanName(lat: number, lon: number): string {
   if (lat < -60) return 'the Southern Ocean';
   if (lat > 66) return 'the Arctic Ocean';
+  // inland seas first
+  if (lat >= 40.5 && lat < 47 && lon >= 27 && lon < 42) return 'the Black Sea';
+  if (lat >= 36 && lat < 47.5 && lon >= 46 && lon < 55) return 'the Caspian Sea';
+  if (lat >= 30 && lat < 46 && lon >= -6 && lon < 36.5) return 'the Mediterranean';
+  // the Red Sea and the Gulf reach north of the open Indian Ocean
+  if (lon >= 32 && lon < 57 && lat >= 12 && lat < 31) return 'the Indian Ocean';
   if (lon >= 20 && lon < 147 && lat < 25 && !(lon > 100 && lat > -8)) return 'the Indian Ocean';
   if ((lon > -70 && lon < 20) || (lat > 8 && lon > -98 && lon < 20 && !(lat < 18 && lon < -84))) return 'the Atlantic';
   return 'the Pacific';

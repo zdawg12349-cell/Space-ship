@@ -5,7 +5,7 @@ import { dateToJ2000Seconds } from '../src/physics/constants';
 import { PhysicsWorld } from '../src/physics/world';
 import { getVehicle } from '../src/vehicles/catalog';
 import { Autopilot } from '../src/game/Autopilot';
-import { planDeorbit, planTLI, planTEI, planCapture, lunarLaunchPlane, planCorrection, trajectoryForecast } from '../src/game/Planner';
+import { planDeorbit, planTLI, planTEI, planCapture, lunarLaunchPlane, planCorrection, trajectoryForecast, oceanName } from '../src/game/Planner';
 import { AscentGuidance, FlightSoftware } from '../src/game/guidance';
 import { calm, flatTerrain } from './helpers';
 import { keplerPropagate } from '../src/physics/orbit';
@@ -95,6 +95,18 @@ describe('manoeuvre planning', () => {
     expect(n).not.toBeNull();
     const m = /perigee (-?\d+) km/.exec(n!.result);
     expect(Math.abs(Number(m![1]) - 45)).toBeLessThan(60);
+  });
+});
+
+describe('recovery zones', () => {
+  it('names the sea a splashdown point lies in', () => {
+    const cases: [number, number, string][] = [
+      [2, -40, 'the Atlantic'], [25, -75, 'the Atlantic'], [25, -90, 'the Atlantic'], [-30, 10, 'the Atlantic'], [50, -30, 'the Atlantic'],
+      [10, -90, 'the Pacific'], [13, -169, 'the Pacific'], [12, 113, 'the Pacific'], [-40, 160, 'the Pacific'],
+      [14, 68, 'the Indian Ocean'], [-26, 87, 'the Indian Ocean'], [27, 51, 'the Indian Ocean'], [20, 38, 'the Indian Ocean'],
+      [43, 35, 'the Black Sea'], [35, 18, 'the Mediterranean'], [42, 51, 'the Caspian Sea'], [-70, 0, 'the Southern Ocean'],
+    ];
+    for (const [lat, lon, name] of cases) expect(oceanName(lat, lon), `${lat}, ${lon}`).toBe(name);
   });
 });
 

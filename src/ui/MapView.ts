@@ -139,8 +139,7 @@ export class MapView {
       c.beginPath(); c.arc(P.x, P.y, (focus.radius + focus.atmosphereTop) * scale, 0, Math.PI * 2); c.stroke();
     }
     this.label(focus.name, P.x, P.y + rpx + 16, '#8b94a5');
-    // where the entry is headed: a planned landing site or recovery zone, turning with the Earth
-    this.drawLandingTarget(focus, t, scale, P.x, P.y, rpx);
+    const disc = { x: P.x, y: P.y, r: rpx };
     // child bodies and their orbits
     for (const ch of focus.children) {
       const p = rel(ch);
@@ -195,6 +194,10 @@ export class MapView {
     c.moveTo(Q.x, Q.y - 8); c.lineTo(Q.x + 7, Q.y + 6); c.lineTo(Q.x - 7, Q.y + 6); c.closePath();
     c.stroke();
     this.label(v.name, Q.x + 12, Q.y - 10, '#ffb04a', 'left');
+    // the marker itself is in the way of later labels too
+    this.labelRects.push({ x0: Q.x - 9, y0: Q.y - 10, x1: Q.x + 9, y1: Q.y + 8 });
+    // where the entry is headed: a planned landing site or recovery zone, turning with the Earth
+    this.drawLandingTarget(focus, t, scale, disc.x, disc.y, disc.r);
     // info panel
     const R = v.body.radius;
     const per = o.e < 1 ? 2 * Math.PI * Math.sqrt(Math.pow(o.a, 3) / v.body.gm) : NaN;
