@@ -1,4 +1,4 @@
-import { Quaternion, Vector3 } from 'three';
+import { Matrix4, Quaternion, Vector3 } from 'three';
 import type { FlightSession } from '../game/FlightSession';
 import type { CelestialBody } from '../physics/bodies';
 import { keplerPropagate } from '../physics/orbit';
@@ -13,6 +13,29 @@ import { fmtDist, fmtTime, h } from './dom';
 const _a = new Vector3();
 const _q = new Quaternion();
 
+/** Equirectangular surface maps for the textured globes (loaded once, shared by every map). */
+const SURFACE_MAPS: Record<string, string> = { earth: 'earth/albedo_1k.webp', earth_night: 'earth/night.webp', moon: 'moon/albedo.webp' };
+const surfaceCache = new Map<string, ImageData | 'loading'>();
+function surfaceMap(id: string): ImageData | null {
+  const hit = surfaceCache.get(id);
+  if (hit && hit !== 'loading') return hit;
+  if (hit === 'loading' || !SURFACE_MAPS[id] || typeof document === 'undefined') return null;
+  surfaceCache.set(id, 'loading');
+  const img = new Image();
+  img.onload = () => {
+    // keep the sampling cheap: at most 1024 x 512 texels
+    const w = Math.min(1024, img.width), h = Math.round((w * img.height) / img.width);
+    const cv = document.createElement('canvas');
+    cv.width = w; cv.height = h;
+    const cx = cv.getContext('2d', { willReadFrequently: true })!;
+    cx.drawImage(img, 0, 0, w, h);
+    surfaceCache.set(id, cx.getImageData(0, 0, w, h));
+  };
+  img.onerror = () => surfaceCache.delete(id);
+  img.src = `${import.meta.env.BASE_URL}assets/${SURFACE_MAPS[id]}`;
+  return null;
+}
+
 export class MapView {
   readonly root: HTMLElement;
   private canvas: HTMLCanvasElement;
@@ -24,6 +47,8 @@ export class MapView {
   private focus: CelestialBody;
   private info: HTMLElement;
   private time = 0;
+  /** rendered textured globe (re-rendered when the view, size or lighting changes) */
+  private globe: { canvas: HTMLCanvasElement; key: string; at: number } | null = null;
 
   constructor(parent: HTMLElement, readonly s: FlightSession) {
     this.canvas = h('canvas', {});
@@ -204,6 +229,7 @@ export class MapView {
       c.beginPath(); c.arc(cx, cy, r * 1.6, 0, Math.PI * 2); c.fill();
       return;
     }
+    if (this.drawTexturedGlobe(b, fpos, t, cx, cy, r)) return;
     // night side
     c.fillStyle = rgb(0.16, 0.95);
     c.beginPath(); c.arc(cx, cy, r, 0, Math.PI * 2); c.fill();
@@ -260,6 +286,85 @@ export class MapView {
     c.beginPath(); c.arc(cx, cy, r, 0, Math.PI * 2); c.stroke();
   }
 
+  /**
+   * Earth and Moon as real globes: each pixel of the disc is unprojected through the view, turned
+   * into the body-fixed frame and coloured from the surface map, lit by the Sun (with a soft
+   * terminator and a little earthshine-like fill). Rendered at up to 280 px and scaled up.
+   */
+  private drawTexturedGlobe(b: CelestialBody, fpos: Vector3, t: number, cx: number, cy: number, r: number): boolean {
+    const map = surfaceMap(b.id);
+    if (!map || r < 6) return false;
+    const c = this.ctx;
+    const res = Math.max(32, Math.min(280, Math.round(r * 2)));
+    const key = `${b.id}|${res}|${this.yaw.toFixed(3)}|${this.pitch.toFixed(3)}`;
+    // the planet turns and the Sun moves slowly: refresh at most twice a second unless the view changed
+    if (!this.globe || this.globe.key !== key || this.time - this.globe.at > 0.5) {
+      const cv = this.globe?.canvas ?? document.createElement('canvas');
+      cv.width = res; cv.height = res;
+      const gx = cv.getContext('2d')!;
+      const img = gx.createImageData(res, res);
+      const d = img.data, src = map.data, W = map.width, H = map.height;
+      const cyw = Math.cos(this.yaw), syw = Math.sin(this.yaw), cp = Math.cos(this.pitch), sp = Math.sin(this.pitch);
+      // inertial -> body-fixed rotation, and the Sun direction (heliocentric origin)
+      b.orientationAt(t, _q);
+      const qi = _q.clone().invert();
+      const sun = _a.copy(fpos).negate().normalize();
+      const sx0 = sun.x, sy0 = sun.y, sz0 = sun.z;
+      const m = new Matrix4().makeRotationFromQuaternion(qi).elements;
+      const hazy = b.atmosphereTop > 0;
+      // city lights on the Earth's night side (same 1024 x 512 grid as the day map)
+      const night = b.id === 'earth' ? surfaceMap('earth_night') : null;
+      const nd = night && night.width === W && night.height === H ? night.data : null;
+      for (let j = 0; j < res; j++) {
+        const y2 = (j + 0.5) / res * 2 - 1;
+        for (let i = 0; i < res; i++) {
+          const x1 = (i + 0.5) / res * 2 - 1;
+          const rr = x1 * x1 + y2 * y2;
+          const o = (j * res + i) * 4;
+          if (rr > 1) { d[o + 3] = 0; continue; }
+          const z2 = Math.sqrt(1 - rr);
+          // undo the map's tilt and yaw (see project())
+          const y1 = y2 * cp + z2 * sp;
+          const pz = -y2 * sp + z2 * cp;
+          const px = x1 * cyw + y1 * syw;
+          const py = -x1 * syw + y1 * cyw;
+          // body-fixed direction -> lat/lon -> texel
+          const fx = m[0] * px + m[4] * py + m[8] * pz, fy = m[1] * px + m[5] * py + m[9] * pz, fz = m[2] * px + m[6] * py + m[10] * pz;
+          const lon = Math.atan2(fy, fx), lat = Math.asin(Math.max(-1, Math.min(1, fz)));
+          const u = Math.min(W - 1, Math.max(0, Math.floor((lon / (2 * Math.PI) + 0.5) * W)));
+          const v = Math.min(H - 1, Math.max(0, Math.floor((0.5 - lat / Math.PI) * H)));
+          const k = (v * W + u) * 4;
+          // sunlight with a soft terminator; the night side keeps a faint blue fill
+          const ndl = px * sx0 + py * sy0 + pz * sz0;
+          const day = Math.max(0, Math.min(1, ndl * 3 + 0.15));
+          const light = 0.07 + 0.93 * day * (0.55 + 0.45 * Math.max(0, ndl));
+          // limb darkening toward the edge of the disc
+          const limb = 0.75 + 0.25 * z2;
+          // daylit air scatters blue over the dark oceans, more toward the limb
+          const haze = hazy ? day * (1.5 - z2 * 0.8) : 0;
+          const lights = nd ? (1 - day) * (1 - day) * 1.15 : 0;
+          d[o] = Math.min(255, src[k] * light * limb + 6 * (1 - day) + 14 * haze + (nd ? nd[k] * lights : 0));
+          d[o + 1] = Math.min(255, src[k + 1] * light * limb + 9 * (1 - day) + 30 * haze + (nd ? nd[k + 1] * lights * 0.85 : 0));
+          d[o + 2] = Math.min(255, src[k + 2] * light * limb + 18 * (1 - day) + 62 * haze + (nd ? nd[k + 2] * lights * 0.6 : 0));
+          d[o + 3] = 255;
+        }
+      }
+      gx.putImageData(img, 0, 0);
+      this.globe = { canvas: cv, key, at: this.time };
+    }
+    c.save();
+    c.imageSmoothingEnabled = true;
+    c.drawImage(this.globe.canvas, cx - r, cy - r, r * 2, r * 2);
+    c.restore();
+    // a thin atmosphere glow on the sunward limb of the Earth
+    if (b.atmosphereTop > 0) {
+      c.strokeStyle = 'rgba(120,180,255,0.45)';
+      c.lineWidth = Math.max(1, r * 0.02);
+      c.beginPath(); c.arc(cx, cy, r * 1.005, 0, Math.PI * 2); c.stroke();
+    }
+    return true;
+  }
+
   private drawTrajectory(v: import('../physics/vessel').Vessel, focus: CelestialBody, fpos: Vector3, scale: number): void {
     const c = this.ctx;
     const s = this.s;
@@ -271,14 +376,30 @@ export class MapView {
     const steps = 360;
     const r = v.pos.clone(), vel = v.vel.clone();
     const outR = new Vector3(), outV = new Vector3();
-    const bodyPos0 = v.body.globalPositionAt(t0, new Vector3());
+    // a body's position relative to the map's focus at the same instant (the focus moves too:
+    // relative to its position now, a 90-minute orbit would smear 160,000 km along Earth's path)
+    const relAt = (b: CelestialBody, tt: number) => b === focus ? new Vector3() : b.globalPositionAt(tt, new Vector3()).sub(focus.globalPositionAt(tt, new Vector3()));
     const P = { x: 0, y: 0, z: 0 };
     let body = v.body;
     let base = r.clone(), baseV = vel.clone(), baseT = t0;
-    c.lineWidth = 2;
-    c.strokeStyle = '#5fd2ff';
-    c.beginPath();
-    let moved = false;
+    // segments behind the focus body are drawn faint and dashed (the far side of the orbit)
+    const C0 = { x: 0, y: 0, z: 0 };
+    this.project(_a.set(0, 0, 0), scale, C0);
+    const rDisc = focus.radius * scale;
+    let color = '#5fd2ff';
+    let last: { x: number; y: number; hidden: boolean } | null = null;
+    const seg = (x: number, y: number, z: number) => {
+      const hidden = z < 0 && (x - C0.x) ** 2 + (y - C0.y) ** 2 < rDisc * rDisc;
+      if (last) {
+        const dim = hidden || last.hidden;
+        c.globalAlpha = dim ? 0.25 : 1;
+        c.setLineDash(dim ? [3, 5] : []);
+        c.strokeStyle = color;
+        c.lineWidth = dim ? 1.5 : 2;
+        c.beginPath(); c.moveTo(last.x, last.y); c.lineTo(x, y); c.stroke();
+      }
+      last = { x, y, hidden };
+    };
     let apT = NaN, peT = NaN;
     let prevR = r.length(), prevD = 0;
     for (let i = 0; i <= steps; i++) {
@@ -286,18 +407,17 @@ export class MapView {
       keplerPropagate(base, baseV, body.gm, tt - baseT, outR, outV);
       // ground impact: mark where and when the trajectory meets the surface
       if (outR.length() < body.radius && i > 0) {
-        const world = outR.clone().setLength(body.radius).add(body.globalPositionAt(tt, new Vector3())).sub(fpos);
+        const world = outR.clone().setLength(body.radius).add(relAt(body, tt));
         this.project(world, scale, P);
-        c.lineTo(P.x, P.y);
-        c.stroke();
+        seg(P.x, P.y, P.z);
+        c.globalAlpha = 1; c.setLineDash([]);
         c.strokeStyle = '#ff6b5a';
         c.lineWidth = 2;
         c.beginPath();
         c.moveTo(P.x - 5, P.y - 5); c.lineTo(P.x + 5, P.y + 5); c.moveTo(P.x + 5, P.y - 5); c.lineTo(P.x - 5, P.y + 5);
         c.stroke();
         this.label(`Impact · T−${fmtTime(tt - t0)}`, P.x + 10, P.y + 4, '#ff6b5a', 'left');
-        c.beginPath();
-        moved = false;
+        last = null;
         break;
       }
       // SOI change (Moon from Earth)
@@ -309,38 +429,34 @@ export class MapView {
           const mv = new Vector3(); const mr = new Vector3();
           moon.localStateAt(tt, mr, mv);
           base = outR.clone().sub(mr); baseV = outV.clone().sub(mv); baseT = tt; body = moon;
-          c.stroke();
-          c.strokeStyle = '#b394ff';
-          c.beginPath();
-          moved = false;
+          color = '#b394ff';
+          last = null;
           continue;
         }
       } else if (body.id === 'moon' && outR.length() > body.soi) {
         const mv = new Vector3(); const mr = new Vector3();
         body.localStateAt(tt, mr, mv);
         base = outR.clone().add(mr); baseV = outV.clone().add(mv); baseT = tt; body = s.system.earth;
-        c.stroke();
-        c.strokeStyle = '#5fd2ff';
-        c.beginPath();
-        moved = false;
+        color = '#5fd2ff';
+        last = null;
         continue;
       }
-      const world = outR.clone().add(body.globalPositionAt(tt, new Vector3())).sub(fpos);
+      const world = outR.clone().add(relAt(body, tt));
       this.project(world, scale, P);
-      if (!moved) { c.moveTo(P.x, P.y); moved = true; } else c.lineTo(P.x, P.y);
+      seg(P.x, P.y, P.z);
       const rr = outR.length();
       const d = rr - prevR;
       if (i > 1 && prevD > 0 && d <= 0 && isNaN(apT) && body === v.body) apT = tt;
       if (i > 1 && prevD < 0 && d >= 0 && isNaN(peT) && body === v.body) peT = tt;
       prevD = d; prevR = rr;
     }
-    c.stroke();
-    void bodyPos0;
+    c.globalAlpha = 1;
+    c.setLineDash([]);
     // apsis markers
     const mark = (tt: number, label: string) => {
       if (isNaN(tt)) return;
       keplerPropagate(v.pos, v.vel, mu, tt - t0, outR, outV);
-      const world = outR.clone().add(v.body.globalPositionAt(tt, new Vector3())).sub(fpos);
+      const world = outR.clone().add(relAt(v.body, tt));
       this.project(world, scale, P);
       c.fillStyle = '#5fd2ff';
       c.beginPath(); c.arc(P.x, P.y, 4, 0, Math.PI * 2); c.fill();
@@ -349,7 +465,6 @@ export class MapView {
     };
     mark(apT, 'Ap');
     mark(peT, 'Pe');
-    void focus;
     void _q;
   }
 

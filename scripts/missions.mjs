@@ -15,7 +15,7 @@ const PLANS = {
     { until: 'ph() === "orbit"', max: 900 }, { advance: 30 },
     { nav: 'plan_deorbit' }, { wait: 8000 }, { nav: 'execute' }, { until: 'ap().mode !== "node"', max: 4000 },
     { warp: 6 }, { until: 'ph() === "entry" || r() !== "running"', max: 120 }, { warp: 0 },
-    { until: 'r() !== "running"', max: 1500 },
+    { until: 'r() !== "running"', max: 3000 },
   ],
   superheavy: [{ until: 'r() !== "running"', max: 1500 }],
   flyby: [

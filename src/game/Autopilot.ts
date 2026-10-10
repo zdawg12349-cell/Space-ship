@@ -93,6 +93,7 @@ export class Autopilot {
   /** RCS translation command (body axes, -1..1) for trim burns, or null when not translating */
   translateCmd: Vector3 | null = null;
   private trimming = false;
+  private trimStart = 0;
 
   constructor(readonly world: PhysicsWorld, readonly vessel: Vessel) {}
 
@@ -285,8 +286,11 @@ export class Autopilot {
         if (!this.nodeStarted) {
           this.throttleCmd = 0;
           this.status = t < start ? `${n.label} in ${Math.max(0, start - t).toFixed(0)} s · ${this.nodeRemaining.toFixed(trimBurn ? 1 : 0)} m/s${trimBurn ? ' (RCS)' : ''}` : '';
-          if (t >= start && this.att.error < 0.08) { this.nodeStarted = true; this.trimming = trimBurn; }
-          else if (t >= start + 30 && this.att.error < 0.2) { this.nodeStarted = true; this.trimming = trimBurn; }
+          if ((t >= start && this.att.error < 0.08) || (t >= start + 30 && this.att.error < 0.2)) {
+            this.nodeStarted = true;
+            this.trimming = trimBurn;
+            this.trimStart = t;
+          }
         }
         if (this.nodeStarted) {
           const acc = v.telemetry.thrust / Math.max(1, v.mass);
@@ -296,6 +300,8 @@ export class Autopilot {
             const vg = _d.length();
             if (this.lastVg.lengthSq() > 0 && _d.dot(this.lastVg) < 0) finished = true; // overshoot: Vg flipped
             if (vg < 1 && this.att.error > 0.3 && !this.trimming) finished = true; // residual too small to chase
+            // a trim chasing a residual whose direction has become noise (or taking too long) stops
+            if (this.trimming && (vg < 0.08 || (vg < 0.3 && this.att.error > 0.3) || t - this.trimStart > 120)) finished = true;
             this.lastVg.copy(_d);
             this.nodeRemaining = vg;
             if (vg > 0.05) this.nodeDir.copy(_d).multiplyScalar(1 / vg);
@@ -306,7 +312,7 @@ export class Autopilot {
             this.nodeRemaining -= along;
           }
           // the main engine hands over to the jets for the final few tenths of a second
-          if (!this.trimming && aRcs > 0 && v.telemetry.thrust <= 0 && this.nodeRemaining / aRcs < 60 && this.nodeRemaining < Math.max(0.4, aMain * 0.3)) this.trimming = true;
+          if (!this.trimming && aRcs > 0 && v.telemetry.thrust <= 0 && this.nodeRemaining / aRcs < 60 && this.nodeRemaining < Math.max(0.4, aMain * 0.3)) { this.trimming = true; this.trimStart = t; }
           if (this.trimming) {
             this.throttleCmd = 0;
             const k = this.att.error < 0.1 ? Math.min(1, this.nodeRemaining / Math.max(0.02, aRcs * 0.8)) : 0;
@@ -321,6 +327,7 @@ export class Autopilot {
             if (aRcs > 0 && aMax > 0 && this.nodeRemaining < aMax * 0.25 && this.nodeRemaining / aRcs < 60 && this.minThrottle() > this.nodeRemaining / aMax) {
               this.throttleCmd = 0;
               this.trimming = true;
+              this.trimStart = t;
             }
             this.status = `${n.label}: ${this.nodeRemaining.toFixed(1)} m/s remaining`;
           }

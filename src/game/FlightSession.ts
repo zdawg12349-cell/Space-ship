@@ -866,17 +866,27 @@ export class FlightSession {
     // atmosphere exit / entry
     const inAtm = v.body.atmosphereTop > 0 && tm.altitude < v.body.atmosphereTop;
     if (this.wasInAtmo && !inAtm) this.wasInAtmo = false;
+    // liftoff from a surface (the Moon, or flying again after a landing)
+    if ((this.phase === 'landed' || this.phase === 'splashed') && !v.landed && !v.splashed && tm.verticalSpeed > 1 && tm.radarAltitude > 3) {
+      this.setPhase('ascent');
+      if (v.body.id !== 'earth') this.milestone(`liftoff_${v.body.id}`, 'liftoff', undefined, `Liftoff from the ${v.body.name}`);
+    }
     // orbit
     if (v.body.atmosphereTop >= 0 && !v.landed) {
       const o = v.updateOrbit(this.world.t);
       const pe = o.periapsis - v.body.radius;
       const top = v.body.atmosphereTop || 20_000;
+      // escaping the body, or (around the Earth) climbing far beyond any working orbit toward the Moon
+      const escaping = o.e >= 1 || (v.body.soi > 0 && o.apoapsis > v.body.soi) || (v.body.id === 'earth' && o.apoapsis - v.body.radius > 150e6);
       if ((this.phase === 'ascent' || this.phase === 'upper') && pe > top && tm.thrust === 0 && o.e < 0.99) {
         this.setPhase('orbit');
-        this.milestone('orbit', 'orbit_insertion', 'orbit', `Orbit · ${((o.apoapsis - v.body.radius) / 1000).toFixed(0)} × ${(pe / 1000).toFixed(0)} km`);
+        this.milestone(v.body.id === 'earth' ? 'orbit' : `orbit_${v.body.id}`, 'orbit_insertion', 'orbit', `Orbit · ${((o.apoapsis - v.body.radius) / 1000).toFixed(0)} × ${(pe / 1000).toFixed(0)} km`);
       }
       if (this.phase === 'ascent' && !v.assemblies.includes(this.vessel.rootAssembly) && tm.altitude > 40_000) this.setPhase('upper');
-      if ((this.phase === 'orbit' || this.phase === 'coast') && !this.wasInAtmo && inAtm && tm.verticalSpeed < 0) {
+      // leaving for another world, and arriving into orbit around one
+      if ((this.phase === 'orbit' || this.phase === 'coast') && escaping && tm.thrust === 0) this.setPhase('transfer');
+      if (this.phase === 'transfer' && !escaping && pe > top && tm.thrust === 0 && !inAtm) this.setPhase('orbit');
+      if ((this.phase === 'orbit' || this.phase === 'coast' || this.phase === 'transfer') && !this.wasInAtmo && inAtm && tm.verticalSpeed < 0) {
         this.wasInAtmo = true;
         this.setPhase('entry');
         this.milestone('entry', 'entry_interface', 'entry', 'Entry interface');
