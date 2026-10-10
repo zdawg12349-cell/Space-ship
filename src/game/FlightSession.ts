@@ -179,6 +179,11 @@ export class FlightSession {
     this.autopilot.azimuth = this.azimuth;
     this.autopilot.planeNormal = planeNormal;
     if (startKind === 'lunarOrbit') this.autopilot.landingSite = { lat: (0.674 * Math.PI) / 180, lon: (23.473 * Math.PI) / 180 };
+    // a resumed flight keeps the landing site its entry was planned for
+    if (config.snapshot?.entryTarget) {
+      this.autopilot.entryTarget = new Vector3().fromArray(config.snapshot.entryTarget);
+      this.autopilot.entryTargetName = config.snapshot.entryTargetName ?? null;
+    }
     if (startKind === 'pad') {
       if (config.orbitAssist !== false) this.autopilot.setMode('orbit');
     } else if (startKind === 'entry') this.autopilot.setMode('retrograde');
@@ -685,7 +690,7 @@ export class FlightSession {
     const entering = tm.altitude < 140_000 && tm.verticalSpeed < 0 && tm.speedSurface > 2000 && o.periapsis - v.body.radius < 70_000;
     if (entering && !this.hasMilestone('entry_prep')) {
       this.markMilestone('entry_prep');
-      const shed = v.assemblies.length > 1;
+      const shed = v.assemblies.filter((a) => a !== cap).map((a) => a.def.name);
       // stage until only the capsule is left (stop before parachutes)
       for (let guard = 0; guard < 6 && v.assemblies.length > 1; guard++) {
         const next = v.nextStage;
@@ -698,9 +703,10 @@ export class FlightSession {
       }
       // guided entry (also for a capsule already flying alone): bank the lift toward the landing
       // site the deorbit or return was aimed at — or, for capsules that come down at sea, toward
-      // open water within reach — otherwise hold a steady 60° bank
+      // open water within reach — otherwise hold the nominal bank
       this.autopilot.setMode('entry');
-      this.emit({ type: 'message', text: shed ? 'Entry configuration: service module jettisoned, heat shield forward' : 'Entry configuration: heat shield forward', level: 'info' });
+      const what = shed.length > 1 ? `${shed.slice(0, -1).join(', ')} and ${shed[shed.length - 1]}` : shed[0];
+      this.emit({ type: 'message', text: what ? `Entry configuration: ${what} jettisoned, heat shield forward` : 'Entry configuration: heat shield forward', level: 'info' });
       this.emit({ type: 'radio', id: 'entry_interface' });
     }
     const eg = this.autopilot.mode === 'entry' ? this.autopilot.entryGuidance : null;

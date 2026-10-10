@@ -88,6 +88,8 @@ export class Autopilot {
   wantStage = false;
   /** landing site for guided entry (body-fixed unit vector), or null to fly a fixed bank */
   entryTarget: Vector3 | null = null;
+  /** what that site is called (map and messages) */
+  entryTargetName: string | null = null;
   /** guided entry state while in 'entry' mode */
   entryGuidance: EntryGuidance | null = null;
   /** RCS translation command (body axes, -1..1) for trim burns, or null when not translating */

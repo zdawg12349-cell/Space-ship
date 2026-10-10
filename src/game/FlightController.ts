@@ -305,6 +305,7 @@ export class FlightController {
           ap.setNode(nd);
           const la = (target.lat * Math.PI) / 180, lo = (target.lon * Math.PI) / 180;
           ap.entryTarget = new Vector3(Math.cos(la) * Math.cos(lo), Math.cos(la) * Math.sin(lo), Math.sin(la));
+          ap.entryTargetName = target.name;
           const wait = nd.t - s.world.t;
           this.hud.log(`${nd.label}: ${nd.dv.length().toFixed(0)} m/s · ${nd.result}${wait > 600 ? ` · in ${fmtTime(wait)}` : ''}`, s.met, 'good');
         }, 60);
@@ -347,6 +348,7 @@ export class FlightController {
           if (nd.landing) {
             const la = (nd.landing.lat * Math.PI) / 180, lo = (nd.landing.lon * Math.PI) / 180;
             ap.entryTarget = new Vector3(Math.cos(la) * Math.cos(lo), Math.cos(la) * Math.sin(lo), Math.sin(la));
+            ap.entryTargetName = nd.landing.name;
           }
           this.hud.log(`${nd.label}: ${nd.dv.length().toFixed(0)} m/s · ${nd.result}`, s.met, 'good');
         }, 60);
@@ -620,6 +622,7 @@ export class FlightController {
       version: 1, savedAt: new Date().toISOString(), missionId: this.mission?.id, vehicleId: s.def.id, siteId: s.site.id, weather: s.config.weather,
       t: s.world.t, liftoffT: isNaN(s.liftoffT) ? s.world.t : s.liftoffT, ...snapshotVessel(s.vessel), phase: s.phase, milestones: s.milestoneList(),
       throttle: s.throttle, autopilot: s.autopilot.mode,
+      entryTarget: s.autopilot.entryTarget?.toArray(), entryTargetName: s.autopilot.entryTargetName ?? undefined,
     };
     const ok = writeSnapshot(snap);
     this.hud.log(ok ? 'Flight saved' : 'Save failed (storage unavailable)', s.met, ok ? 'good' : 'alert');
@@ -696,7 +699,7 @@ export class FlightController {
     const down = v.landed || v.splashed || !isNaN(this.director.stats.touchdownSpeed);
     if (!eg?.target || v.destroyed || !down || v.body.id !== 'earth') return null;
     const d = Math.acos(Math.max(-1, Math.min(1, v.fixedDirection(s.world.t, new Vector3()).dot(eg.target)))) * v.body.radius;
-    const where = eg.designated ? 'the recovery zone' : s.landingTarget ? s.landingTarget.name : 'the recovery zone';
+    const where = eg.designated ? 'the recovery zone' : s.autopilot.entryTargetName ?? 'the recovery zone';
     return `${d < 1000 ? d.toFixed(0) + ' m' : (d / 1000).toFixed(1) + ' km'} from ${where}`;
   }
 

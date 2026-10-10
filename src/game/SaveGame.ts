@@ -62,6 +62,9 @@ export interface FlightSnapshot {
   milestones: string[];
   throttle: number;
   autopilot: string;
+  /** a planned landing site or recovery zone for the entry (body-fixed unit vector) */
+  entryTarget?: number[];
+  entryTargetName?: string;
 }
 
 export function snapshotVessel(v: Vessel): Pick<FlightSnapshot, 'body' | 'pos' | 'vel' | 'rot' | 'angVel' | 'stageIndex' | 'assemblies' | 'landed'> {

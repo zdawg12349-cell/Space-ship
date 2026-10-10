@@ -115,6 +115,7 @@ export class MapView {
     const c = this.ctx;
     const W = this.canvas.width, H = this.canvas.height;
     c.clearRect(0, 0, W, H);
+    this.labelRects.length = 0;
     const t = s.world.t;
     const v = s.active;
     const focus = this.focus;
@@ -138,6 +139,8 @@ export class MapView {
       c.beginPath(); c.arc(P.x, P.y, (focus.radius + focus.atmosphereTop) * scale, 0, Math.PI * 2); c.stroke();
     }
     this.label(focus.name, P.x, P.y + rpx + 16, '#8b94a5');
+    // where the entry is headed: a planned landing site or recovery zone, turning with the Earth
+    this.drawLandingTarget(focus, t, scale, P.x, P.y, rpx);
     // child bodies and their orbits
     for (const ch of focus.children) {
       const p = rel(ch);
@@ -215,6 +218,33 @@ export class MapView {
       row('Period', isNaN(per) || sub ? '—' : fmtTime(per));
       row('Speed', `${(v.vel.length() / 1000).toFixed(3)} km/s`);
     }
+  }
+
+  private drawLandingTarget(focus: CelestialBody, t: number, scale: number, cx: number, cy: number, rpx: number): void {
+    const s = this.s;
+    const v = s.active;
+    const ap = s.autopilot;
+    const eg = ap.mode === 'entry' ? ap.entryGuidance : null;
+    const dir = eg?.target ?? ap.entryTarget;
+    if (!dir || focus.id !== 'earth' || v.landed || v.splashed || v.destroyed || rpx < 12) return;
+    focus.orientationAt(t, _q);
+    const w = dir.clone().applyQuaternion(_q).multiplyScalar(focus.radius);
+    const Q = { x: 0, y: 0, z: 0 };
+    this.project(w, scale, Q);
+    // on the far side of the globe: nothing to point at
+    if (Q.z < 0 && (Q.x - cx) ** 2 + (Q.y - cy) ** 2 < rpx * rpx) return;
+    const c = this.ctx;
+    const pulse = 0.6 + 0.4 * Math.sin(this.time * 3);
+    c.globalAlpha = 1;
+    c.setLineDash([]);
+    c.strokeStyle = '#7dffb0';
+    c.lineWidth = 2;
+    c.beginPath(); c.arc(Q.x, Q.y, 5, 0, Math.PI * 2); c.stroke();
+    c.globalAlpha = pulse * 0.6;
+    c.beginPath(); c.arc(Q.x, Q.y, 9 + 3 * pulse, 0, Math.PI * 2); c.stroke();
+    c.globalAlpha = 1;
+    const name = eg?.designated ? 'the recovery zone' : ap.entryTargetName ?? 'the landing site';
+    this.label(name.replace(/^the /, '').replace(/^./, (m) => m.toUpperCase()), Q.x + 12, Q.y - 8, '#7dffb0', 'left');
   }
 
   /** A lit globe: night side, the sunlit part bounded by the projected terminator, limb shading, graticule. */
@@ -468,12 +498,28 @@ export class MapView {
     void _q;
   }
 
+  /** labels drawn this frame (screen rectangles), so later ones step aside instead of overprinting */
+  private labelRects: { x0: number; y0: number; x1: number; y1: number }[] = [];
+
   private label(text: string, x: number, y: number, color: string, align: CanvasTextAlign = 'center'): void {
     const c = this.ctx;
     const dpr = Math.min(2, window.devicePixelRatio || 1);
-    c.font = `600 ${Math.round(11 * dpr)}px "Barlow Condensed", sans-serif`;
+    const size = Math.round(11 * dpr);
+    c.font = `600 ${size}px "Barlow Condensed", sans-serif`;
+    const t = text.toUpperCase();
+    const w = c.measureText(t).width;
+    const x0 = align === 'left' ? x : align === 'right' ? x - w : x - w / 2;
+    // several markers can sit on one spot (a vessel just off the pad: the vessel, apoapsis and
+    // impact): stack their labels downward
+    let yy = y;
+    for (let k = 0; k < 6; k++) {
+      const hit = this.labelRects.some((r) => x0 < r.x1 && x0 + w > r.x0 && yy - size < r.y1 && yy + 2 > r.y0);
+      if (!hit) break;
+      yy += size + 3;
+    }
+    this.labelRects.push({ x0, y0: yy - size, x1: x0 + w, y1: yy + 2 });
     c.fillStyle = color;
     c.textAlign = align;
-    c.fillText(text.toUpperCase(), x, y);
+    c.fillText(t, x, yy);
   }
 }
