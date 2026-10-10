@@ -38,7 +38,7 @@ There are eleven missions plus a free sandbox:
 | 3 | Return to Sender | KESTREL 9 | Booster boostback and landing at LZ-1 |
 | 4 | Twin Boosters | KESTREL HEAVY | Side boosters land side by side; the core lands on the drone ship |
 | 5 | Night Flight | MERIDIAN 421 | Solid boosters in the dark |
-| 6 | Crew Rotation | VOSTOK-R | Steppe launch, orbit, deorbit, entry, soft landing |
+| 6 | Crew Rotation | VOSTOK-R | Steppe launch, orbit, a deorbit aimed at the steppe, guided entry, soft landing |
 | 7 | Catch | LEVIATHAN | The launch tower catches the returning booster |
 | 8 | Free Return | COLOSSUS V | Sunrise launch window, TLI, course correction, lunar flyby |
 | 9 | Tranquility | Lunar lander | Powered descent to the Sea of Tranquility |
@@ -88,13 +88,20 @@ materials are generated from that definition.
   reusable heat shields, and parachutes.
 - **Guidance:**
   - Closed-loop ascent guidance with launch-window plane targeting.
-  - Lambert-targeted manoeuvre execution, using velocity-to-be-gained steering.
+  - Lambert-targeted manoeuvre execution, using velocity-to-be-gained steering. Small
+    corrections, and the last fraction of a second of big burns, are flown on RCS
+    translation. A stage whose engine has used its ignitions hands over to the spacecraft.
   - A planner for deorbit, circularise, translunar and trans-Earth injection, mid-course
-    corrections and Jupiter capture.
+    corrections and Jupiter capture. Deorbit burns can aim at a landing site, searching
+    several days of passes.
+  - Guided capsule entry: a predictor-corrector picks the bank angle for the capsule's lift,
+    with bank reversals for cross-range. Crews come down on the Kazakh steppe.
   - Lunar descent and ascent autopilots.
   - Booster recovery: boostback, an entry burn steered with a burn-aware impact predictor,
-    aerodynamic glide steering and zero-miss terminal landing guidance. Landing pads, a
-    drone ship stationed under the predicted impact point, and tower catches.
+    and glide steering that uses the stage's real lift curve (a blunt body falling engines
+    first lifts away from its tilt at small angles). The impact predictor includes the wind,
+    and terminal landing guidance is zero-miss. Landing pads, a drone ship stationed under
+    the predicted impact point, and tower catches.
 
 ### Rendering
 

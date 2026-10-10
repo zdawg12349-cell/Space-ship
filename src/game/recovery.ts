@@ -117,13 +117,13 @@ export class BoosterGuidance {
     // Δv the burn can deliver before hitting the landing reserve
     let isp = 3000;
     for (const e of entrySet) isp = e.mount.spec.ispVac * 9.80665;
-    const res = this.integrateImpact(t, { thrust, ve: isp, gMax: 5.5 * 9.80665, stopSpeed: 650, startAlt, propUsable: usable });
+    const res = this.integrateImpact(t, { thrust, ve: isp, gMax: 5.5 * 9.80665, stopSpeed: this.entryStopSpeed, startAlt, propUsable: usable });
     this.burnCache = { t, dir: res.dir, tof: res.tof };
     return this.burnCache;
   }
 
   /** Point-mass impact integration (gravity, drag in the rotating atmosphere, optional retro burn). */
-  private integrateImpact(t: number, burn: { thrust: number; ve: number; gMax: number; stopSpeed: number; startAlt: number; propUsable: number } | null): { dir: Vector3; tof: number; qMax: number } {
+  private integrateImpact(t: number, burn: { thrust: number; ve: number; gMax: number; stopSpeed: number; startAlt: number; propUsable: number } | null): { dir: Vector3; tof: number; qMax: number; qMaxAfterBurn: number } {
     const v = this.vessel;
     const body = v.body;
     const R = body.radius + this.zone.height + (this.zone.catchHeight ?? 0);
@@ -141,7 +141,8 @@ export class BoosterGuidance {
     let propLeft = burn ? burn.propUsable : 0;
     let burnAcc = 0;
     let burning = false;
-    let qMax = 0;
+    let burnEnded = false;
+    let qMax = 0, qMaxAfterBurn = 0;
     // the mean wind (jet stream, boundary layer) pushes a falling stage hundreds of metres
     const weather = this.world.weather;
     body.orientationAt(t, _wq);
@@ -168,7 +169,9 @@ export class BoosterGuidance {
       if (atm) {
         atm.sample(rl - body.radius, sample);
         if (sample.density > 0) {
-          qMax = Math.max(qMax, 0.5 * sample.density * sp * sp);
+          const qq = 0.5 * sample.density * sp * sp;
+          qMax = Math.max(qMax, qq);
+          if (burnEnded) qMaxAfterBurn = Math.max(qMaxAfterBurn, qq);
           const cd = cdBase * machDragFactor(sp / Math.max(1, sample.speedOfSound));
           out.addScaledVector(vAir, (-0.5 * sample.density * sp * cd * area) / mass);
         }
@@ -182,7 +185,9 @@ export class BoosterGuidance {
       const h = alt > 80000 ? 2.0 : alt > 15000 ? 0.5 : 0.25;
       if (burn) {
         const sp = _c.copy(vel).sub(_a.crossVectors(omega, r)).length();
+        const was = burning;
         burning = propLeft > 0 && alt < burn.startAlt && r.dot(vel) < 0 && sp > burn.stopSpeed;
+        if (was && !burning) burnEnded = true;
         if (burning) {
           burnAcc = Math.min(burn.thrust / mass, burn.gMax);
           const used = ((burnAcc * mass) / burn.ve) * h;
@@ -200,7 +205,7 @@ export class BoosterGuidance {
     }
     body.orientationAt(t + tof, _q);
     const dir = r.applyQuaternion(_q.invert()).normalize();
-    return { dir, tof, qMax };
+    return { dir, tof, qMax, qMaxAfterBurn };
   }
 
   /**
@@ -316,6 +321,7 @@ export class BoosterGuidance {
         const entryAlt = tm.speedSurface > 2600 ? 78000 : tm.speedSurface > 2000 ? 70000 : 62000;
         if (!this.entryDone && tm.verticalSpeed < 0 && alt < entryAlt && tm.speedSurface > 1300) {
           this.phase = 'entry'; this.timer = 0; this.arm(this.entryEngines(v)); this.say('entry_burn_start');
+          this.planEntryStop(t);
         }
         if (alt < 45000 && tm.verticalSpeed < 0 && (this.entryDone || tm.speedSurface <= 1300)) { this.phase = 'glide'; this.timer = 0; }
         break;
@@ -349,6 +355,8 @@ export class BoosterGuidance {
         // inside the dynamic-pressure limit — but keep enough propellant for the landing burn
         const dry = v.mass - v.stagePropellant().current;
         const landingReserve = dry * (Math.exp(450 / 3000) - 1);
+        // (closed loop on the predicted fall; the planned stop speed is what the steering's
+        // burn model assumes, so the two end up close)
         const slowEnough = tm.speedSurface < 650 && (tm.speedSurface < 300 || pred.qMax < 70000);
         if (slowEnough || v.stagePropellant().current < landingReserve || this.timer > 75) {
           ctl.throttle = 0; this.entryDone = true; this.phase = 'glide'; this.timer = 0; this.say('entry_burn_end');
@@ -400,27 +408,62 @@ export class BoosterGuidance {
         const h = Math.max(0.5, alt - this.footClearance(v) - 0.6);
         let thrustMax = 0;
         for (const e of landEngines) thrustMax += e.mount.spec.thrustSL + (e.mount.spec.thrustVac - e.mount.spec.thrustSL) * (1 - Math.min(1, tm.pressure / 101325));
-        // required vertical deceleration to stop at the deck (drag still helps a little)
-        const aReq = vz < 0 ? Math.max(0, (vz * vz) / (2 * h) + g - 0.5 * this.dragAccel(v)) : g * 0.6;
-        // horizontal: null velocity & position error
+        // A tower catch has no legs to land on and a booster that can throttle down to hover: it
+        // brakes to a gate 40 m above the catch point with its drift nulled, then descends slowly
+        // and vertically into the arms while a position loop holds it over them (pausing while it
+        // is off-centre). Landings on legs fly the hoverslam all the way down.
+        const tower = this.zone.kind === 'tower';
+        const gateH = tower ? 40 : 0;
+        const terminal = tower && h <= gateH + 5;
         const vh = vSurf.clone().addScaledVector(_u, -vSurf.dot(_u));
-        // horizontal: terminal guidance that arrives over the pad with zero drift exactly at
-        // touchdown (time-to-go from the vertical channel); the last seconds only kill drift
         const posErr = toZoneH.clone();
-        const tgo = vz < -1 ? Math.max(1.5, (2 * h) / -vz) : 3;
-        const latCmd = tgo > 4 && h > 40
-          ? posErr.multiplyScalar(6 / (tgo * tgo)).addScaledVector(vh, -4 / tgo)
-          : vh.clone().multiplyScalar(-1.2);
+        let aReq: number;
+        let latCmd: Vector3;
+        if (terminal) {
+          const centred = distH < 8;
+          const vzCmd = centred ? (h > 10 ? -2.5 : -1.2) : h > 12 ? -1 : 0;
+          aReq = Math.max(0, g + (vzCmd - vz) * 1.5);
+          // a gentle, speed-limited position loop with bandwidth well inside the booster's attitude
+          // response (a faster loop swings it to and fro across the arms)
+          const pe = posErr.length();
+          const vDes = pe > 0.01 ? posErr.clone().multiplyScalar(Math.min(pe * 0.15, 4) / pe) : new Vector3();
+          latCmd = vDes.sub(vh).multiplyScalar(0.5);
+        } else {
+          // required vertical deceleration to stop at the deck (or reach the gate), drag still helping
+          const hg = Math.max(0.5, h - gateH);
+          const vEnd = tower ? 2.5 : 0;
+          aReq = vz < 0 ? Math.max(0, (vz * vz - vEnd * vEnd) / (2 * hg) + g - 0.5 * this.dragAccel(v)) : g * 0.6;
+          // horizontal: terminal guidance that arrives over the pad (or the gate) with zero drift
+          // exactly then (time-to-go from the vertical channel); a landing's last seconds only kill drift
+          const tgo = vz < -1 ? Math.max(1.5, (2 * hg) / (-vz + vEnd)) : 3;
+          if (tower) {
+            // to the gate: zero-miss guidance with a floor on time-to-go, so the gains stay within
+            // what a slow-turning booster can follow (the gate's terminal loop finishes the job)
+            const tg = Math.max(8, tgo);
+            latCmd = posErr.multiplyScalar(6 / (tg * tg)).addScaledVector(vh, -4 / tg);
+          } else {
+            const zemTo = tgo > 4 && h > 40;
+            latCmd = zemTo
+              ? posErr.multiplyScalar(6 / (tgo * tgo)).addScaledVector(vh, -4 / tgo)
+              : vh.clone().multiplyScalar(-1.2);
+          }
+        }
         // divert authority limited by thrust and, while q is high, by the structural AoA limit
         const qNow = Math.max(1, tm.dynamicPressure);
         // (firing into the flow relieves bending loads, so the burn may tilt further than the glide)
         // close to the ground the stage must be upright for the legs to take the load evenly
-        const tiltCap = h < 80 ? 1.5 + (h / 80) * 8 : 20;
+        const tiltCap = tower ? 18 : h < 80 ? 1.5 + (h / 80) * 8 : 20;
         // until the engines have spooled up there is no plume to relieve the loads
-        const powered = tm.thrust > 0.3 * thrustMax;
+        const powered = tm.thrust > 0.3 * (thrustMax / Math.max(1, landEngines.length)) * (this.landCount || landEngines.length);
         const maxTilt = Math.min(tiltCap, Math.max(powered ? 4 : 0.5, Math.min(20, (powered ? 420000 : 175000) / qNow))) * Math.PI / 180;
         const latMax = Math.min(0.5 * aReq, Math.tan(maxTilt) * aReq);
         if (latCmd.length() > latMax) latCmd.setLength(latMax);
+        if (tower) {
+          // a 70 m booster turns slowly: smooth the lateral command to its attitude bandwidth so the
+          // thrust direction never runs away from the vehicle
+          this.latFilt.lerp(latCmd, Math.min(1, dt / 1.2));
+          latCmd.copy(this.latFilt);
+        }
         const thrustDir = _u.clone().multiplyScalar(aReq).add(latCmd);
         const aCmd = thrustDir.length();
         thrustDir.normalize();
@@ -428,10 +471,37 @@ export class BoosterGuidance {
         // with it while the engines spool up (high up, where q is still large)
         if (!powered && qNow > 8000) thrustDir.copy(retro);
         this.att.update(v, { dir: thrustDir }, dt);
-        let thr = (aCmd * v.mass) / Math.max(1, thrustMax);
+        // run as many of the landing engines as the thrust needed keeps above their minimum
+        // throttle: a nearly empty booster can't hover on three engines whose floor alone
+        // out-lifts its weight (it would stop high, climb and burn its last propellant)
+        const need = aCmd * v.mass;
+        const per = thrustMax / Math.max(1, landEngines.length);
+        const minT = landEngines.reduce((m, e) => Math.max(m, e.mount.spec.minThrottle), 0);
+        // (hysteresis: drop an engine only when the rest would still have margin, so a hover
+        // doesn't flip engines on and off — each relight spends one of their restarts)
+        const sets = this.engineSets(engines);
+        // the fewest engines that can run balanced: one only with a centre engine, two only as an
+        // opposed pair; otherwise the full landing set
+        const nMin = landEngines.length === 1 || sets.center ? 1 : sets.pair ? 2 : landEngines.length;
+        // engines relight with a spool-up of a few seconds and a limited number of restarts: change
+        // the set rarely (a lockout after each change) and only add engines when the set is at full
+        // throttle
+        const prevN = Math.min(this.landCount || landEngines.length, landEngines.length);
+        let n = prevN;
+        if (t - this.landSwitchT > 5) {
+          while (n > nMin && need < n * per * minT * 1.15 && need < (n - 1) * per * 0.8) n--;
+          while (n < landEngines.length && need > n * per * 0.97) n++;
+        } else if (n < landEngines.length && need > n * per * 1.25) n++;
+        if (n !== prevN) this.landSwitchT = t;
+        this.landCount = n;
+        const active = n >= landEngines.length ? landEngines : n === 1 && sets.center ? [sets.center] : n === 2 && sets.pair ? sets.pair : landEngines.slice(0, n);
+        ctl.engineMask = new Set(active);
+        for (const e of active) e.armed = true;
+        let thr = need / Math.max(1, per * n);
         ctl.throttle = Math.max(0.01, Math.min(1, thr));
-        // touchdown: shut the engine down and let the legs take the load
-        if (v.contactForce > 0 || h < 0.25 || (vz > -0.6 && h < 2.5)) {
+        // touchdown: shut the engine down and let the legs take the load (a tower catch keeps
+        // flying until the arms have it)
+        if (v.contactForce > 0 || (!tower && (h < 0.25 || (vz > -0.6 && h < 2.5)))) {
           ctl.throttle = 0;
           for (const e of v.engines) e.armed = false;
           this.phase = 'landed';
@@ -442,21 +512,22 @@ export class BoosterGuidance {
           v.events.push({ type: 'legs' });
           this.say('legs_deploy');
         }
-        if (this.zone.kind === 'tower' && h < 6 && Math.abs(vz) < 3 && distH < 25) this.catchAtTower(v, t);
+        this.landingInfo = `h ${h.toFixed(1)} distH ${distH.toFixed(1)} vz ${vz.toFixed(1)} vh ${vh.length().toFixed(1)}${terminal ? ' terminal' : ''} engines ${n} thr ${ctl.throttle.toFixed(2)}`;
+        if (tower && h < 6 && Math.abs(vz) < 3 && distH < 25) this.catchAtTower(v, t);
         break;
       }
     }
     void distH;
   }
 
-  private sets: { three: Vessel['engines']; landing: Vessel['engines']; boost: Vessel['engines'] } | null = null;
+  private sets: { three: Vessel['engines']; landing: Vessel['engines']; boost: Vessel['engines']; pair: Vessel['engines'] | null; center: Vessel['engines'][number] | null } | null = null;
 
   /**
    * Engine subsets: a three-engine set (centre + two opposite) for the entry burn, the boostback set
    * (the engines a vehicle marks for it — a 33-engine booster turns back on its 13 inner engines —
    * otherwise the three) and the landing set.
    */
-  private engineSets(engines: Vessel['engines']): { three: Vessel['engines']; landing: Vessel['engines']; boost: Vessel['engines'] } {
+  private engineSets(engines: Vessel['engines']): { three: Vessel['engines']; landing: Vessel['engines']; boost: Vessel['engines']; pair: Vessel['engines'] | null; center: Vessel['engines'][number] | null } {
     if (this.sets) return this.sets;
     const dist = (e: Vessel['engines'][number]) => Math.hypot(e.mount.pos[0], e.mount.pos[2]);
     const sorted = [...engines].sort((a, b) => dist(a) - dist(b));
@@ -477,11 +548,49 @@ export class BoosterGuidance {
     } else three = sorted.slice(0, Math.min(3, sorted.length));
     const landing = inner.length >= 3 ? inner.slice(0, 3) : dist(sorted[0]) < 0.3 ? [sorted[0]] : sorted.slice(0, Math.min(2, sorted.length));
     const marked = engines.filter((e) => e.mount.roles?.includes('boostback'));
-    this.sets = { three, landing, boost: marked.length >= 3 ? marked : three };
+    // for a two-engine hover: an opposed pair (thrust on the axis, no torque for the gimbals to fight)
+    const pool = engines.filter((e) => e.mount.roles?.includes('landing') || landing.includes(e));
+    let pair: Vessel['engines'] | null = null;
+    let bestPair = Infinity;
+    for (let i = 0; i < pool.length; i++) for (let j = i + 1; j < pool.length; j++) {
+      const a = pool[i].mount.pos, b = pool[j].mount.pos;
+      const off = Math.hypot(a[0] + b[0], a[2] + b[2]) + Math.abs(Math.hypot(a[0], a[2]) - Math.hypot(b[0], b[2]));
+      const r = Math.hypot(a[0], a[2]);
+      if (off < 0.05 && r < bestPair) { bestPair = r; pair = [pool[i], pool[j]]; }
+    }
+    const center = sorted.length && dist(sorted[0]) < 0.3 ? sorted[0] : null;
+    this.sets = { three, landing, boost: marked.length >= 3 ? marked : three, pair, center };
     return this.sets;
   }
 
   private entrySet: Vessel['engines'] | null = null;
+  /** airspeed at which the entry burn ends (the predictor and the burn share it) */
+  private entryStopSpeed = 650;
+
+  /**
+   * Choose where the entry burn ends: ~650 m/s, or slower for a dense stage, so that the fall
+   * that follows stays under ~70 kPa. Searched once at burn start by flying the burn and the fall.
+   */
+  private planEntryStop(t: number): void {
+    const v = this.vessel;
+    const entrySet = this.entryEngines(v);
+    let thrust = 0, isp = 3000;
+    for (const e of entrySet) { thrust += e.mount.spec.thrustVac; isp = e.mount.spec.ispVac * 9.80665; }
+    const dry = v.mass - v.stagePropellant().current;
+    const usable = Math.max(0, v.stagePropellant().current - dry * (Math.exp(450 / 3000) - 1));
+    const fly = (stop: number) => this.integrateImpact(t, { thrust, ve: isp, gMax: 5.5 * 9.80665, stopSpeed: stop, startAlt: Infinity, propUsable: usable }).qMaxAfterBurn;
+    if (fly(650) <= 70000) { this.entryStopSpeed = 650; return; }
+    let lo = 250, hi = 650;
+    for (let i = 0; i < 8; i++) { const mid = 0.5 * (lo + hi); if (fly(mid) <= 70000) lo = mid; else hi = mid; }
+    this.entryStopSpeed = lo;
+    this.burnCache = null;
+  }
+  /** landing-burn state for the HUD and diagnostics */
+  landingInfo = '';
+  private latFilt = new Vector3();
+  private landSwitchT = -Infinity;
+  /** landing-burn engines in use (0 = not chosen yet) */
+  private landCount = 0;
   /** steering gain of the entry burn: a hard-braking burn moves the ballistic impact point quickly */
   private entryGain = 1;
 

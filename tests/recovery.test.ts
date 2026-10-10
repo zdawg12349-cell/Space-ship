@@ -202,7 +202,7 @@ describe('tower catch', () => {
         const tm = b.v.telemetry;
         const qa = (tm.dynamicPressure / 1000) * Math.min(tm.aoa, 180 - tm.aoa);
         if (!b.v.destroyed && !b.v.landed) peakQA = Math.max(peakQA, qa);
-        if (i % 120 === 0 && !b.v.landed && !b.v.destroyed) console.log(`t=${(world.t - t0).toFixed(0)} ${b.g.phase.padEnd(9)} alt ${(tm.altitude / 1000).toFixed(1)}km v ${tm.speedSurface.toFixed(0)} vz ${tm.verticalSpeed.toFixed(0)} q ${(tm.dynamicPressure / 1000).toFixed(1)} aoa ${Math.min(tm.aoa, 180 - tm.aoa).toFixed(1)} qa ${qa.toFixed(0)} miss ${(b.g.missDistance / 1000).toFixed(2)}km prop ${b.v.stagePropellant().current.toFixed(0)}`);
+        if (i % (b.g.phase === 'landing' ? 30 : 120) === 0 && !b.v.landed && !b.v.destroyed) console.log(`t=${(world.t - t0).toFixed(1)} ${b.g.phase.padEnd(9)} alt ${(tm.altitude / 1000).toFixed(2)}km v ${tm.speedSurface.toFixed(0)} vz ${tm.verticalSpeed.toFixed(0)} q ${(tm.dynamicPressure / 1000).toFixed(1)} aoa ${Math.min(tm.aoa, 180 - tm.aoa).toFixed(1)} qa ${qa.toFixed(0)} miss ${(b.g.missDistance / 1000).toFixed(2)}km prop ${b.v.stagePropellant().current.toFixed(0)}${b.g.phase === 'landing' ? ' | ' + b.g.landingInfo : ''}`);
       }
       if (boosters.length && boosters.every((b) => b.v.landed || b.v.destroyed)) break;
       world.drainEvents();
@@ -214,6 +214,6 @@ describe('tower catch', () => {
     console.log('caught', b.v.landed, 'destroyed', b.v.destroyReason, 'dist', dist.toFixed(1), 'peak q·α', peakQA.toFixed(0), 'kPa·deg');
     expect(b.v.destroyed, b.v.destroyReason).toBe(false);
     expect(b.v.landed).toBe(true);
-    expect(dist).toBeLessThan(30);
+    expect(dist).toBeLessThan(15);
   }, 300_000);
 });
