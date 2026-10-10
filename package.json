@@ -1,0 +1,28 @@
+{
+  "name": "ascent-cinematic-spaceflight",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "ASCENT — a cinematic, physics-driven spaceflight simulator for the browser",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@fontsource/barlow": "^5.3.0",
+    "@fontsource/barlow-condensed": "^5.3.0",
+    "@fontsource/barlow-semi-condensed": "^5.3.0",
+    "@fontsource/jetbrains-mono": "^5.3.0",
+    "three": "^0.186.1"
+  },
+  "devDependencies": {
+    "@types/three": "^0.186.0",
+    "playwright-core": "^1.63.0",
+    "typescript": "^7.0.2",
+    "vite": "^8.3.3",
+    "vitest": "^5.0.3"
+  }
+}

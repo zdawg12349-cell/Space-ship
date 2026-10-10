@@ -1,0 +1,732 @@
+{
+ "pre_terminal": {
+  "role": "LAUNCH",
+  "text": "All stations, this is launch control. We are in terminal count.",
+  "duration": 3.976
+ },
+ "pre_weather_go": {
+  "role": "RANGE",
+  "text": "Weather is go. Upper level winds are within limits.",
+  "duration": 2.927
+ },
+ "pre_weather_marginal": {
+  "role": "RANGE",
+  "text": "Weather is marginal, but within limits. We are go.",
+  "duration": 2.929
+ },
+ "pre_range_go": {
+  "role": "RANGE",
+  "text": "Range is green. Range is go for launch.",
+  "duration": 2.664
+ },
+ "pre_prop_complete": {
+  "role": "LAUNCH",
+  "text": "Propellant loading is complete. The vehicle is in launch configuration.",
+  "duration": 4.678
+ },
+ "pre_topping": {
+  "role": "LAUNCH",
+  "text": "Propellant topping is in progress. Liquid oxygen venting is normal.",
+  "duration": 4.597
+ },
+ "pre_arm_retract": {
+  "role": "LAUNCH",
+  "text": "Crew access arm is retracting.",
+  "duration": 1.966
+ },
+ "pre_flight_go": {
+  "role": "FLIGHT",
+  "text": "Launch director, flight. Mission control is go for launch.",
+  "duration": 3.307
+ },
+ "pre_poll_go": {
+  "role": "LAUNCH",
+  "text": "The poll is complete. We are go for launch.",
+  "duration": 2.694
+ },
+ "pre_internal_power": {
+  "role": "LAUNCH",
+  "text": "The vehicle has transferred to internal power.",
+  "duration": 2.557
+ },
+ "pre_t2min": {
+  "role": "LAUNCH",
+  "text": "T minus two minutes.",
+  "duration": 1.34
+ },
+ "pre_t90": {
+  "role": "LAUNCH",
+  "text": "T minus ninety seconds.",
+  "duration": 1.719
+ },
+ "pre_t1min": {
+  "role": "LAUNCH",
+  "text": "T minus one minute, and counting.",
+  "duration": 2.189
+ },
+ "pre_t45": {
+  "role": "LAUNCH",
+  "text": "T minus forty five seconds. The vehicle is go for launch.",
+  "duration": 4.019
+ },
+ "pre_t30": {
+  "role": "LAUNCH",
+  "text": "T minus thirty seconds.",
+  "duration": 1.535
+ },
+ "pre_autoseq": {
+  "role": "LAUNCH",
+  "text": "The auto sequence has started. Flight computers are in control.",
+  "duration": 4.167
+ },
+ "pre_deluge": {
+  "role": "LAUNCH",
+  "text": "Sound suppression water is flowing.",
+  "duration": 1.948
+ },
+ "pre_t20": {
+  "role": "LAUNCH",
+  "text": "T minus twenty.",
+  "duration": 1.284
+ },
+ "pre_t15": {
+  "role": "LAUNCH",
+  "text": "T minus fifteen.",
+  "duration": 1.266
+ },
+ "pre_guidance_internal": {
+  "role": "GNC",
+  "text": "Guidance is internal.",
+  "duration": 1.523
+ },
+ "cnt_10": {
+  "role": "LAUNCH",
+  "text": "Ten.",
+  "duration": 0.586
+ },
+ "cnt_9": {
+  "role": "LAUNCH",
+  "text": "Nine.",
+  "duration": 0.648
+ },
+ "cnt_8": {
+  "role": "LAUNCH",
+  "text": "Eight.",
+  "duration": 0.565
+ },
+ "cnt_7": {
+  "role": "LAUNCH",
+  "text": "Seven.",
+  "duration": 0.685
+ },
+ "cnt_6": {
+  "role": "LAUNCH",
+  "text": "Six.",
+  "duration": 0.663
+ },
+ "cnt_5": {
+  "role": "LAUNCH",
+  "text": "Five.",
+  "duration": 0.696
+ },
+ "cnt_4": {
+  "role": "LAUNCH",
+  "text": "Four.",
+  "duration": 0.649
+ },
+ "cnt_3": {
+  "role": "LAUNCH",
+  "text": "Three.",
+  "duration": 0.647
+ },
+ "cnt_2": {
+  "role": "LAUNCH",
+  "text": "Two.",
+  "duration": 0.548
+ },
+ "cnt_1": {
+  "role": "LAUNCH",
+  "text": "One.",
+  "duration": 0.582
+ },
+ "cnt_0": {
+  "role": "LAUNCH",
+  "text": "Zero.",
+  "duration": 0.693
+ },
+ "ign_seq": {
+  "role": "LAUNCH",
+  "text": "Ignition sequence start.",
+  "duration": 1.511
+ },
+ "ign_main_start": {
+  "role": "LAUNCH",
+  "text": "Main engine start.",
+  "duration": 1.351
+ },
+ "ign_full_power": {
+  "role": "LAUNCH",
+  "text": "Engines at full power.",
+  "duration": 1.511
+ },
+ "ign_srb": {
+  "role": "LAUNCH",
+  "text": "Booster ignition.",
+  "duration": 1.199
+ },
+ "liftoff": {
+  "role": "LAUNCH",
+  "text": "Liftoff! We have liftoff!",
+  "duration": 1.563
+ },
+ "liftoff_alt": {
+  "role": "LAUNCH",
+  "text": "And liftoff!",
+  "duration": 0.917
+ },
+ "tower_clear": {
+  "role": "FLIGHT",
+  "text": "Tower is clear. Mission control has the vehicle.",
+  "duration": 2.779
+ },
+ "roll_program": {
+  "role": "GNC",
+  "text": "Roll program.",
+  "duration": 1.172
+ },
+ "pitch_program": {
+  "role": "GNC",
+  "text": "Pitch program initiated. The vehicle is downrange.",
+  "duration": 3.129
+ },
+ "supersonic": {
+  "role": "FLIGHT",
+  "text": "The vehicle is supersonic.",
+  "duration": 1.673
+ },
+ "throttle_down": {
+  "role": "GNC",
+  "text": "Throttling down for max Q.",
+  "duration": 1.824
+ },
+ "maxq": {
+  "role": "FLIGHT",
+  "text": "Max Q. The vehicle is passing through maximum aerodynamic pressure.",
+  "duration": 4.007
+ },
+ "throttle_up": {
+  "role": "GNC",
+  "text": "Throttle up.",
+  "duration": 1.064
+ },
+ "nominal": {
+  "role": "FLIGHT",
+  "text": "Vehicle performance is nominal.",
+  "duration": 1.863
+ },
+ "trajectory_nominal": {
+  "role": "GNC",
+  "text": "Trajectory is nominal.",
+  "duration": 1.655
+ },
+ "power_nominal": {
+  "role": "FLIGHT",
+  "text": "Power and propulsion look good.",
+  "duration": 1.739
+ },
+ "srb_burnout": {
+  "role": "FLIGHT",
+  "text": "Booster burnout. Stand by for booster separation.",
+  "duration": 3.083
+ },
+ "booster_sep": {
+  "role": "FLIGHT",
+  "text": "Booster separation confirmed.",
+  "duration": 1.807
+ },
+ "srb_sep": {
+  "role": "FLIGHT",
+  "text": "Solid rocket booster separation. Good separation.",
+  "duration": 3.297
+ },
+ "meco": {
+  "role": "FLIGHT",
+  "text": "Main engine cutoff.",
+  "duration": 1.373
+ },
+ "beco": {
+  "role": "FLIGHT",
+  "text": "Booster engine cutoff.",
+  "duration": 1.491
+ },
+ "stage_sep": {
+  "role": "FLIGHT",
+  "text": "Stage separation confirmed.",
+  "duration": 1.836
+ },
+ "stage2_ign": {
+  "role": "FLIGHT",
+  "text": "Second stage ignition.",
+  "duration": 1.415
+ },
+ "upper_ign": {
+  "role": "FLIGHT",
+  "text": "Upper stage engine ignition. We have good thrust.",
+  "duration": 2.923
+ },
+ "stage3_ign": {
+  "role": "FLIGHT",
+  "text": "Third stage ignition.",
+  "duration": 1.365
+ },
+ "fairing_sep": {
+  "role": "FLIGHT",
+  "text": "Payload fairing separation confirmed.",
+  "duration": 2.196
+ },
+ "les_jettison": {
+  "role": "FLIGHT",
+  "text": "Launch escape tower jettisoned.",
+  "duration": 1.715
+ },
+ "karman": {
+  "role": "CAPCOM",
+  "text": "You have crossed one hundred kilometers. Welcome to space.",
+  "duration": 2.825
+ },
+ "seco": {
+  "role": "FLIGHT",
+  "text": "Engine cutoff.",
+  "duration": 1.088
+ },
+ "orbit_insertion": {
+  "role": "CAPCOM",
+  "text": "Orbit insertion confirmed. Welcome to orbit.",
+  "duration": 2.523
+ },
+ "orbit_good": {
+  "role": "FLIGHT",
+  "text": "We have a good orbit. Go for orbit operations.",
+  "duration": 2.781
+ },
+ "suborbital": {
+  "role": "CAPCOM",
+  "text": "Engine cutoff. You are on a suborbital trajectory. Enjoy the view.",
+  "duration": 3.503
+ },
+ "apogee": {
+  "role": "CAPCOM",
+  "text": "You are at apogee.",
+  "duration": 1.231
+ },
+ "payload_deploy": {
+  "role": "FLIGHT",
+  "text": "Spacecraft separation confirmed. The payload is free flying.",
+  "duration": 3.726
+ },
+ "solar_deploy": {
+  "role": "FLIGHT",
+  "text": "Solar array deployment confirmed.",
+  "duration": 1.933
+ },
+ "boostback_start": {
+  "role": "RECOVERY",
+  "text": "Boostback burn startup.",
+  "duration": 1.385
+ },
+ "boostback_end": {
+  "role": "RECOVERY",
+  "text": "Boostback burn complete. The booster is headed home.",
+  "duration": 2.953
+ },
+ "gridfins": {
+  "role": "RECOVERY",
+  "text": "Grid fins deployed.",
+  "duration": 1.292
+ },
+ "entry_burn_start": {
+  "role": "RECOVERY",
+  "text": "Entry burn startup.",
+  "duration": 1.221
+ },
+ "entry_burn_end": {
+  "role": "RECOVERY",
+  "text": "Entry burn complete.",
+  "duration": 1.238
+ },
+ "landing_burn": {
+  "role": "RECOVERY",
+  "text": "Landing burn has begun.",
+  "duration": 1.414
+ },
+ "legs_deploy": {
+  "role": "RECOVERY",
+  "text": "Landing legs deployed.",
+  "duration": 1.4
+ },
+ "booster_landed": {
+  "role": "RECOVERY",
+  "text": "Touchdown! The booster has landed!",
+  "duration": 1.922
+ },
+ "boosters_landed_both": {
+  "role": "RECOVERY",
+  "text": "Both side boosters have landed!",
+  "duration": 1.7
+ },
+ "booster_lost": {
+  "role": "RECOVERY",
+  "text": "We have lost telemetry from the booster.",
+  "duration": 1.954
+ },
+ "tli_go": {
+  "role": "CAPCOM",
+  "text": "You are go for trans lunar injection.",
+  "duration": 2.056
+ },
+ "tli_done": {
+  "role": "CAPCOM",
+  "text": "Trans lunar injection complete. You are on your way to the Moon.",
+  "duration": 3.226
+ },
+ "moon_soi": {
+  "role": "CAPCOM",
+  "text": "You are now in the Moon's sphere of influence.",
+  "duration": 2.199
+ },
+ "los_moon": {
+  "role": "CAPCOM",
+  "text": "Loss of signal in one minute as you pass behind the Moon. We'll see you on the other side.",
+  "duration": 4.472
+ },
+ "aos": {
+  "role": "CAPCOM",
+  "text": "Acquisition of signal. Good to hear from you again.",
+  "duration": 2.452
+ },
+ "loi_done": {
+  "role": "CAPCOM",
+  "text": "Lunar orbit insertion complete. You are in orbit around the Moon.",
+  "duration": 3.497
+ },
+ "moon_flyby": {
+  "role": "CAPCOM",
+  "text": "Closest approach to the Moon. What a view.",
+  "duration": 2.109
+ },
+ "pdi_go": {
+  "role": "CAPCOM",
+  "text": "You are go for powered descent.",
+  "duration": 1.668
+ },
+ "descent_rate_good": {
+  "role": "CAPCOM",
+  "text": "Altitude good. Descent rate good.",
+  "duration": 1.949
+ },
+ "descent_fast": {
+  "role": "CAPCOM",
+  "text": "Descent rate is high. Throttle up.",
+  "duration": 1.911
+ },
+ "low_fuel_60": {
+  "role": "CAPCOM",
+  "text": "Sixty seconds of fuel remaining.",
+  "duration": 1.979
+ },
+ "low_fuel_30": {
+  "role": "CAPCOM",
+  "text": "Thirty seconds.",
+  "duration": 1.002
+ },
+ "contact_light": {
+  "role": "CAPCOM",
+  "text": "Contact light.",
+  "duration": 1.006
+ },
+ "moon_landed": {
+  "role": "CAPCOM",
+  "text": "Touchdown. We copy you down on the Moon. Beautiful work.",
+  "duration": 2.789
+ },
+ "moon_ascent_go": {
+  "role": "CAPCOM",
+  "text": "You are go for lunar ascent.",
+  "duration": 1.553
+ },
+ "moon_liftoff": {
+  "role": "CAPCOM",
+  "text": "Liftoff from the lunar surface.",
+  "duration": 1.796
+ },
+ "tei_done": {
+  "role": "CAPCOM",
+  "text": "Trans Earth injection complete. You are headed home.",
+  "duration": 2.673
+ },
+ "moon_soi_exit": {
+  "role": "CAPCOM",
+  "text": "You have left the Moon's sphere of influence.",
+  "duration": 2.085
+ },
+ "earth_soi_exit": {
+  "role": "CAPCOM",
+  "text": "You have escaped Earth's gravity. You are now in orbit around the Sun.",
+  "duration": 3.435
+ },
+ "earth_soi_enter": {
+  "role": "CAPCOM",
+  "text": "Welcome back to Earth's sphere of influence.",
+  "duration": 2.201
+ },
+ "jupiter_soi": {
+  "role": "CAPCOM",
+  "text": "You have entered Jupiter's sphere of influence.",
+  "duration": 2.228
+ },
+ "jupiter_close": {
+  "role": "CAPCOM",
+  "text": "Closest approach to Jupiter. Gravity assist in progress.",
+  "duration": 3.246
+ },
+ "jupiter_done": {
+  "role": "FLIGHT",
+  "text": "Jupiter flyby complete. That is a historic achievement.",
+  "duration": 3.221
+ },
+ "deorbit_go": {
+  "role": "CAPCOM",
+  "text": "You are go for the deorbit burn.",
+  "duration": 1.834
+ },
+ "deorbit_done": {
+  "role": "CAPCOM",
+  "text": "Deorbit burn complete. You are on your way home.",
+  "duration": 2.304
+ },
+ "entry_interface": {
+  "role": "FLIGHT",
+  "text": "Entry interface. The spacecraft is entering the atmosphere.",
+  "duration": 3.264
+ },
+ "blackout": {
+  "role": "CAPCOM",
+  "text": "We expect loss of signal during plasma blackout. See you on the other side.",
+  "duration": 4.149
+ },
+ "peak_heating": {
+  "role": "FLIGHT",
+  "text": "Peak heating.",
+  "duration": 0.886
+ },
+ "blackout_end": {
+  "role": "CAPCOM",
+  "text": "Signal reacquired. Welcome back.",
+  "duration": 1.932
+ },
+ "heat_warning": {
+  "role": "FLIGHT",
+  "text": "Heat shield temperature is approaching limits.",
+  "duration": 2.324
+ },
+ "heat_critical": {
+  "role": "FLIGHT",
+  "text": "Heat shield is failing! Check your attitude!",
+  "duration": 2.076
+ },
+ "drogues": {
+  "role": "RECOVERY",
+  "text": "Drogue parachutes deployed.",
+  "duration": 1.566
+ },
+ "mains": {
+  "role": "RECOVERY",
+  "text": "Main parachutes deployed. We have good chutes.",
+  "duration": 2.603
+ },
+ "chute_fast": {
+  "role": "RECOVERY",
+  "text": "Velocity is too high for parachute deployment.",
+  "duration": 2.633
+ },
+ "chute_fail": {
+  "role": "RECOVERY",
+  "text": "Parachute failure!",
+  "duration": 1.037
+ },
+ "splashdown": {
+  "role": "RECOVERY",
+  "text": "Splashdown! Splashdown confirmed. Welcome home.",
+  "duration": 2.748
+ },
+ "touchdown_land": {
+  "role": "RECOVERY",
+  "text": "Touchdown! Welcome home.",
+  "duration": 1.522
+ },
+ "recovery_teams": {
+  "role": "RECOVERY",
+  "text": "Recovery teams are moving in.",
+  "duration": 1.747
+ },
+ "engine_fail": {
+  "role": "FLIGHT",
+  "text": "We have an engine failure.",
+  "duration": 1.434
+ },
+ "engine_out_continue": {
+  "role": "FLIGHT",
+  "text": "Engine out. Continuing on the remaining engines.",
+  "duration": 2.876
+ },
+ "loss_control": {
+  "role": "GNC",
+  "text": "We are losing attitude control!",
+  "duration": 1.906
+ },
+ "aoa_high": {
+  "role": "GNC",
+  "text": "Angle of attack is too high.",
+  "duration": 1.788
+ },
+ "q_high": {
+  "role": "FLIGHT",
+  "text": "Aerodynamic loads are high. Watch your attitude.",
+  "duration": 2.987
+ },
+ "structural": {
+  "role": "FLIGHT",
+  "text": "Structural limits exceeded.",
+  "duration": 1.613
+ },
+ "vehicle_lost": {
+  "role": "FLIGHT",
+  "text": "Flight, we have lost the vehicle.",
+  "duration": 1.589
+ },
+ "telemetry_lost": {
+  "role": "FLIGHT",
+  "text": "We have lost telemetry.",
+  "duration": 1.375
+ },
+ "abort": {
+  "role": "FLIGHT",
+  "text": "Abort. Abort. Abort.",
+  "duration": 1.654
+ },
+ "les_fire": {
+  "role": "FLIGHT",
+  "text": "Launch escape system fired. The crew module is clear.",
+  "duration": 3.221
+ },
+ "fuel_low": {
+  "role": "FLIGHT",
+  "text": "Propellant is low.",
+  "duration": 1.226
+ },
+ "fuel_depleted": {
+  "role": "FLIGHT",
+  "text": "Propellant depletion.",
+  "duration": 1.237
+ },
+ "overheat": {
+  "role": "FLIGHT",
+  "text": "Engine temperature is critical.",
+  "duration": 1.771
+ },
+ "hold": {
+  "role": "LAUNCH",
+  "text": "Hold. Hold. Hold. We are holding the count.",
+  "duration": 2.753
+ },
+ "recycle": {
+  "role": "LAUNCH",
+  "text": "We are recycling the count.",
+  "duration": 1.602
+ },
+ "copy": {
+  "role": "CAPCOM",
+  "text": "Copy.",
+  "duration": 0.657
+ },
+ "roger": {
+  "role": "FLIGHT",
+  "text": "Roger that.",
+  "duration": 0.917
+ },
+ "standing_by": {
+  "role": "CAPCOM",
+  "text": "Standing by.",
+  "duration": 1.005
+ },
+ "mission_success": {
+  "role": "FLIGHT",
+  "text": "Mission accomplished. Outstanding work, everyone.",
+  "duration": 2.88
+ },
+ "mission_complete": {
+  "role": "CAPCOM",
+  "text": "Congratulations on a successful mission.",
+  "duration": 2.402
+ },
+ "mission_fail": {
+  "role": "FLIGHT",
+  "text": "Mission failure. Let's secure our data and figure out what happened.",
+  "duration": 3.627
+ },
+ "objective_complete": {
+  "role": "CAPCOM",
+  "text": "Objective complete.",
+  "duration": 1.372
+ },
+ "go_staging": {
+  "role": "CAPCOM",
+  "text": "You are go for staging.",
+  "duration": 1.376
+ },
+ "timewarp_note": {
+  "role": "CAPCOM",
+  "text": "Coast phase. You are clear to time warp.",
+  "duration": 2.111
+ },
+ "circularize": {
+  "role": "CAPCOM",
+  "text": "Approaching apoapsis. Stand by for the circularization burn.",
+  "duration": 3.501
+ },
+ "circ_done": {
+  "role": "CAPCOM",
+  "text": "Circularization complete. Orbit is stable.",
+  "duration": 2.515
+ },
+ "burn_start": {
+  "role": "GNC",
+  "text": "Ignition. Burn in progress.",
+  "duration": 1.834
+ },
+ "burn_end": {
+  "role": "GNC",
+  "text": "Burn complete.",
+  "duration": 1.16
+ },
+ "periapsis_low": {
+  "role": "GNC",
+  "text": "Your periapsis is inside the atmosphere.",
+  "duration": 2.415
+ },
+ "orbit_decaying": {
+  "role": "GNC",
+  "text": "Orbit is decaying.",
+  "duration": 1.483
+ },
+ "sunrise": {
+  "role": "CAPCOM",
+  "text": "Orbital sunrise coming up. Enjoy it.",
+  "duration": 2.217
+ },
+ "night_pass": {
+  "role": "CAPCOM",
+  "text": "You are crossing into Earth's shadow.",
+  "duration": 1.784
+ }
+}
