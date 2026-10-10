@@ -395,7 +395,13 @@ export class Autopilot {
     const air = v.telemetry.airVelocity;
     const sp = air.length();
     if (sp < 1) { this.att.killRotation(v); return true; }
-    if (!this.entryGuidance) this.entryGuidance = new EntryGuidance(v, this.entryTarget);
+    if (!this.entryGuidance) {
+      // capsules without landing rockets come down at sea: let the guidance find open water
+      const cap = v.assemblies.find((a) => a.def.features?.heatShield);
+      const terrain = this.world.terrain;
+      const sea = !!cap && !cap.def.features?.retroRockets;
+      this.entryGuidance = new EntryGuidance(v, this.entryTarget, sea ? (d) => terrain.isWater(v.body, d) : null);
+    }
     const g = this.entryGuidance;
     g.update(this.world.t);
     const nose = _d.copy(air).multiplyScalar(-1 / sp);
@@ -407,7 +413,7 @@ export class Autopilot {
     const bankDeg = (g.bank * 180) / Math.PI;
     const side = bankDeg < 3 || bankDeg > 177 ? '' : g.sign > 0 ? ' L' : ' R';
     const togo = g.last ? ` · ${Math.max(0, g.last.range / 1000).toFixed(0)} km to go` : '';
-    this.status = tm.speedSurface > 600 ? `Entry guidance · bank ${bankDeg.toFixed(0)}°${side}${togo}` : 'Entry · holding bank';
+    this.status = tm.speedSurface > 600 ? `Entry guidance · ${g.relief ? 'load relief, lift up' : `bank ${bankDeg.toFixed(0)}°${side}`}${togo}` : 'Entry · holding bank';
     return true;
   }
 
@@ -566,10 +572,25 @@ export class Autopilot {
     } else if (this.ascPhase === 'pitch') {
       const thrMax = tm.thrust > 0 ? tm.thrust / Math.max(0.05, v.controls.throttle) : 0;
       const aT = thrMax / Math.max(1, v.mass);
-      const gEff = Math.max(0.05, g - (vh * vh) / r);
-      const vzT = Math.sqrt(2 * gEff * Math.max(0, target - h)) * 0.75;
-      const az = Math.max(-1.5, Math.min(2.5, (vzT - vz) * 0.5));
-      const sinP = aT > 0 ? Math.max(0.03, Math.min(1, (gEff + az) / aT)) : 1;
+      const gEff = g - (vh * vh) / r;
+      // Explicit guidance (after the Apollo LM's ascent guidance): time-to-go from the horizontal
+      // speed still to gain, then the vertical channel flies a linearly varying acceleration that
+      // arrives at the target altitude with no climb rate just as orbital speed is reached. Only
+      // the thrust the climb really needs goes upward, which keeps gravity losses low.
+      let ve = 0, mdot = 0;
+      for (const e of v.engines) {
+        if (!e.armed || e.failed) continue;
+        mdot += e.mount.spec.thrustVac / (e.mount.spec.ispVac * 9.80665);
+      }
+      ve = mdot > 0 ? thrMax / mdot : 3000;
+      const vcT = Math.sqrt(body.gm / (body.radius + target));
+      const dvh = Math.max(0, vcT - vh);
+      const tgo = aT > 0 ? (v.mass * (1 - Math.exp(-(dvh * 1.03) / ve))) / Math.max(1e-6, thrMax / ve) : 0;
+      const T = Math.max(8, tgo);
+      const A = (6 * (target - h - vz * T)) / (T * T) + (2 * vz) / T;
+      // stay clear of the ground until the climb is established
+      const floor = tm.radarAltitude < 1500 ? 0.25 : -0.25;
+      const sinP = aT > 0 ? Math.max(floor, Math.min(1, (gEff + A) / aT)) : 1;
       pitch = (Math.asin(sinP) * 180) / Math.PI;
       const vc = Math.sqrt(body.gm / r);
       this.throttleCmd = 1;

@@ -29,7 +29,7 @@ const PLANS = {
   landing: [{ nav: 'land' }, { until: 'r() !== "running"', max: 4000 }],
   homeward: [
     { nav: 'ascend' }, { until: 'ap().mode === "stability" || r() !== "running"', max: 1500 }, { advance: 20 },
-    { nav: 'plan_tei' }, { nav: 'execute' }, { until: 'ap().mode !== "node"', max: 9000 },
+    { nav: 'plan_tei' }, { wait: 6000 }, { nav: 'execute' }, { until: 'ap().mode !== "node"', max: 9000 },
     { advance: 30 }, { warp: 7 }, { until: 'ph() === "entry" || r() !== "running"', max: 600 }, { warp: 0 },
     { until: 'r() !== "running"', max: 1500 },
   ],
@@ -92,7 +92,7 @@ for (const id of ids) {
       result: d.result, reason: d.failReason, phase: s.phase, met: Math.round(s.met), body: v.body.id,
       alt: Math.round(v.telemetry.altitude), objectives: d.objectives.map((o) => `${o.state === 'done' ? '✓' : o.state === 'failed' ? '✗' : '·'} ${o.text}`),
       boosters: s.boosters.map((b) => `${b.zone.id}:${b.v.landed ? 'landed' : b.v.destroyed ? 'lost (' + b.v.destroyReason + ')' : b.g.phase}`),
-      stats: { maxAlt: Math.round(d.stats.maxAltitude / 1000), touchdown: d.stats.touchdownSpeed, moon: Math.round(d.stats.minMoonDistance / 1000) },
+      stats: { maxAlt: Math.round(d.stats.maxAltitude / 1000), touchdown: d.stats.touchdownSpeed, moon: Math.round(d.stats.minMoonDistance / 1000), maxG: +d.stats.maxG.toFixed(1), landing: f.landingAccuracy() },
     };
   });
   const line = `${id}: ${out.result.toUpperCase()} ${out.reason ? '(' + out.reason + ')' : ''} phase=${out.phase} MET=${out.met}s body=${out.body} alt=${out.alt}m [${((Date.now() - t0) / 1000).toFixed(0)} s real]\n    ${out.objectives.join('\n    ')}${out.boosters.length ? '\n    boosters: ' + out.boosters.join(', ') : ''}\n    stats ${JSON.stringify(out.stats)}\n    ${log.join('\n    ')}`;

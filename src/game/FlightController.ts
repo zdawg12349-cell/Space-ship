@@ -334,7 +334,24 @@ export class FlightController {
         return;
       }
       case 'warp_stop': s.warpTarget = null; s.setWarp(0); return;
-      case 'plan_tei': node = planTEI(v, s.system, t); break;
+      case 'plan_tei': {
+        // a return that splashes down in open water: a few hundred trajectories flown to the
+        // ocean, so let the HUD show the message first
+        this.hud.log('Planning trans-Earth injection…', s.met);
+        setTimeout(() => {
+          if (this.disposed) return;
+          const earth = s.system.earth;
+          const nd = planTEI(v, s.system, s.world.t, 45_000, (d) => s.world.terrain.isWater(earth, d));
+          if (!nd) { this.hud.log('No solution found from this orbit', s.met, 'warn'); return; }
+          ap.setNode(nd);
+          if (nd.landing) {
+            const la = (nd.landing.lat * Math.PI) / 180, lo = (nd.landing.lon * Math.PI) / 180;
+            ap.entryTarget = new Vector3(Math.cos(la) * Math.cos(lo), Math.cos(la) * Math.sin(lo), Math.sin(la));
+          }
+          this.hud.log(`${nd.label}: ${nd.dv.length().toFixed(0)} m/s · ${nd.result}`, s.met, 'good');
+        }, 60);
+        return;
+      }
       case 'plan_joi': node = planCapture(v, t, 60, 'Jupiter orbit insertion'); break;
     }
     if (!node) { this.hud.log(id === 'plan_mcc' ? 'Trajectory already on target' : 'No solution found from this orbit', s.met, 'warn'); return; }
@@ -629,6 +646,7 @@ export class FlightController {
     } else if (!ok) this.app.audio.radio?.say('mission_fail', 3);
     const st = d.stats;
     const row = (k: string, v: string) => h('div', { class: 'stat-row' }, h('span', {}, k), h('span', {}, v));
+    const landing = this.landingAccuracy();
     const ul = h('ul', { class: 'objectives' });
     for (const o of d.objectives) ul.appendChild(h('li', { class: o.state === 'open' ? '' : o.state }, o.text));
     const next = m ? MISSIONS.find((x) => x.number === m.number + 1) : undefined;
@@ -656,7 +674,9 @@ export class FlightController {
           row('Peak acceleration', `${st.maxG.toFixed(2)} g`),
           row('Boosters recovered', `${st.boostersLanded}${st.boostersLost ? ` · lost ${st.boostersLost}` : ''}`),
           isFinite(st.minMoonDistance) && st.minMoonDistance < 5e8 ? row('Closest lunar approach', `${(st.minMoonDistance / 1000).toFixed(0)} km`) : null,
+          st.peakHeatFlux > 1e5 ? row('Peak heating', `${(st.peakHeatFlux / 1e4).toFixed(0)} W/cm²`) : null,
           !isNaN(st.touchdownSpeed) ? row('Touchdown speed', `${st.touchdownSpeed.toFixed(1)} m/s`) : null,
+          landing ? row('Landing point', landing) : null,
         ),
       ),
       buttons,
@@ -666,6 +686,17 @@ export class FlightController {
       this.app.ui.appendChild(panel);
       this.hud.setVisible(false);
     }, ok ? 2500 : 4000);
+  }
+
+  /** How far a guided capsule came down from the point its entry steered for (debrief). */
+  private landingAccuracy(): string | null {
+    const s = this.session;
+    const v = s.vessel;
+    const eg = s.autopilot.entryGuidance;
+    if (!eg?.target || v.destroyed || !(v.landed || v.splashed) || v.body.id !== 'earth') return null;
+    const d = Math.acos(Math.max(-1, Math.min(1, v.fixedDirection(s.world.t, new Vector3()).dot(eg.target)))) * v.body.radius;
+    const where = eg.designated ? 'the recovery zone' : s.landingTarget ? s.landingTarget.name : 'the recovery zone';
+    return `${d < 1000 ? d.toFixed(0) + ' m' : (d / 1000).toFixed(1) + ' km'} from ${where}`;
   }
 
   private disposed = false;

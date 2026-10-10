@@ -817,8 +817,9 @@ function seleneLander(): VehicleDef {
 
 function lunarReturnVehicle(): VehicleDef {
   const base = new Stack(0).add('lander', 2.4, 2.4, { material: 'gold_foil', mass: 1800, propellant: 0, style: 'lrv_base' });
-  // ~3.2 km/s: lunar ascent (~1.9 km/s with losses) and trans-Earth injection (~0.95) with a margin
-  const stage = new Stack(base.top).add('service', 3.6, 1.9, { material: 'silver_foil', mass: 2100, propellant: 10400, style: 'lrv_stage' });
+  // ~3.05 km/s: lunar ascent (~1.8 km/s) and trans-Earth injection (~0.9) with ~300 m/s in hand
+  // for corrections
+  const stage = new Stack(base.top).add('service', 3.6, 1.9, { material: 'silver_foil', mass: 2100, propellant: 11000, style: 'lrv_stage' });
   const cm = new Stack(stage.top).add('capsule', 2.6, 1.9, { material: 'silver_foil', mass: 3600, shape: 'apollo' });
   return {
     id: 'lrv', name: 'HORIZON RETURN VEHICLE', vehicleClass: 'Lunar launcher',
@@ -826,7 +827,8 @@ function lunarReturnVehicle(): VehicleDef {
     analog: 'Direct-ascent lunar return concept', payloadLEO: 0, crewed: true,
     assemblies: [
       asm('base', 'Landing platform', null, base.sections, [], { features: { landingLegs: { y: 2.0, length: 3.4, count: 4 }, legsLunar: true }, separation: { kind: 'lander', impulse: 0.3 } }),
-      asm('ascent', 'Ascent & return stage', 'base', stage.sections, center({ ...E.dps, name: 'Ascent & return engine (throttleable)', restarts: 20 }, base.top), { features: { rcs: { thrust: 400, arm: 2 }, reactionWheel: { torque: 600 } }, separation: { kind: 'stack', impulse: 0.8 } }),
+      // an uprated descent-engine derivative: lunar-gravity thrust-to-weight ~2.3 at liftoff
+      asm('ascent', 'Ascent & return stage', 'base', stage.sections, center({ ...E.dps, name: 'Ascent & return engine (throttleable)', thrustVac: 66_000, thrustSL: 30_000, ispVac: 314, restarts: 20 }, base.top), { features: { rcs: { thrust: 400, arm: 2 }, reactionWheel: { torque: 600 } }, separation: { kind: 'stack', impulse: 0.8 } }),
       asm('cm', 'Return capsule', 'ascent', cm.sections, [], {
         features: {
           heatShield: { radius: 1.9, ablatorMass: 450, maxTemp: 3000, noseRadius: 4.5 },

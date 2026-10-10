@@ -1,10 +1,15 @@
 import { describe, expect, it } from 'vitest';
 import { Quaternion, Vector3 } from 'three';
-import { flatTerrain, makeWorld, oceanTerrain } from './helpers';
+import { calm, flatTerrain, makeWorld, oceanTerrain } from './helpers';
 import { getVehicle } from '../src/vehicles/catalog';
 import { AttitudeController } from '../src/game/attitude';
 import { Autopilot } from '../src/game/Autopilot';
-import { planDeorbit } from '../src/game/Planner';
+import { planDeorbit, planTEI } from '../src/game/Planner';
+import { nominalLiftShare, predictEntry } from '../src/game/entryGuidance';
+import { SolarSystem } from '../src/physics/bodies';
+import { dateToJ2000Seconds } from '../src/physics/constants';
+import { PhysicsWorld } from '../src/physics/world';
+import type { Vessel } from '../src/physics/vessel';
 
 describe('reentry', () => {
   it('AQUILA deorbits, survives peak heating, deploys chutes and splashes down', () => {
@@ -124,4 +129,129 @@ describe('targeted deorbit', () => {
     expect(miss).toBeLessThan(25_000);
     expect(maxG).toBeLessThan(6);
   }, 300_000);
+});
+
+describe('lunar return', () => {
+  function fly(w: PhysicsWorld, ap: Autopilot, seconds: number, until?: () => boolean) {
+    const dt = 1 / 30;
+    for (let i = 0; i < seconds / dt; i++) {
+      ap.update(dt);
+      const c = ap.vessel.controls;
+      if (ap.throttleCmd !== null) c.throttle = ap.throttleCmd;
+      if (ap.translateCmd) { c.rcs = true; c.tx = ap.translateCmd.x; c.ty = ap.translateCmd.y; c.tz = ap.translateCmd.z; } else { c.tx = 0; c.ty = 0; c.tz = 0; }
+      if (ap.wantStage) { ap.wantStage = false; w.stage(ap.vessel); }
+      w.update(dt);
+      w.drainEvents();
+      if (until?.()) break;
+    }
+  }
+
+  /** The session's entry sequence: shed everything but the capsule, guided entry, chutes. */
+  function entry(w: PhysicsWorld, ap: Autopilot, v: Vessel) {
+    const cap = v.assemblies.find((a) => a.def.features?.heatShield)!;
+    if (v.assemblies.length > 1) w.separate(v, v.assemblies.filter((a) => a !== cap).map((a) => a.id));
+    ap.setMode('entry');
+    let maxG = 0;
+    const dt = 1 / 30;
+    w.update(dt); // fresh telemetry before the first decision
+    for (let i = 0; i < 4000 * 30 && !v.landed && !v.destroyed; i++) {
+      const tm = v.telemetry;
+      if (tm.altitude < 9000 && tm.speedSurface < 240 && cap.chuteState === 'stowed') { v.deployChutes(); ap.setMode('off'); }
+      if (tm.altitude < 3200 && tm.speedSurface < 100 && cap.chuteState === 'drogue') v.deployChutes();
+      if (ap.mode !== 'off') ap.update(dt);
+      w.update(dt);
+      w.drainEvents();
+      if (tm.radarAltitude > 5) maxG = Math.max(maxG, tm.gForce);
+    }
+    return { maxG, fix: v.fixedDirection(w.t, new Vector3()) };
+  }
+
+  const dirOf = (lat: number, lon: number) => {
+    const la = (lat * Math.PI) / 180, lo = (lon * Math.PI) / 180;
+    return new Vector3(Math.cos(la) * Math.cos(lo), Math.cos(la) * Math.sin(lo), Math.sin(la));
+  };
+
+  it('HORIZON lifts off the Moon, burns for home and splashes down at its recovery zone', () => {
+    const t0 = dateToJ2000Seconds(new Date('2026-10-18T06:00:00Z'));
+    const sys = new SolarSystem(t0);
+    const w = new PhysicsWorld(sys, t0, oceanTerrain, calm);
+    const v = w.createVessel(getVehicle('lrv'), sys.moon);
+    w.addVessel(v);
+    w.active = v;
+    w.placeOnSurface(v, sys.moon, (0.674 * Math.PI) / 180, (23.473 * Math.PI) / 180, 0.05, 0);
+    for (const a of v.assemblies) if (a.def.features?.landingLegs) { a.legsDeployed = 1; a.legsTarget = 1; }
+    v.settleLanded(w.t, false);
+    v.controls.rcs = true;
+    const ap = new Autopilot(w, v);
+    ap.setMode('ascend');
+    fly(w, ap, 1500, () => ap.mode === 'stability' || v.destroyed);
+    v.hasLiftedOff = true;
+    const o = v.updateOrbit(w.t);
+    expect(o.periapsis - sys.moon.radius).toBeGreaterThan(12_000);
+    fly(w, ap, 20);
+    const n = planTEI(v, sys, w.t, 45_000, () => true)!;
+    expect(n.landing).toBeDefined();
+    w.updateRails(Math.max(0, n.t - w.t - 300));
+    ap.setNode(n);
+    ap.setMode('node');
+    fly(w, ap, 3000, () => ap.mode !== 'node' || v.destroyed);
+    // the return stage keeps a margin for corrections after the burn
+    const left = v.stagePropellant().current;
+    for (let i = 0; i < 6 * 24 * 6 && !v.destroyed; i++) {
+      w.updateRails(600);
+      if (v.body === sys.earth && v.pos.length() - sys.earth.radius < sys.earth.atmosphereTop + 1) break;
+    }
+    expect(v.body).toBe(sys.earth);
+    ap.entryTarget = dirOf(n.landing!.lat, n.landing!.lon);
+    const { maxG, fix } = entry(w, ap, v);
+    const miss = Math.acos(Math.min(1, fix.dot(ap.entryTarget))) * sys.earth.radius;
+    console.log(`TEI ${n.dv.length().toFixed(0)} m/s, ${left.toFixed(0)} kg left · ${n.result} · splashdown ${(miss / 1000).toFixed(1)} km from the zone, peak ${maxG.toFixed(1)} g, ${ap.entryGuidance?.reversals} reversals`);
+    expect(v.destroyed, v.destroyReason).toBe(false);
+    expect(v.splashed).toBe(true);
+    expect(left).toBeGreaterThan(500);
+    expect(miss).toBeLessThan(15_000);
+    expect(maxG).toBeLessThan(7.5);
+  }, 120_000);
+
+  it('a capsule with no recovery zone steers its 11 km/s entry clear of land', () => {
+    const t0 = dateToJ2000Seconds(new Date('2026-10-21T00:00:00Z'));
+    const sys = new SolarSystem(t0);
+    const earth = sys.earth;
+    // the return capsule alone on a lunar-return conic at entry interface (45 km vacuum perigee)
+    const full = getVehicle('lrv');
+    const def = { ...full, assemblies: full.assemblies.filter((a) => a.id === 'cm').map((a) => ({ ...a, parent: null })), staging: full.staging.slice(2) };
+    const rp = earth.radius + 45_000, ra = 4.0e8;
+    const a = (rp + ra) / 2, e = (ra - rp) / (ra + rp);
+    const rEI = earth.radius + earth.atmosphereTop - 500;
+    const speed = Math.sqrt(earth.gm * (2 / rEI - 1 / a));
+    const gam = -Math.acos(Math.sqrt(earth.gm * a * (1 - e * e)) / (rEI * speed));
+    const q = new Quaternion();
+    earth.orientationAt(t0, q);
+    const up = new Vector3(1, 0, 0).applyQuaternion(q), east = new Vector3(0, 1, 0).applyQuaternion(q);
+    const r0 = up.clone().multiplyScalar(rEI);
+    const v0 = up.clone().multiplyScalar(speed * Math.sin(gam)).addScaledVector(east, speed * Math.cos(gam));
+    // a continent where the capsule would come down at its nominal bank
+    const nominal = predictEntry(earth, r0, v0, t0, 4500, Math.PI * 1.9 * 1.9, nominalLiftShare(speed), 2_000).dir;
+    const land = (d: Vector3) => d.dot(nominal) > Math.cos(300_000 / earth.radius);
+    const terrain = { heightAt: () => 0, isWater: (b: { id: string }, d: Vector3) => b.id === 'earth' && !land(d) };
+    const w = new PhysicsWorld(sys, t0, terrain as never, calm);
+    const v = w.createVessel(def as typeof full, earth);
+    w.addVessel(v);
+    w.active = v;
+    w.placeInOrbit(v, earth, r0, v0, v0.clone().negate());
+    v.hasLiftedOff = true;
+    v.controls.rcs = true;
+    const ap = new Autopilot(w, v);
+    const { maxG, fix } = entry(w, ap, v);
+    const g = ap.entryGuidance!;
+    const offNominal = Math.acos(Math.min(1, fix.dot(nominal))) * earth.radius;
+    const miss = g.target ? Math.acos(Math.min(1, fix.dot(g.target))) * earth.radius : NaN;
+    console.log(`designated ${JSON.stringify(g.designated)} · splashdown ${(offNominal / 1000).toFixed(0)} km from the nominal point, ${(miss / 1000).toFixed(1)} km from the chosen one, peak ${maxG.toFixed(1)} g`);
+    expect(v.destroyed, v.destroyReason).toBe(false);
+    expect(g.designated).not.toBeNull();
+    expect(v.splashed).toBe(true);
+    expect(offNominal).toBeGreaterThan(300_000);
+    expect(miss).toBeLessThan(15_000);
+    expect(maxG).toBeLessThan(8);
+  }, 120_000);
 });

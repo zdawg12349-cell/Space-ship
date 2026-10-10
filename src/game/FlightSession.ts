@@ -17,7 +17,7 @@ import { BoosterGuidance } from './recovery';
 import type { MissionStart } from './missions';
 import { FlightSnapshot, restoreVessel } from './SaveGame';
 import { keplerPropagate } from '../physics/orbit';
-import { lunarLaunchPlane, type LandingTarget } from './Planner';
+import { lunarLaunchPlane, oceanName, type LandingTarget } from './Planner';
 
 /**
  * One flight, from the terminal count to wherever it ends. Owns the physics world, the
@@ -681,9 +681,11 @@ export class FlightSession {
     if (!cap?.def.features?.heatShield) return;
     const tm = v.telemetry;
     const o = v.updateOrbit(this.world.t);
-    const entering = tm.altitude < 140_000 && tm.verticalSpeed < 0 && o.periapsis - v.body.radius < 70_000;
-    if (entering && v.assemblies.length > 1 && !this.hasMilestone('entry_prep')) {
+    // coming in from space (a capsule falling after a low abort only needs its parachutes)
+    const entering = tm.altitude < 140_000 && tm.verticalSpeed < 0 && tm.speedSurface > 2000 && o.periapsis - v.body.radius < 70_000;
+    if (entering && !this.hasMilestone('entry_prep')) {
       this.markMilestone('entry_prep');
+      const shed = v.assemblies.length > 1;
       // stage until only the capsule is left (stop before parachutes)
       for (let guard = 0; guard < 6 && v.assemblies.length > 1; guard++) {
         const next = v.nextStage;
@@ -694,11 +696,17 @@ export class FlightSession {
         // separate everything but the capsule directly
         this.world.separate(v, v.assemblies.filter((a) => a !== cap).map((a) => a.id));
       }
-      // guided entry: bank the capsule's lift toward the landing site when the deorbit was aimed
-      // at one, otherwise hold a steady 60° bank
+      // guided entry (also for a capsule already flying alone): bank the lift toward the landing
+      // site the deorbit or return was aimed at — or, for capsules that come down at sea, toward
+      // open water within reach — otherwise hold a steady 60° bank
       this.autopilot.setMode('entry');
-      this.emit({ type: 'message', text: 'Entry configuration: service module jettisoned, heat shield forward', level: 'info' });
+      this.emit({ type: 'message', text: shed ? 'Entry configuration: service module jettisoned, heat shield forward' : 'Entry configuration: heat shield forward', level: 'info' });
       this.emit({ type: 'radio', id: 'entry_interface' });
+    }
+    const eg = this.autopilot.mode === 'entry' ? this.autopilot.entryGuidance : null;
+    if (eg?.designated && !this.hasMilestone('recovery_zone')) {
+      this.markMilestone('recovery_zone');
+      this.emit({ type: 'message', text: `Recovery zone: splashdown in ${oceanName(eg.designated.lat, eg.designated.lon)}`, level: 'info' });
     }
     const pc = cap.def.features.parachutes;
     if (pc && cap.chuteState === 'stowed' && tm.altitude < 9_000 && tm.speedSurface < 240 && tm.verticalSpeed < 0) {
@@ -883,7 +891,8 @@ export class FlightSession {
     if (v.body.atmosphereTop >= 0 && !v.landed) {
       const o = v.updateOrbit(this.world.t);
       const pe = o.periapsis - v.body.radius;
-      const top = v.body.atmosphereTop || 20_000;
+      // airless worlds: clear of the highest terrain (as the mission objectives judge an orbit)
+      const top = v.body.atmosphereTop || 10_000;
       // escaping the body, or (around the Earth) climbing far beyond any working orbit toward the Moon
       const escaping = o.e >= 1 || (v.body.soi > 0 && o.apoapsis > v.body.soi) || (v.body.id === 'earth' && o.apoapsis - v.body.radius > 150e6);
       if ((this.phase === 'ascent' || this.phase === 'upper') && pe > top && tm.thrust === 0 && o.e < 0.99) {
@@ -894,7 +903,11 @@ export class FlightSession {
       // leaving for another world, and arriving into orbit around one
       if ((this.phase === 'orbit' || this.phase === 'coast') && escaping && tm.thrust === 0) this.setPhase('transfer');
       if (this.phase === 'transfer' && !escaping && pe > top && tm.thrust === 0 && !inAtm) this.setPhase('orbit');
-      if ((this.phase === 'orbit' || this.phase === 'coast' || this.phase === 'transfer') && !this.wasInAtmo && inAtm && tm.verticalSpeed < 0) {
+      // back into the air from space: after an orbit, a coast home from the Moon, or a lofted
+      // suborbital arc that left the atmosphere on the way up
+      const fromSpace = this.phase === 'orbit' || this.phase === 'coast' || this.phase === 'transfer'
+        || ((this.phase === 'ascent' || this.phase === 'upper') && tm.thrust === 0 && pe < top);
+      if (fromSpace && !this.wasInAtmo && inAtm && tm.verticalSpeed < 0) {
         this.wasInAtmo = true;
         this.setPhase('entry');
         this.milestone('entry', 'entry_interface', 'entry', 'Entry interface');

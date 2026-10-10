@@ -173,7 +173,8 @@ export class MissionDirector {
       }
       case 'splashdown': {
         if (!this.touchdown) return 'open';
-        return v.destroyed ? 'failed' : 'done';
+        // a capsule built for the sea that comes down on land has not splashed down
+        return v.destroyed || !this.touchdown.water ? 'failed' : 'done';
       }
       case 'tli': return v.body.id === 'earth' && this.wasInOrbit && (v.updateOrbit(s.world.t).apoapsis > 250_000_000 || v.updateOrbit(s.world.t).e >= 1) ? 'done' : v.body.id === 'moon' ? 'done' : 'open';
       case 'moonSoi': return v.body.id === 'moon' ? 'done' : 'open';

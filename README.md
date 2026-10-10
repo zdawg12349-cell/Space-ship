@@ -42,7 +42,7 @@ There are eleven missions plus a free sandbox:
 | 7 | Catch | LEVIATHAN | The launch tower catches the returning booster |
 | 8 | Free Return | COLOSSUS V | Sunrise launch window, TLI, course correction, lunar flyby |
 | 9 | Tranquility | Lunar lander | Powered descent to the Sea of Tranquility |
-| 10 | Homeward | Lunar ascent vehicle | Lunar liftoff, trans-Earth injection, 11 km/s entry, splashdown |
+| 10 | Homeward | Lunar ascent vehicle | Lunar liftoff, a return aimed at an ocean recovery zone, guided 11 km/s entry, splashdown |
 | 11 | King of Planets | Juno-class probe | Jupiter orbit insertion past the Galilean moons |
 
 In the **sandbox** you choose any rocket, launch site, time of day and weather. A flight can
@@ -93,9 +93,13 @@ materials are generated from that definition.
     translation. A stage whose engine has used its ignitions hands over to the spacecraft.
   - A planner for deorbit, circularise, translunar and trans-Earth injection, mid-course
     corrections and Jupiter capture. Deorbit burns can aim at a landing site, searching
-    several days of passes.
+    several days of passes. Trans-Earth injection weighs every return that grazes the entry
+    corridor and picks the cheapest one whose entry comes down in open ocean.
   - Guided capsule entry: a predictor-corrector picks the bank angle for the capsule's lift,
-    with bank reversals for cross-range. Crews come down on the Kazakh steppe.
+    with bank reversals for cross-range. Crews come down on the Kazakh steppe. Returning
+    from the Moon, the first plunge is flown lift-up to hold the peak near 6 g, the
+    predictor rules out skip-outs, and capsules built for the sea pick a splashdown point
+    in open water if none was planned or the planned one is out of reach.
   - Lunar descent and ascent autopilots.
   - Booster recovery: boostback, an entry burn steered with a burn-aware impact predictor,
     and glide steering that uses the stage's real lift curve (a blunt body falling engines

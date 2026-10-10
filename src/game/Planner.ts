@@ -1,7 +1,7 @@
 import { Quaternion, Vector3 } from 'three';
 import type { CelestialBody, SolarSystem } from '../physics/bodies';
 import { keplerPropagate } from '../physics/orbit';
-import { predictEntry } from './entryGuidance';
+import { nominalLiftShare, predictEntry } from './entryGuidance';
 import type { Vessel } from '../physics/vessel';
 
 /**
@@ -25,6 +25,8 @@ export interface ManeuverNode {
   label: string;
   /** predicted result for display */
   result: string;
+  /** where the entry that follows should come down (trans-Earth injection) */
+  landing?: LandingTarget;
 }
 
 const _r = new Vector3();
@@ -127,7 +129,7 @@ function bestDeorbitTime(v: Vessel, t: number, target: LandingTarget, burnAt: (t
   const calibrate = (tb: number) => {
     const e = toEntry(tb);
     if (!e) return false;
-    const p = predictEntry(body, rE, vE, e.t, mass, area, 0.5, 2_000);
+    const p = predictEntry(body, rE, vE, e.t, mass, area, nominalLiftShare(vE.length()), 2_000);
     body.orientationAt(e.t, q);
     const entryFixed = rE.clone().normalize().applyQuaternion(q.invert());
     entryRange = Math.acos(Math.max(-1, Math.min(1, entryFixed.dot(p.dir)))) * body.radius;
@@ -147,12 +149,12 @@ function bestDeorbitTime(v: Vessel, t: number, target: LandingTarget, burnAt: (t
     const land = pos.applyAxisAngle(n, entryRange / body.radius);
     return surfaceDistance(body, land, target.lat, target.lon);
   };
-  // fine: fly the entry as the guidance will, at the nominal 60° bank (the middle of the
+  // fine: fly the entry as the guidance will, at the nominal bank (60° from orbit: the middle of the
   // capsule's footprint, leaving it room to steer either way)
   const fine = (tb: number): number => {
     const e = toEntry(tb);
     if (!e) return Infinity;
-    const p = predictEntry(body, rE, vE, e.t, mass, area, 0.5, 2_000);
+    const p = predictEntry(body, rE, vE, e.t, mass, area, nominalLiftShare(vE.length()), 2_000);
     return surfaceDistance(body, p.dir, target.lat, target.lon);
   };
   // scan three days of opportunities, keep the best few separate passes
@@ -319,39 +321,146 @@ function earthReturn(sys: SolarSystem, r0: Vector3, v0: Vector3, t0: number): { 
   return { rp: Infinity, tExit: Infinity };
 }
 
-export function planTEI(v: Vessel, sys: SolarSystem, t: number, entryPe = 45_000): ManeuverNode | null {
+/**
+ * Time (s) for a conic to go from its current state to radius `rT`, on the inbound (falling) or
+ * outbound branch, from Kepler's equation; null when the conic never reaches that radius there.
+ */
+function timeToRadius(r0: Vector3, v0: Vector3, mu: number, rT: number, inbound: boolean): number | null {
+  const rm = r0.length();
+  const energy = v0.lengthSq() / 2 - mu / rm;
+  const a = -mu / (2 * energy);
+  const h = new Vector3().crossVectors(r0, v0).length();
+  const e = Math.sqrt(Math.max(0, 1 + (2 * energy * h * h) / (mu * mu)));
+  const out = r0.dot(v0) >= 0;
+  if (e < 1) {
+    if (rT < a * (1 - e) || rT > a * (1 + e)) return null;
+    const n = Math.sqrt(mu / (a * a * a));
+    const ecc = (rr: number) => Math.acos(Math.max(-1, Math.min(1, (1 - rr / a) / e)));
+    const E0 = out ? ecc(rm) : -ecc(rm);
+    const E1 = inbound ? -ecc(rT) : ecc(rT);
+    let dt = (E1 - e * Math.sin(E1) - (E0 - e * Math.sin(E0))) / n;
+    if (dt < 0) dt += (2 * Math.PI) / n;
+    return dt;
+  }
+  if (e <= 1 || rT < a * (1 - e)) return null;
+  const n = Math.sqrt(mu / Math.pow(-a, 3));
+  const hyp = (rr: number) => Math.acosh(Math.max(1, (1 - rr / a) / e));
+  const F0 = out ? hyp(rm) : -hyp(rm);
+  const F1 = inbound ? -hyp(rT) : hyp(rT);
+  const dt = (e * Math.sinh(F1) - F1 - (e * Math.sinh(F0) - F0)) / n;
+  return dt >= 0 ? dt : null;
+}
+
+/** Which ocean a splashdown point lies in, for messages (coarse boxes; degrees). */
+export function oceanName(lat: number, lon: number): string {
+  if (lat < -60) return 'the Southern Ocean';
+  if (lat > 66) return 'the Arctic Ocean';
+  if (lon >= 20 && lon < 147 && lat < 25 && !(lon > 100 && lat > -8)) return 'the Indian Ocean';
+  if ((lon > -70 && lon < 20) || (lat > 8 && lon > -98 && lon < 20 && !(lat < 18 && lon < -84))) return 'the Atlantic';
+  return 'the Pacific';
+}
+
+/**
+ * Trans-Earth injection from lunar orbit: a prograde burn whose return conic grazes the Earth at
+ * the entry perigee. Every Δv in the search range has burn times that hit that perigee exactly;
+ * the faster returns cost more but arrive earlier, with the Earth turned differently beneath the
+ * entry. Each solution's entry is flown (lifting capsule at the nominal bank) to its
+ * splashdown point, and the cheapest burn that comes down in open water — in daylight when it
+ * costs little — wins, as Apollo chose its return to reach the mid-Pacific recovery forces. The
+ * node carries that point so the entry guidance can steer for it.
+ */
+export function planTEI(v: Vessel, sys: SolarSystem, t: number, entryPe = 45_000, isWater?: (dirFixed: Vector3) => boolean): ManeuverNode | null {
   if (v.body.id !== 'moon') return null;
-  const mu = v.body.gm;
+  const moon = sys.moon, earth = sys.earth;
+  const mu = moon.gm;
   const T = orbitPeriod(v.pos, v.vel, mu);
   if (!isFinite(T)) return null;
-  const target = sys.earth.radius + entryPe;
-  const evaluate = (tb: number, dv: number) => {
-    keplerPropagate(v.pos, v.vel, mu, tb - t, _r, _v);
-    const vB = _v.clone().multiplyScalar(1 + dv / _v.length());
-    const ret = earthReturn(sys, _r.clone(), vB, tb);
-    return isFinite(ret.rp) ? Math.abs(ret.rp - target) : 1e12;
+  const target = earth.radius + entryPe;
+  const eiR = earth.radius + (earth.atmosphereTop || 140_000);
+  const rB = new Vector3(), vB = new Vector3(), rX = new Vector3(), vX = new Vector3(), mr = new Vector3(), mv = new Vector3();
+  /** Earth-relative state at lunar sphere-of-influence exit after a prograde burn of dv at tb */
+  const depart = (tb: number, dv: number): { t: number } | null => {
+    keplerPropagate(v.pos, v.vel, mu, tb - t, rB, vB);
+    vB.multiplyScalar(1 + dv / vB.length());
+    const dtx = timeToRadius(rB, vB, mu, moon.soi, false);
+    if (dtx === null) return null;
+    keplerPropagate(rB, vB, mu, dtx, rX, vX);
+    moon.localStateAt(tb + dtx, mr, mv);
+    rX.add(mr); vX.add(mv);
+    return rX.dot(vX) < 0 ? { t: tb + dtx } : null;
   };
-  let best = { cost: Infinity, tb: 0, dv: 0 };
-  for (let i = 0; i < 72; i++) {
-    const tb = t + 180 + (i / 72) * T;
-    for (let dv = 750; dv <= 1150; dv += 25) {
-      const c = evaluate(tb, dv);
-      if (c < best.cost) best = { cost: c, tb, dv };
+  const perigeeError = (tb: number, dv: number) => (depart(tb, dv) ? periapsisOf(rX, vX, earth.gm).rp - target : NaN);
+  // every (Δv, burn time) whose return grazes the entry perigee: sign changes of the perigee
+  // error around the orbit, bisected
+  const sols: { tb: number; dv: number }[] = [];
+  const N = 90;
+  for (let dv = 750; dv <= 1250; dv += 10) {
+    let prevT = NaN, prevE = NaN;
+    for (let i = 0; i <= N * 1.25; i++) {
+      const tb = t + 180 + (i / N) * T;
+      const err = perigeeError(tb, dv);
+      if (isFinite(err) && isFinite(prevE) && Math.sign(err) !== Math.sign(prevE)) {
+        let lo = prevT, hi = tb, elo = prevE;
+        for (let k = 0; k < 32; k++) {
+          const mid = 0.5 * (lo + hi);
+          const em = perigeeError(mid, dv);
+          if (!isFinite(em)) break;
+          if (Math.sign(em) === Math.sign(elo)) { lo = mid; elo = em; } else hi = mid;
+        }
+        sols.push({ tb: 0.5 * (lo + hi), dv });
+      }
+      prevT = tb; prevE = err;
     }
   }
-  if (best.cost >= 1e12) return null;
-  let stepT = T / 72, stepV = 25;
-  for (let it = 0; it < 18; it++) {
-    stepT *= 0.6; stepV *= 0.6;
-    for (const [a, b] of [[stepT, 0], [-stepT, 0], [0, stepV], [0, -stepV]]) {
-      const tb = best.tb + a, dv = best.dv + b;
-      if (tb < t + 90) continue;
-      const c = evaluate(tb, dv);
-      if (c < best.cost) best = { cost: c, tb, dv };
+  if (!sols.length) return null;
+  // the capsule that flies the entry (whatever else is attached is shed before entry interface)
+  const sc = v.assemblies.find((a) => a.def.features?.heatShield);
+  const mass = sc ? Math.max(500, sc.mass) : v.mass;
+  const area = sc ? Math.PI * Math.pow(Math.max(...sc.def.sections.map((x) => x.radius)), 2) : v.aero.refArea;
+  const q = new Quaternion(), rE = new Vector3(), vE = new Vector3(), sun = new Vector3(), n = new Vector3(), p = new Vector3();
+  let best: { cost: number; tb: number; dv: number; lat: number; lon: number; water: boolean; day: boolean } | null = null;
+  for (const s of sols) {
+    const d = depart(s.tb, s.dv);
+    if (!d) continue;
+    const dtE = timeToRadius(rX, vX, earth.gm, eiR, true);
+    if (dtE === null) continue;
+    keplerPropagate(rX, vX, earth.gm, dtE, rE, vE);
+    const tEI = d.t + dtE;
+    const land = predictEntry(earth, rE, vE, tEI, mass, area, nominalLiftShare(vE.length()), 2_000);
+    // open water: the splashdown point and the footprint around it (along and across the track)
+    let water = true;
+    if (isWater) {
+      earth.orientationAt(tEI, q);
+      const ei = rE.clone().normalize().applyQuaternion(q.clone().invert());
+      // rotating about the ground track's pole moves along the track, about the track's tangent across it
+      n.crossVectors(ei, land.dir).normalize();
+      const fwd = new Vector3().crossVectors(n, land.dir).normalize();
+      for (const [al, ac] of [[0, 0], [150, 0], [-150, 0], [0, 60], [0, -60]]) {
+        p.copy(land.dir).applyAxisAngle(n, (al * 1000) / earth.radius).applyAxisAngle(fwd, (ac * 1000) / earth.radius);
+        if (!isWater(p)) { water = false; break; }
+      }
+    }
+    // daylight at the recovery point: the Sun's direction against the local vertical
+    earth.orientationAt(land.t, q);
+    earth.globalPositionAt(land.t, sun).negate().normalize();
+    const day = land.dir.clone().applyQuaternion(q).dot(sun) > 0.1;
+    // slow returns barely escape the Moon: cheap, but their arrival is very sensitive to small
+    // burn errors (and the crew is longer in space), so they pay for every day past three
+    const tof = (tEI - s.tb) / 86_400;
+    const cost = s.dv + Math.max(0, tof - 3) * 150 + (water ? 0 : 600) + (day ? 0 : 40);
+    if (!best || cost < best.cost) {
+      best = { cost, tb: s.tb, dv: s.dv, lat: (Math.asin(land.dir.z) * 180) / Math.PI, lon: (Math.atan2(land.dir.y, land.dir.x) * 180) / Math.PI, water, day };
     }
   }
+  if (!best) return null;
   keplerPropagate(v.pos, v.vel, mu, best.tb - t, _r, _v);
-  return { t: best.tb, dv: _v.clone().normalize().multiplyScalar(best.dv), prograde: best.dv, label: 'Trans-Earth injection', result: `Entry perigee ${((best.cost + target - sys.earth.radius) / 1000).toFixed(0)} km` };
+  const node: ManeuverNode = { t: best.tb, dv: _v.clone().normalize().multiplyScalar(best.dv), prograde: best.dv, label: 'Trans-Earth injection', result: `Entry perigee ${(entryPe / 1000).toFixed(0)} km` };
+  if (isWater && best.water) {
+    const name = oceanName(best.lat, best.lon);
+    node.landing = { lat: best.lat, lon: best.lon, name: `${name} recovery zone` };
+    node.result += ` · splashdown in ${name}`;
+  }
+  return node;
 }
 
 /** Capture burn at the next periapsis into an orbit with the given apoapsis radius. */
