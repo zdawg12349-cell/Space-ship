@@ -557,6 +557,7 @@ export class FlightSession {
   }
 
   private apTranslating = false;
+  private _dr = new Vector3();
 
   private preStep(dt: number): void {
     const v = this.vessel;
@@ -599,6 +600,13 @@ export class FlightSession {
   private postStep(): void {
     const v = this.vessel;
     const tm = v.telemetry;
+    // ground distance from the launch site (the vessel's sub-point, great circle)
+    if (v.body.id === 'earth') {
+      const la = (this.site.lat * Math.PI) / 180, lo = (this.site.lon * Math.PI) / 180;
+      const f = v.fixedDirection(this.world.t, this._dr);
+      const d = f.x * Math.cos(la) * Math.cos(lo) + f.y * Math.cos(la) * Math.sin(lo) + f.z * Math.sin(la);
+      tm.downrange = Math.acos(Math.max(-1, Math.min(1, d))) * v.body.radius;
+    }
     // liftoff detection and pad support release
     if (!v.hasLiftedOff && !v.clamped && tm.verticalSpeed > 0.5 && this.phase !== 'countdown') {
       v.hasLiftedOff = true;
