@@ -693,7 +693,8 @@ export class FlightController {
     const s = this.session;
     const v = s.vessel;
     const eg = s.autopilot.entryGuidance;
-    if (!eg?.target || v.destroyed || !(v.landed || v.splashed) || v.body.id !== 'earth') return null;
+    const down = v.landed || v.splashed || !isNaN(this.director.stats.touchdownSpeed);
+    if (!eg?.target || v.destroyed || !down || v.body.id !== 'earth') return null;
     const d = Math.acos(Math.max(-1, Math.min(1, v.fixedDirection(s.world.t, new Vector3()).dot(eg.target)))) * v.body.radius;
     const where = eg.designated ? 'the recovery zone' : s.landingTarget ? s.landingTarget.name : 'the recovery zone';
     return `${d < 1000 ? d.toFixed(0) + ' m' : (d / 1000).toFixed(1) + ' km'} from ${where}`;

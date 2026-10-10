@@ -488,13 +488,14 @@ export class CameraDirector {
     const target = com.clone();
     const d = out.pos.distanceTo(target);
     const L = this.vesselLength(v);
-    if (!this.smoothLookInit) { this.smoothLook.copy(target); this.smoothLookInit = true; this.smoothFov = 30; }
+    const frame = v.telemetry.thrust > 0 && v.telemetry.altitude < 40_000 ? L * 3.2 : L * 2.2;
+    const fovT = MathUtils.clamp(MathUtils.radToDeg(2 * Math.atan(frame / 2 / Math.max(1, d))), 0.35, 45);
+    // the operator is already framed when the shot cuts in, a little loose, and eases in tighter
+    if (!this.smoothLookInit) { this.smoothLook.copy(target); this.smoothLookInit = true; this.smoothFov = Math.min(30, fovT * 1.8); }
     this.smoothLook.lerp(target, Math.min(1, ctx.dt * 3.2));
     // keep up with fast targets
     if (this.smoothLook.distanceTo(target) > d * 0.08) this.smoothLook.copy(target).lerp(this.smoothLook, 0.5);
     out.look.copy(this.smoothLook);
-    const frame = v.telemetry.thrust > 0 && v.telemetry.altitude < 40_000 ? L * 3.2 : L * 2.2;
-    const fovT = MathUtils.clamp(MathUtils.radToDeg(2 * Math.atan(frame / 2 / Math.max(1, d))), 0.35, 45);
     this.smoothFov += (fovT - this.smoothFov) * Math.min(1, ctx.dt * 1.5);
     out.fov = this.smoothFov;
     out.up.copy(this.upAt(ctx, st?.anchorBody ?? v.body, out.pos, _a));
@@ -682,9 +683,11 @@ export class CameraDirector {
       case 'liftoff_low': {
         if (!site || !near) return false;
         st.dur = 4.5;
+        // low and long: far enough out (and on a longer lens) that the ground cloud boiling out
+        // from the pad has not reached the camera before the cut
         const place = (adj: SpotAdj, _tt: number, o: Vector3) => {
           const ang = this.padAngle(st.a, 0.6) + adj.da;
-          const dist = 260 * adj.dd;
+          const dist = 420 * adj.dd;
           return o.set(Math.cos(ang) * dist, 2.2 + adj.dh, Math.sin(ang) * dist);
         };
         const adj = this.clearSpot(ctx, st, this.padSight(ctx, L, 0, true), place);
@@ -693,7 +696,7 @@ export class CameraDirector {
         const base = vehicleBase();
         out.look.copy(base).addScaledVector(siteUp(), L * 0.5);
         out.up.copy(siteUp());
-        out.fov = 46;
+        out.fov = 30;
         return true;
       }
       case 'tower_rise': {
