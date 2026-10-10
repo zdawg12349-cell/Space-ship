@@ -251,7 +251,10 @@ export class BoosterGuidance {
     this.missDistance = miss;
 
     const vSurf = v.surfaceVelocity(new Vector3());
-    const retro = vSurf.clone().normalize().negate();
+    // attitude references follow the airflow, not the ground: a 45 m/s jet stream across a
+    // 700 m/s descent is a 3.7° angle of attack the structure has to carry
+    const vAirW = tm.airVelocity.lengthSq() > 1 ? tm.airVelocity.clone() : vSurf.clone();
+    const retro = vAirW.clone().normalize().negate();
 
     switch (this.phase) {
       case 'separation': {
@@ -360,7 +363,7 @@ export class BoosterGuidance {
         // the cross-flow and the lift points away from the leading end's tilt; past a few degrees
         // the cross-flow wins and it points toward it. Use the stage's own lift curve to choose the
         // tilt (and which way to lean) that pushes hardest toward the zone.
-        const lead = vSurf.clone().normalize();
+        const lead = vAirW.clone().normalize();
         const errH = zonePos.clone().sub(this.predictedPointInertial(t, pred.tof));
         errH.addScaledVector(_u, -errH.dot(_u));
         const errMag = errH.length();
@@ -421,6 +424,9 @@ export class BoosterGuidance {
         const thrustDir = _u.clone().multiplyScalar(aReq).add(latCmd);
         const aCmd = thrustDir.length();
         thrustDir.normalize();
+        // until the plume shields it, the stage carries the airflow's full bending load: stay in line
+        // with it while the engines spool up (high up, where q is still large)
+        if (!powered && qNow > 8000) thrustDir.copy(retro);
         this.att.update(v, { dir: thrustDir }, dt);
         let thr = (aCmd * v.mass) / Math.max(1, thrustMax);
         ctl.throttle = Math.max(0.01, Math.min(1, thr));

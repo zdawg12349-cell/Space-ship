@@ -12,7 +12,7 @@ import { LAUNCH_SITES } from '../src/world/sites';
 import { PhysicsWorld } from '../src/physics/world';
 import { SolarSystem } from '../src/physics/bodies';
 import { dateToJ2000Seconds } from '../src/physics/constants';
-import { calm } from './helpers';
+import { calm, flatTerrain as flatTerrainForTest } from './helpers';
 
 function zoneAt(lat: number, lon: number, id: string): LandingZone {
   return { id, name: id, dir: new Vector3(Math.cos(lat) * Math.cos(lon), Math.cos(lat) * Math.sin(lon), Math.sin(lat)), height: 0, radius: 40, kind: 'pad' };
@@ -158,9 +158,12 @@ describe('drone ship recovery', () => {
 });
 
 describe('tower catch', () => {
-  it('LEVIATHAN booster flies back to the tower and is caught', () => {
+  // the Catch mission flies in breezy weather (onshore wind, as the session sets it up)
+  const breezy = new GameWeather({ kind: 'breezy', windDir: ((90 + 180) * Math.PI) / 180, ...WEATHER_PRESETS.breezy });
+  it.each([['calm air', calm, '2026-10-06T22:30:00Z'], ['breezy weather, mission date', breezy, '2026-10-09T13:00:00Z']] as [string, WeatherProvider, string][])('LEVIATHAN booster flies back to the tower and is caught (%s)', (_name, weather, date) => {
     const site = LAUNCH_SITES.find((s) => s.id === 'boca')!;
-    const { world } = makeWorld();
+    const epoch = dateToJ2000Seconds(new Date(date));
+    const world = new PhysicsWorld(new SolarSystem(epoch), epoch, flatTerrainForTest, weather);
     const def = getVehicle('leviathan');
     const v = world.createVessel(def, world.system.earth);
     world.addVessel(v);
