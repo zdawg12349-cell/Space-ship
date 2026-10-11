@@ -120,7 +120,9 @@ export class FlightController {
       radio.prefetch(s.seq.events.filter((e) => e.voice).map((e) => e.voice!));
     }
     // music mood
-    app.audio.music?.setMood(mission?.mood ?? (app.rw.siteNight > 0.5 ? 'night' : 'hope'));
+    // the score opens in the key of the day: the mission's mood, or the night, or the weather
+    const wx = s.config.weather;
+    app.audio.music?.setMood(mission?.mood ?? (wx === 'storm' ? 'tension' : app.rw.siteNight > 0.5 || wx === 'overcast' ? 'night' : 'hope'));
     app.audio.music?.setIntensity(0.3);
     if (app.audio.music) { app.audio.music.pulseOn = 0; app.audio.music.shimmerOn = 0.25; }
     app.audio.setHush(false);

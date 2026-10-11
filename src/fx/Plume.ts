@@ -58,12 +58,23 @@ const VERT = /* glsl */ `
 uniform float uLen;
 uniform float uRmax;
 uniform float uR0;
+uniform float uRe;
+uniform float uRfar;
+uniform float uSexp;
+uniform float uSpread;
+uniform float uLcore;
 out vec3 vLocal;
 void main() {
   vec3 p = position;
-  p.y = (p.y - 0.5) * uLen; // unit cylinder y in [-0.5, 0.5] -> [-L, 0]
-  // rasterise a cone frustum hugging the jet (the march itself is bounded by a cylinder)
-  p.xz *= mix(uR0, uRmax, clamp(-p.y / uLen, 0.0, 1.0));
+  // unit cylinder y in [-0.5, 0.5] -> s in [0, L] downstream, rings packed near the exit where
+  // the jet balloons fastest
+  float u = 0.5 - p.y;
+  float s = uLen * u * u;
+  p.y = -s;
+  // rasterise a hull hugging the jet's own radius profile (the march draws out to ~1.7 radii;
+  // the march itself is bounded by a cylinder)
+  float R = uRe + (uRfar - uRe) * (1.0 - exp(-s / max(uSexp, 1e-3))) + uSpread * pow(max(0.0, s - uLcore * 0.4), 0.92);
+  p.xz *= max(uR0, R * 1.85);
   vLocal = p;
   gl_Position = projectionMatrix * modelViewMatrix * vec4(p, 1.0);
 }`;
@@ -210,7 +221,7 @@ export class PlumeSystem {
   readonly lights: PlumeLight[] = [];
   private volumes: PlumeVolume[] = [];
   private known = new Set<EngineRuntime>();
-  private geom = new CylinderGeometry(1, 1, 1, 20, 1, false);
+  private geom = new CylinderGeometry(1, 1, 1, 20, 24, false);
   private time = 0;
   private resolution = new Vector2(1, 1);
   quality = 1;
@@ -331,7 +342,9 @@ export class PlumeSystem {
       const diamonds = st.diamonds * Math.max(0, 1 - Math.max(0, Math.log10(k) - 0.1) / 0.9) * Math.min(1, e.throttle * 1.5);
       // brightness: thrust fraction, spool, expansion dimming
       const spoolLum = e.spool * e.spool;
-      const expDim = Math.pow(re / rfar, 0.6);
+      // an expanded jet spreads its light thin and cools as it expands: in near-vacuum the far
+      // plume is a faint, translucent bell around a bright core at the nozzle
+      const expDim = Math.pow(re / rfar, 0.6) * Math.pow(Math.min(1, (3 * re) / rfar), 0.9);
       const intensity = st.intensity * re * Math.pow(Math.max(0.05, thrustFrac), 0.7) * spoolLum * expDim * (0.35 + 0.65 * Math.pow(air, 0.15)) * this.quality;
       const len = Math.min(lp * 3.2, 4000);
       // jet spreading half-angle ~5 deg in air; the vacuum plume is shaped by expansion alone

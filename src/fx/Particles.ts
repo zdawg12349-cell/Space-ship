@@ -185,7 +185,9 @@ void main() {
     vec2 nxy = pf.xy * 2.0 - 1.0;
     // rotate the atlas normal back into screen orientation
     nxy = vec2(nxy.x * vRot.x + nxy.y * vRot.y, -nxy.x * vRot.y + nxy.y * vRot.x);
-    N = normalize(vec3(nxy, pf.z * 1.2 + 0.25));
+    // big puffs in a dense cloud read as one volume: their own relief fades
+    float relief = mix(1.0, 0.45, smoothstep(6.0, 30.0, vParams.x));
+    N = normalize(vec3(nxy * relief, pf.z * 1.2 + 0.25));
   }
   float alpha = dens * vParams.y;
   // soft intersection with opaque geometry
@@ -196,7 +198,7 @@ void main() {
   float wrap = clamp((ndl + 0.45) / 1.45, 0.0, 1.0);
   // sun visibility through the rest of the cloud (density grid march) + per-pixel shading
   float vis = vShade.x;
-  float selfShadow = mix(0.22, 1.0, wrap) * vis;
+  float selfShadow = mix(0.32, 1.0, wrap) * vis;
   // forward scattering when looking toward the sun (silver lining on thin edges)
   float fwd = pow(clamp(-uSunDirV.z, 0.0, 1.0), 6.0) * (1.0 - dens) * 1.5 * vis;
   // multiple scattering keeps shadowed parts from going black; sky light from above

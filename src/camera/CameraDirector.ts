@@ -86,6 +86,9 @@ const _c = new Vector3();
 const _d = new Vector3();
 const _e = new Vector3();
 const _q = new Quaternion();
+const _qs = new Quaternion();
+const _qs2 = new Quaternion();
+const _vs = new Vector3();
 const _m = new Matrix4();
 
 const ONBOARD_MOUNTS = ['down', 'up', 'engines', 'side'] as const;
@@ -115,8 +118,10 @@ export class CameraDirector {
   private queue: string[] = [];
   private lastIds: string[] = [];
   private cutCooldown = 0;
+  /** an operator's lagging look point, kept in the body's rotating frame (see smoothLookAt) */
   private smoothLook = new Vector3();
   private smoothLookInit = false;
+  private smoothBody: CelestialBody | null = null;
   private smoothFov = 50;
   /** text shown briefly when the shot changes (HUD) */
   shotLabel = '';
@@ -265,6 +270,20 @@ export class CameraDirector {
   private vPoint(ctx: CamContext, v: Vessel, x: number, y: number, z: number, out: Vector3): Vector3 {
     v.originInertial(out);
     return out.add(_d.set(x, y, z).applyQuaternion(v.rot)).add(ctx.bodyPos(v.body));
+  }
+
+  /**
+   * Ease the look point toward `target` (helio) like a camera operator, at `rate` 1/s. The
+   * smoothing runs in the body's rotating frame: heliocentric coordinates race along with the
+   * planet at ~30 km/s, and lagging there would aim the camera kilometres off.
+   */
+  private smoothLookAt(ctx: CamContext, body: CelestialBody, target: Vector3, rate: number, out: Vector3): Vector3 {
+    const rot = body.orientationAt(ctx.t, _qs);
+    const bp = ctx.bodyPos(body);
+    const tf = _vs.copy(target).sub(bp).applyQuaternion(_qs2.copy(rot).invert());
+    if (!this.smoothLookInit || this.smoothBody !== body) { this.smoothLook.copy(tf); this.smoothLookInit = true; this.smoothBody = body; }
+    this.smoothLook.lerp(tf, Math.min(1, ctx.dt * rate));
+    return out.copy(this.smoothLook).applyQuaternion(rot).add(bp);
   }
 
   private upAt(ctx: CamContext, body: CelestialBody, helio: Vector3, out: Vector3): Vector3 {
@@ -496,11 +515,14 @@ export class CameraDirector {
     const frame = v.telemetry.thrust > 0 && v.telemetry.altitude < 40_000 ? L * 3.2 : L * 2.2;
     const fovT = MathUtils.clamp(MathUtils.radToDeg(2 * Math.atan(frame / 2 / Math.max(1, d))), 0.35, 45);
     // the operator is already framed when the shot cuts in, a little loose, and eases in tighter
-    if (!this.smoothLookInit) { this.smoothLook.copy(target); this.smoothLookInit = true; this.smoothFov = Math.min(30, fovT * 1.8); }
-    this.smoothLook.lerp(target, Math.min(1, ctx.dt * 3.2));
+    if (!this.smoothLookInit) this.smoothFov = Math.min(30, fovT * 1.8);
+    this.smoothLookAt(ctx, v.body, target, 3.2, out.look);
     // keep up with fast targets
-    if (this.smoothLook.distanceTo(target) > d * 0.08) this.smoothLook.copy(target).lerp(this.smoothLook, 0.5);
-    out.look.copy(this.smoothLook);
+    if (out.look.distanceTo(target) > d * 0.08) {
+      out.look.copy(target);
+      this.smoothLookInit = false;
+      this.smoothLookAt(ctx, v.body, target, 3.2, out.look);
+    }
     this.smoothFov += (fovT - this.smoothFov) * Math.min(1, ctx.dt * 1.5);
     out.fov = this.smoothFov;
     out.up.copy(this.upAt(ctx, st?.anchorBody ?? v.body, out.pos, _a));
@@ -908,9 +930,7 @@ export class CameraDirector {
         // look at the booster, or at the middle of the pair
         const pair = twin ? ctx.boosters.filter((x) => !x.destroyed).slice(0, 2) : [];
         const com = pair.length === 2 ? this.com(ctx, pair[0], _c).add(this.com(ctx, pair[1], _d)).multiplyScalar(0.5) : this.com(ctx, target, _c);
-        if (!this.smoothLookInit) { this.smoothLook.copy(com); this.smoothLookInit = true; }
-        this.smoothLook.lerp(com, Math.min(1, ctx.dt * 4));
-        out.look.copy(this.smoothLook);
+        this.smoothLookAt(ctx, st.anchorBody!, com, 4, out.look);
         const d = out.pos.distanceTo(com);
         const extent = pair.length === 2 ? Math.max(this.vesselLength(target) * 3, this.com(ctx, pair[0], _a).distanceTo(this.com(ctx, pair[1], _b)) * 1.5 + this.vesselLength(target) * 1.5) : this.vesselLength(target) * 3;
         out.fov = MathUtils.clamp(MathUtils.radToDeg(2 * Math.atan(extent / 2 / d)), 1, 55);
