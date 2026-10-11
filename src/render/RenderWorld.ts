@@ -1,7 +1,7 @@
 import { RecoveryZones } from './site/RecoveryZones';
 import { AeroShells } from '../fx/AeroShells';
 import {
-  AmbientLight, DirectionalLight, HemisphereLight, Matrix3, Matrix4, Mesh, Object3D, PerspectiveCamera, Quaternion, RingGeometry, Scene,
+  AmbientLight, Color, DirectionalLight, HemisphereLight, Matrix3, Matrix4, Mesh, Object3D, PerspectiveCamera, Quaternion, RingGeometry, Scene,
   ShaderMaterial, SphereGeometry, Texture, Vector3, Vector4, WebGLRenderer, DoubleSide,
 } from 'three';
 import { segmentTransmittance, sunTransmittance } from './atmosphere/cpuAtmosphere';
@@ -662,7 +662,7 @@ export class RenderWorld {
    */
   prewarm(): void {
     const hidden: Object3D[] = [];
-    for (const sc of [this.scene, this.fxScene]) {
+    for (const sc of [this.scene, this.fxScene, ...this.effects.particles.scenes]) {
       sc.traverse((o) => { if (!o.visible && !(o as Object3D & { isLight?: boolean }).isLight) { hidden.push(o); o.visible = true; } });
     }
     const r = this.renderer;
@@ -675,6 +675,11 @@ export class RenderWorld {
       void r.compileAsync(this.scene, this.camera).catch(() => undefined);
       r.setRenderTarget(this.post.compRT);
       void r.compileAsync(this.fxScene, this.camera).catch(() => undefined);
+      const smoke = this.post.smokeTarget();
+      r.setRenderTarget(smoke ?? this.post.compRT);
+      void r.compileAsync(this.effects.particles.scenes[0], this.camera).catch(() => undefined);
+      // (and the upsampling pass: an empty target composited is no change to the frame)
+      if (smoke) this.post.compositeSmoke();
     } catch {
       // nothing to do: they will compile when first drawn
     } finally {
@@ -694,9 +699,41 @@ export class RenderWorld {
     this.updateTerrainShadow();
     r.render(this.scene, this.camera);
     this.post.composite();
+    // transparent effects: the smoke behind the flame, the flames (and the rest of the FX), the
+    // smoke in front
+    this.drawSmoke(0);
     r.setRenderTarget(this.post.compRT);
     r.render(this.fxScene, this.camera);
+    this.drawSmoke(1);
     extra?.();
     this.post.finish(dt);
+  }
+
+  private clearTmp = new Color();
+  /**
+   * One particle batch (0 far, 1 near) onto the frame. Lighter presets draw it into a
+   * reduced-resolution target first and upsample it edge-aware: smoke is soft, and a screen
+   * full of it is the costliest thing a launch draws.
+   */
+  private drawSmoke(b: number): void {
+    const P = this.effects.particles;
+    if (P.batchCount(b) === 0) return;
+    const r = this.renderer;
+    const rt = this.post.smokeTarget();
+    if (!rt) {
+      P.setTargetSize(this.post.compRT.width, this.post.compRT.height);
+      r.setRenderTarget(this.post.compRT);
+      r.render(P.scenes[b], this.camera);
+      return;
+    }
+    P.setTargetSize(rt.width, rt.height);
+    r.setRenderTarget(rt);
+    r.getClearColor(this.clearTmp);
+    const a = r.getClearAlpha();
+    r.setClearColor(0x000000, 0);
+    r.clear(true, false, false);
+    r.setClearColor(this.clearTmp, a);
+    r.render(P.scenes[b], this.camera);
+    this.post.compositeSmoke();
   }
 }

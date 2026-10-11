@@ -91,6 +91,7 @@ export class App {
     const g = GRAPHICS[this.settings.preset];
     const rw = this.rw;
     rw.post.settings.resolutionScale = g.resolutionScale;
+    rw.post.settings.smokeScale = g.smokeRes;
     rw.post.settings.msaa = g.msaa;
     rw.post.settings.bloom = g.bloom;
     rw.post.settings.grain = g.grain;

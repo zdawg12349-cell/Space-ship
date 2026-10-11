@@ -438,7 +438,7 @@ export class FlightController {
         if (e.id === 'orbit') {
           // the deliberate silence: engines quiet, music gone, only the radio and the view
           audio.setHush(true);
-          this.hushTimer = 28;
+          this.hushTimer = 14;
           if (music) { music.pulseOn = 0; }
           music?.setIntensity(0);
         }

@@ -11,7 +11,10 @@ import {
  * Particles live in a local tangent frame anchored to a point on the planet (x east, y up,
  * z south), so smoke stays where it was made while the vehicle climbs away, and drifts with the
  * wind. Each frame they are depth-sorted and split around the plume distance into two batches,
- * so a cloud can sit both behind and in front of the flame.
+ * so a cloud can sit both behind and in front of the flame. Each batch is its own scene: the
+ * renderer draws the far one before the plumes and the near one after, either straight into
+ * the frame or (on lighter presets) into a reduced-resolution target that is upsampled
+ * edge-aware, so a screen full of smoke costs a fraction of the fill.
  */
 
 export type ParticleKind = 'steam' | 'smoke' | 'soot' | 'srbsmoke' | 'dust' | 'water' | 'vapor' | 'spark' | 'fire' | 'trail' | 'plasma' | 'regolith' | 'gas';
@@ -36,24 +39,26 @@ interface KindDef {
   streak: number;
   /** 0 = lit, 1 = unlit additive glow */
   glow: number;
+  /** how strongly the air's eddies stir it (gas and smoke; not sparks, drops or grit) */
+  turb: number;
 }
 
 const KINDS: Record<ParticleKind, KindDef> = {
-  steam: { albedo: [0.9, 0.9, 0.91], emissive: [1.0, 0.55, 0.25], opacity: 0.85, drag: 0.35, buoyancy: 1.6, gravity: 0, cool: 1.6, breakup: 0.7, thin: 0.55, streak: 0, glow: 0 },
-  smoke: { albedo: [0.56, 0.52, 0.47], emissive: [1.0, 0.45, 0.12], opacity: 0.8, drag: 0.3, buoyancy: 1.0, gravity: 0, cool: 1.2, breakup: 0.55, thin: 0.5, streak: 0, glow: 0 },
-  soot: { albedo: [0.07, 0.065, 0.06], emissive: [1.0, 0.35, 0.08], opacity: 0.85, drag: 0.4, buoyancy: 0.8, gravity: 0, cool: 1.6, breakup: 0.6, thin: 0.6, streak: 0, glow: 0 },
-  srbsmoke: { albedo: [0.88, 0.87, 0.85], emissive: [1.0, 0.8, 0.5], opacity: 0.95, drag: 0.25, buoyancy: 0.6, gravity: 0, cool: 1.4, breakup: 0.45, thin: 0.35, streak: 0, glow: 0 },
-  dust: { albedo: [0.45, 0.4, 0.32], emissive: [0, 0, 0], opacity: 0.7, drag: 0.8, buoyancy: 0.2, gravity: 0.5, cool: 1, breakup: 0.6, thin: 0.6, streak: 0, glow: 0 },
-  water: { albedo: [0.75, 0.78, 0.8], emissive: [0, 0, 0], opacity: 0.55, drag: 0.6, buoyancy: 0, gravity: 9.81, cool: 1, breakup: 0.75, thin: 0.3, streak: 0.6, glow: 0 },
-  vapor: { albedo: [0.9, 0.91, 0.93], emissive: [0, 0, 0], opacity: 0.5, drag: 0.9, buoyancy: -1.2, gravity: 0, cool: 1, breakup: 0.65, thin: 0.6, streak: 0, glow: 0 },
-  spark: { albedo: [0, 0, 0], emissive: [1.0, 0.65, 0.25], opacity: 1, drag: 0.15, buoyancy: 0, gravity: 9.81, cool: 0.8, breakup: 0, thin: 0, streak: 1, glow: 1 },
-  fire: { albedo: [0.1, 0.08, 0.06], emissive: [1.0, 0.5, 0.15], opacity: 0.9, drag: 0.6, buoyancy: 4.0, gravity: 0, cool: 0.9, breakup: 0.5, thin: 0.4, streak: 0, glow: 0 },
-  trail: { albedo: [0.8, 0.8, 0.81], emissive: [1.0, 0.6, 0.3], opacity: 0.6, drag: 0.05, buoyancy: 0, gravity: 0, cool: 2.0, breakup: 0.5, thin: 0.7, streak: 0, glow: 0 },
-  plasma: { albedo: [0, 0, 0], emissive: [1.0, 0.45, 0.6], opacity: 0.8, drag: 0.5, buoyancy: 0, gravity: 0, cool: 3.0, breakup: 0.4, thin: 0.5, streak: 0.8, glow: 1 },
-  regolith: { albedo: [0.32, 0.31, 0.3], emissive: [0, 0, 0], opacity: 0.8, drag: 0, buoyancy: 0, gravity: 1.62, cool: 1, breakup: 0.5, thin: 0.6, streak: 0.4, glow: 0 },
+  steam: { albedo: [0.9, 0.9, 0.91], emissive: [1.0, 0.55, 0.25], opacity: 0.85, drag: 0.35, buoyancy: 1.6, gravity: 0, cool: 1.6, breakup: 0.7, thin: 0.38, streak: 0, glow: 0, turb: 1 },
+  smoke: { albedo: [0.56, 0.52, 0.47], emissive: [1.0, 0.45, 0.12], opacity: 0.8, drag: 0.3, buoyancy: 1.0, gravity: 0, cool: 1.2, breakup: 0.55, thin: 0.38, streak: 0, glow: 0, turb: 1 },
+  soot: { albedo: [0.07, 0.065, 0.06], emissive: [1.0, 0.35, 0.08], opacity: 0.85, drag: 0.4, buoyancy: 0.8, gravity: 0, cool: 1.6, breakup: 0.6, thin: 0.6, streak: 0, glow: 0, turb: 1 },
+  srbsmoke: { albedo: [0.88, 0.87, 0.85], emissive: [1.0, 0.8, 0.5], opacity: 0.95, drag: 0.25, buoyancy: 0.6, gravity: 0, cool: 1.4, breakup: 0.45, thin: 0.35, streak: 0, glow: 0, turb: 0.8 },
+  dust: { albedo: [0.45, 0.4, 0.32], emissive: [0, 0, 0], opacity: 0.7, drag: 0.8, buoyancy: 0.2, gravity: 0.5, cool: 1, breakup: 0.6, thin: 0.6, streak: 0, glow: 0, turb: 0.8 },
+  water: { albedo: [0.75, 0.78, 0.8], emissive: [0, 0, 0], opacity: 0.55, drag: 0.6, buoyancy: 0, gravity: 9.81, cool: 1, breakup: 0.75, thin: 0.3, streak: 0.6, glow: 0, turb: 0 },
+  vapor: { albedo: [0.9, 0.91, 0.93], emissive: [0, 0, 0], opacity: 0.5, drag: 0.9, buoyancy: -1.2, gravity: 0, cool: 1, breakup: 0.65, thin: 0.6, streak: 0, glow: 0, turb: 0.6 },
+  spark: { albedo: [0, 0, 0], emissive: [1.0, 0.65, 0.25], opacity: 1, drag: 0.15, buoyancy: 0, gravity: 9.81, cool: 0.8, breakup: 0, thin: 0, streak: 1, glow: 1, turb: 0 },
+  fire: { albedo: [0.1, 0.08, 0.06], emissive: [1.0, 0.5, 0.15], opacity: 0.9, drag: 0.6, buoyancy: 4.0, gravity: 0, cool: 0.9, breakup: 0.5, thin: 0.4, streak: 0, glow: 0, turb: 1 },
+  trail: { albedo: [0.8, 0.8, 0.81], emissive: [1.0, 0.6, 0.3], opacity: 0.6, drag: 0.05, buoyancy: 0, gravity: 0, cool: 2.0, breakup: 0.5, thin: 0.7, streak: 0, glow: 0, turb: 0.5 },
+  plasma: { albedo: [0, 0, 0], emissive: [1.0, 0.45, 0.6], opacity: 0.8, drag: 0.5, buoyancy: 0, gravity: 0, cool: 3.0, breakup: 0.4, thin: 0.5, streak: 0.8, glow: 1, turb: 0 },
+  regolith: { albedo: [0.32, 0.31, 0.3], emissive: [0, 0, 0], opacity: 0.8, drag: 0, buoyancy: 0, gravity: 1.62, cool: 1, breakup: 0.5, thin: 0.6, streak: 0.4, glow: 0, turb: 0 },
   // gas flashing into vacuum (cold-gas thrusters, vents): a smooth haze with no billows. Its
   // column density falls about as fast as its area grows, so it is only seen near the nozzle
-  gas: { albedo: [0.93, 0.94, 0.95], emissive: [0, 0, 0], opacity: 1, drag: 0, buoyancy: 0, gravity: 0, cool: 1, breakup: 0, thin: 1.1, streak: 0, glow: 0 },
+  gas: { albedo: [0.93, 0.94, 0.95], emissive: [0, 0, 0], opacity: 1, drag: 0, buoyancy: 0, gravity: 0, cool: 1, breakup: 0, thin: 1.1, streak: 0, glow: 0, turb: 0 },
 };
 /** size of the per-kind uniform arrays in the shaders */
 const MAX_KINDS = 16;
@@ -183,6 +188,7 @@ void main() {
   float n = texture(uNoise, nuv).r * 0.65 + texture(uNoise, nuv * 2.7 + 0.31).g * 0.35;
   float br = uBreakup[k];
   float dens;
+  float lobes = 0.6;
   vec3 N;
   if (vExtra.w > 0.5 || br < 0.01) {
     dens = pow(1.0 - r2, 2.0);
@@ -191,16 +197,21 @@ void main() {
     // cauliflower puff from the atlas: lumpy outline + per-pixel normal
     float cellI = floor(seed * 15.99);
     vec2 cell = vec2(mod(cellI, 4.0), floor(cellI / 4.0));
-    // (an aging puff is read from ever blurrier mips of its cell: its outline and its relief
-    // melt into a soft blob as it diffuses)
-    vec4 pf = texture(uPuff, (cell + ruv * 0.5 + 0.5) * 0.25, age * age * 3.0);
-    // dissolve with age: the threshold climbs so puffs thin from the edges inward, and the edge
-    // itself softens as the puff diffuses (an old, thinned puff has no outline left: dozens of
-    // them hanging over a landing zone read as a haze, not as overlapping translucent discs)
-    float thr = mix(0.04, 0.5, age * age) * br;
-    dens = smoothstep(thr, thr + 0.35 + 0.55 * age, pf.a * (0.8 + 0.4 * n));
-    // (and never reaches the sprite's round edge, where a blurred old puff would be cut off)
-    dens *= 1.0 - smoothstep(0.55, 1.0, r2);
+    // (an aging puff's relief softens a little as it diffuses)
+    vec4 pf = texture(uPuff, (cell + ruv * 0.5 + 0.5) * 0.25, age * 0.8);
+    // billows on the billows: cellular lobes about a fifth of the puff across and finer turbulent
+    // detail, both boiling slowly, erode the outline into cauliflower lobes; as the puff ages the
+    // erosion deepens and its edge loosens into wisps. (Blurring an old puff instead left a round
+    // translucent disc, and a cloud of them read as a heap of bubbles.)
+    vec2 bo = vec2(seed * 5.31, seed * 9.17);
+    lobes = texture(uNoise, ruv * 0.16 + bo + vec2(age * 0.03, -age * 0.04)).a;
+    float fine = texture(uNoise, ruv * 0.42 + bo.yx + vec2(-age * 0.05, age * 0.03)).g;
+    float D = pf.a * (0.75 + 0.35 * n) + ((lobes - 0.6) * 0.5 + (fine - 0.5) * 0.35) * (0.45 + age) * br - age * age * 0.4 * br;
+    // (the erosion bites harder toward the rim, so the outline is lobes all round and never the
+    // sprite's own circle)
+    D -= smoothstep(0.3, 1.0, r2) * 0.3 * br;
+    dens = smoothstep(0.06, 0.36 + 0.4 * age, D);
+    dens *= 1.0 - smoothstep(0.7, 1.0, r2);
     vec2 nxy = pf.xy * 2.0 - 1.0;
     // rotate the atlas normal back into screen orientation
     nxy = vec2(nxy.x * vRot.x + nxy.y * vRot.y, -nxy.x * vRot.y + nxy.y * vRot.x);
@@ -210,15 +221,20 @@ void main() {
     N = normalize(vec3(nxy * relief, pf.z * 1.2 + 0.25));
   }
   float alpha = dens * vParams.y;
+  // a puff the camera is in or next to fades out: up close a sprite is a flat disc filling the
+  // view, where real steam would only be a haze
+  alpha *= smoothstep(0.25, 1.1, vDepth / max(vParams.x, 0.5));
   // soft intersection with opaque geometry
-  float scene = texture(uLinDepth, gl_FragCoord.xy / uResolution).r;
+  // (a quarter-texel in: where the edge-aware upsampling of reduced-resolution smoke reads it too)
+  float scene = texture(uLinDepth, (gl_FragCoord.xy - 0.25) / uResolution).r;
   alpha *= clamp((scene - vDepth) / max(0.5, vParams.x * 0.6), 0.0, 1.0);
   if (alpha < 0.003) discard;
   float ndl = dot(N, uSunDirV);
   float wrap = clamp((ndl + 0.45) / 1.45, 0.0, 1.0);
-  // sun visibility through the rest of the cloud (density grid march) + per-pixel shading
+  // sun visibility through the rest of the cloud (density grid march) + per-pixel shading; the
+  // lobes facing the sun catch more of it (mottled cauliflower relief)
   float vis = vShade.x;
-  float selfShadow = mix(0.32, 1.0, wrap) * vis;
+  float selfShadow = mix(0.32, 1.0, wrap) * vis * mix(0.8, 1.15, lobes);
   // forward scattering when looking toward the sun (silver lining on thin edges)
   float fwd = pow(clamp(-uSunDirV.z, 0.0, 1.0), 6.0) * (1.0 - dens) * 1.5 * vis;
   // multiple scattering keeps shadowed parts from going black; sky light from above
@@ -226,7 +242,9 @@ void main() {
   // the flame's light falls from one side: billows turned toward it lit, the far side shaded
   // (at night this is all the relief a cloud has)
   float wrapP = clamp((dot(N, vLightDir) + 0.5) / 1.5, 0.0, 1.0);
-  vec3 lit = vAlbedo * (uSunIrr * (selfShadow + fwd + 0.3 * (1.0 - vis) * vShade.y) + vLight * skyN + vLightP * (0.35 + 1.3 * wrapP)) / 3.14159;
+  // (light scattered many times inside a sunlit cloud brightens its shadowed side: a steam cloud
+  // in its own shadow is grey, not brown-black)
+  vec3 lit = vAlbedo * (uSunIrr * (selfShadow + fwd + 0.4 * (1.0 - vis) * (0.4 + 0.6 * vShade.y)) + vLight * skyN + vLightP * (0.35 + 1.3 * wrapP)) / 3.14159;
   vec3 col = lit + vEmis * (0.6 + 0.8 * n);
   col *= uAtmT;
   if (vExtra.w > 0.5) { gl_FragColor = vec4(col * alpha, 0.0); return; }
@@ -335,6 +353,8 @@ export class ParticleSystem {
   /** wind in the local frame (m/s) */
   readonly wind = new Vector3();
   private resolution = new Vector2(1, 1);
+  /** far batch (drawn before the plumes) and near batch (after) */
+  readonly scenes: [Scene, Scene] = [new Scene(), new Scene()];
   private time = 0;
   // coarse density grid around the anchor for cloud self-shadowing
   private static readonly GX = 60; private static readonly GY = 15; private static readonly GZ = 60; private static readonly CELL = 24;
@@ -345,7 +365,7 @@ export class ParticleSystem {
   /** sun direction in the local frame */
   readonly sunLocal = new Vector3(0, 1, 0);
 
-  constructor(scene: Scene, noise: Texture, private readonly linDepth: () => Texture, max = 6000) {
+  constructor(noise: Texture, private readonly linDepth: () => Texture, max = 6000) {
     this.max = max;
     const F = () => new Float32Array(max);
     this.px = F(); this.py = F(); this.pz = F(); this.vx = F(); this.vy = F(); this.vz = F();
@@ -389,8 +409,7 @@ export class ParticleSystem {
       geo.instanceCount = 0;
       const mesh = new Mesh(geo, this.material);
       mesh.frustumCulled = false;
-      mesh.renderOrder = b === 0 ? 5 : 15; // far batch before the plumes, near batch after
-      scene.add(mesh);
+      this.scenes[b].add(mesh);
       this.batches.push({ mesh, geo, aPos, aParams, aExtra, aVel, aAlbedo });
     }
   }
@@ -459,10 +478,10 @@ export class ParticleSystem {
    * @param camFwdLocal camera forward in the local frame
    * @param splitDist distance from the camera separating the far and near batches (plume)
    */
-  update(dt: number, camLocal: Vector3, camFwdLocal: Vector3, splitDist: number, resolution: Vector2): void {
+  update(dt: number, camLocal: Vector3, camFwdLocal: Vector3, splitDist: number): void {
     this.time += dt;
-    this.resolution.copy(resolution);
     const wx = this.wind.x, wy = this.wind.y, wz = this.wind.z;
+    const T = this.time * 0.25;
     for (let i = 0; i < this.count; i++) {
       this.age[i] += dt;
       if (this.age[i] >= this.life[i]) { this.kill(i); i--; continue; }
@@ -474,6 +493,16 @@ export class ParticleSystem {
       this.px[i] += this.vx[i] * dt;
       this.py[i] += this.vy[i] * dt;
       this.pz[i] += this.vz[i] * dt;
+      // carried round by slow eddies (an ABC flow: each component varies only across the others,
+      // so it has no divergence and stirs the cloud into lobes and folds without bunching it)
+      const tb = kd.turb * this.dragMul[i];
+      if (tb > 0) {
+        const a = 2.4 * tb * dt;
+        const x = this.px[i] * 0.045, y = this.py[i] * 0.045, z = this.pz[i] * 0.045;
+        this.px[i] += a * (Math.sin(z + T) + Math.cos(y * 1.3 - T));
+        this.py[i] += a * 0.6 * (Math.sin(x * 1.1 - T) + Math.cos(z * 0.9 + T));
+        this.pz[i] += a * (Math.sin(y * 1.2 + T) + Math.cos(x * 0.8 - T));
+      }
       // the ground: clouds roll along it, water splashes and dies. The local frame is a tangent
       // plane, so the ground falls away with distance; far from the origin "down" tilts with it.
       const r = this.size[i] * 0.35;
@@ -592,7 +621,8 @@ export class ParticleSystem {
       tau *= CELL;
       // the sun below the horizon is blocked by the ground for low clouds anyway
       this.vis[i] = Math.exp(-tau * 0.5);
-      this.ao[i] = Math.exp(-sample(px, py, pz) * 14) * 0.7 + 0.3 * Math.min(1, Math.max(0, hgt / 60 + 0.4));
+      // (never below a third: the sky still reaches a buried puff through the cloud around it)
+      this.ao[i] = 0.35 + 0.65 * (Math.exp(-sample(px, py, pz) * 14) * 0.7 + 0.3 * Math.min(1, Math.max(0, hgt / 60 + 0.4)));
     }
   }
 
@@ -630,5 +660,11 @@ export class ParticleSystem {
   }
 
   get stats(): { count: number; max: number } { return { count: this.count, max: this.max }; }
+
+  /** Particles in a batch this frame (0 far, 1 near). */
+  batchCount(b: number): number { return this.batches[b].mesh.visible ? this.batches[b].geo.instanceCount : 0; }
+
+  /** Size (pixels) of the target the next batch is drawn into: the soft depth fade reads the scene depth by screen position. */
+  setTargetSize(w: number, h: number): void { this.resolution.set(w, h); }
 }
 

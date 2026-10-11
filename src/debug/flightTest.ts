@@ -10,7 +10,7 @@ import { LAUNCH_SITES, siteToHeightDef } from '../world/sites';
 import type { CameraMode } from '../camera/CameraDirector';
 
 /**
- * Headless flight harness: ?debug=flight&vehicle=..&site=..&utc=..&T=-30&cam=cinematic
+ * Headless flight harness: ?debug=flight&vehicle=..&site=..&utc=..&T=-30&cam=cinematic[&smoke=0.5&particles=1500]
  * Exposes window.__advance(seconds) to fast-forward the simulation deterministically and
  * renders continuously (without advancing the sim unless live=1).
  */
@@ -27,6 +27,9 @@ export async function runFlightTest(canvas: HTMLCanvasElement): Promise<void> {
   const system = new SolarSystem(dateToJ2000Seconds(date));
   const rw = new RenderWorld(renderer, assets, system, LAUNCH_SITES.map(siteToHeightDef));
   if (q.has('lod')) rw.earth.splitFactor = num('lod', 2.4);
+  // smoke resolution and particle budget, as a graphics preset sets them
+  if (q.has('smoke')) rw.post.settings.smokeScale = num('smoke', 1);
+  if (q.has('particles')) rw.effects.setBudget(num('particles', 6000));
   const W = num('w', window.innerWidth), H = num('h', window.innerHeight);
   rw.resize(W, H, 1);
   const terrain = new GameTerrain(rw.heightCtxEarth, rw.heightCtxMoon);
