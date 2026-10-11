@@ -373,11 +373,31 @@ export class FlightSession {
   /** Render with the camera as it is (photo mode drives the camera itself). */
   renderStatic(realDt: number): void {
     const rw = this.rw;
-    const v = this.active;
-    rw.focusHelio.copy(v.pos).add(this.bodyPos(v.body));
-    rw.focusRadius = Math.max(40, Math.min(400, this.vesselLength(v) * 1.2));
+    const subject = this.focusLighting();
     rw.update(this.world.t, realDt);
-    rw.updateVehicles(0, this.world.t, this.world.vessels, v, (x) => this.bodyPos(x.body));
+    rw.updateVehicles(0, this.world.t, this.world.vessels, this.active, (x) => this.bodyPos(x.body), subject);
+  }
+
+  /** The vessels the camera is showing: a recovering booster (or two) in its shots, else the active one. */
+  viewedVessels(): Vessel[] {
+    const vs = this.director.viewed.filter((x) => !x.destroyed && this.world.vessels.includes(x));
+    return vs.length ? vs : [this.active];
+  }
+
+  /**
+   * Centre the lighting (sun colour, shadow frustum, cloud shadow, aerial perspective) on what
+   * is in the picture, covering both boosters of a twin landing. Returns the vessel to anchor
+   * the particles at.
+   */
+  private focusLighting(): Vessel {
+    const vs = this.viewedVessels();
+    const c = this.rw.focusHelio.set(0, 0, 0);
+    for (const x of vs) c.add(_a.copy(x.pos).add(this.bodyPos(x.body)));
+    c.multiplyScalar(1 / vs.length);
+    let R = 0;
+    for (const x of vs) R = Math.max(R, _a.copy(x.pos).add(this.bodyPos(x.body)).distanceTo(c) + this.vesselLength(x) * 1.2);
+    this.rw.focusRadius = Math.max(40, Math.min(vs.length > 1 ? 900 : 400, R));
+    return vs[0];
   }
 
   /** Record a milestone without side effects (mission logic bookkeeping). */
@@ -946,14 +966,12 @@ export class FlightSession {
     const ctx = this.cameraContext(realDt);
     this.director.update(ctx);
     rw.cameraHelio.copy(this.director.posHelio);
-    // lighting focus on the active vessel
-    v.originInertial(_a).add(this.bodyPos(v.body));
-    rw.focusHelio.copy(v.pos).add(this.bodyPos(v.body));
-    rw.focusRadius = Math.max(40, Math.min(400, this.vesselLength(v) * 1.2));
+    // lighting focus on what the camera shows
+    const subject = this.focusLighting();
     rw.update(t, realDt);
     this.system.earth.orientationAt(t, _q);
     rw.zones.update(realDt, this.bodyPos(this.system.earth), _q, this.system.earth.radius, rw.cameraHelio, rw.siteNight);
-    rw.updateVehicles(realDt, t, world.vessels, v, (x) => this.bodyPos(x.body));
+    rw.updateVehicles(realDt, t, world.vessels, v, (x) => this.bodyPos(x.body), subject);
     // plasma wakes: the spacecraft on entry and any spent stage burning up within view
     for (const vs of world.vessels) {
       if (vs.destroyed || vs.plasmaIntensity <= 0.05) continue;
@@ -1020,6 +1038,7 @@ export class FlightSession {
       phase: this.phase,
       plumeMN,
       plumeSourceHelio: w > 0 ? plume.multiplyScalar(1 / w) : null,
+      aspect: this.rw.camera.aspect,
     };
   }
 }

@@ -1,6 +1,7 @@
-import { GLSL3, Matrix3, ShaderMaterial, Texture, Vector3 } from 'three';
+import { GLSL3, Matrix3, ShaderMaterial, Texture, Vector2, Vector3, Vector4 } from 'three';
 import { ATMOSPHERE_COMMON } from '../atmosphere/glsl';
 import { DECK_COMMON } from '../weather/CloudDeck';
+import { SITE_LAMPS, type SiteLampUniforms } from '../site/siteMaterials';
 
 /**
  * Earth & Moon terrain shaders. Lighting is done in the body-fixed frame (km) so the atmosphere
@@ -68,6 +69,12 @@ uniform float uCloudShadow;
 uniform float uDetailStrength;
 uniform vec3 uPalScrub, uPalGrass, uPalForest, uPalWet, uPalDry, uPalSoil, uPalSand;
 uniform int uDebug;
+// the launch site's lamps after dark, in view space (shared with the site's own materials)
+uniform int uLampCount;
+uniform vec3 uLampPos[${SITE_LAMPS}];
+uniform vec3 uLampDir[${SITE_LAMPS}];
+uniform vec4 uLampCol[${SITE_LAMPS}];
+uniform vec2 uLampCone[${SITE_LAMPS}];
 ${ATMOSPHERE_COMMON}
 ${DECK_COMMON}
 ${NOISE_GLSL}
@@ -195,6 +202,18 @@ void main() {
     // soft wrap so the terminator isn't a hard line on rough terrain
     float wrap = max(0.0, (dot(N, L) + 0.08) / 1.08);
     color = albedo / ATM_PI * (sunIrr * mix(NdotL, wrap, 0.25) + skyAmb * (0.6 + 0.4 * dot(N, up)));
+    // pools of lamplight around the site after dark, carrying on past the roads and aprons
+    for (int i = 0; i < ${SITE_LAMPS}; i++) {
+      if (i >= uLampCount) break;
+      vec3 Lv = uLampPos[i] - vViewPos;
+      float d2 = dot(Lv, Lv);
+      if (d2 >= uLampCol[i].w) continue;
+      vec3 l = Lv * inversesqrt(max(d2, 1e-6));
+      float q = d2 / uLampCol[i].w;
+      float beam = smoothstep(uLampCone[i].x, uLampCone[i].y, dot(-l, uLampDir[i]));
+      float ndl = max(0.0, dot(N, uViewToFixed * l));
+      color += albedo / ATM_PI * uLampCol[i].rgb * (beam * (1.0 - q * q) * (1.0 - q * q) * ndl / max(d2, 0.25));
+    }
   }
   // city lights on the night side (hidden under clouds)
   float night = 1.0 - smoothstep(-0.12, 0.02, muS);
@@ -319,10 +338,24 @@ export function createEarthMaterial(
       uDetailStrength: { value: 1 },
       ...groundPaletteUniforms('subtropical'),
       uDebug: { value: 0 },
+      ...lampUniforms(null),
     },
     vertexShader: COMMON_VERT,
     fragmentShader: EARTH_FRAG,
   });
+}
+
+/** The terrain's view of the launch site's lamps: the site's own uniforms, or none. */
+export function lampUniforms(L: SiteLampUniforms | null): Record<string, { value: unknown }> {
+  if (L) return { uLampCount: L.count, uLampPos: L.pos, uLampDir: L.dir, uLampCol: L.col, uLampCone: L.cone };
+  const n = SITE_LAMPS;
+  return {
+    uLampCount: { value: 0 },
+    uLampPos: { value: Array.from({ length: n }, () => new Vector3()) },
+    uLampDir: { value: Array.from({ length: n }, () => new Vector3(0, -1, 0)) },
+    uLampCol: { value: Array.from({ length: n }, () => new Vector4()) },
+    uLampCone: { value: Array.from({ length: n }, () => new Vector2(0, 1)) },
+  };
 }
 
 export function createMoonMaterial(tex: { albedo: Texture; detail: Texture }): ShaderMaterial {

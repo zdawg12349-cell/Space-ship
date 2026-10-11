@@ -28,6 +28,21 @@ const _up = new Vector3();
 const _n = new Vector3();
 const _e = new Vector3();
 
+const RCS_QUADS = [0, 1, 2, 3].map((q) => (q / 4) * Math.PI * 2 + Math.PI / 4);
+
+/**
+ * Where an assembly's reaction-control thrusters sit (vehicle frame): the two cold-gas pods
+ * modelled on a booster's grid-fin interstage, quads up by the grid fins on other boosters,
+ * otherwise quads high on the stage.
+ */
+function rcsPods(a: AssemblyRuntime): { y: number; r: number; angles: number[] } {
+  const mount = a.def.sections.find((s) => s.style === 'gridfin_mount');
+  if (mount) return { y: mount.y + mount.length - 0.8, r: mount.radius + 0.35, angles: [Math.PI / 4, Math.PI / 4 + Math.PI] };
+  const fins = a.def.features?.gridFins;
+  if (fins) return { y: fins.y - fins.size * 0.5, r: a.maxRadius + 0.1, angles: RCS_QUADS };
+  return { y: a.bottomY + (a.topY - a.bottomY) * 0.72, r: a.maxRadius + 0.08, angles: RCS_QUADS };
+}
+
 interface TrailState { acc: number; last: Vector3 | null }
 
 export interface EffectsFlags {
@@ -160,9 +175,11 @@ export class Effects {
     return out.applyQuaternion(_q);
   }
 
-  update(dt: number, t: number, vessels: Vessel[], active: Vessel | null, complex: LaunchComplex | null): void {
+  /** @param viewed the vessel the camera shows: the particle frame stays near it, for precision and a true ground */
+  update(dt: number, t: number, vessels: Vessel[], active: Vessel | null, complex: LaunchComplex | null, viewed: Vessel | null = active): void {
     this.time += dt;
-    if (active && !active.destroyed) this.followVessel(active, t);
+    const near = viewed && !viewed.destroyed ? viewed : active;
+    if (near && !near.destroyed) this.followVessel(near, t);
     if (!this.anchorBody) return;
     this.placeFrame(t);
     const P = this.particles;
@@ -171,7 +188,7 @@ export class Effects {
     // weather supplies the full profile to the vehicle in flight)
     if (air) P.wind.copy(this.surfaceWind); else P.wind.set(0, 0, 0);
     P.groundY = 0;
-    P.bodyRadius = this.anchorBody.radius;
+    P.bodyRadius = this.anchorBody.radius + this.anchorAlt;
 
     for (const v of vessels) {
       if (v.destroyed || v.body !== this.anchorBody) continue;
@@ -299,7 +316,9 @@ export class Effects {
       for (let i = 0; i < n; i++) {
         const ang = Math.random() * Math.PI * 2;
         const sp = (20 + Math.sqrt(MN) * 18) * (0.4 + strength);
-        const kind: ParticleKind = solid > 0.4 ? 'srbsmoke' : nearPad || v.splashed ? (Math.random() < kerolox * 0.4 ? 'smoke' : 'steam') : 'dust';
+        // (away from the launch pad - a landing zone, the drone ship, open ground - the cloud is
+        // mostly the exhaust's own steam, with dust and grit from the surface through it)
+        const kind: ParticleKind = solid > 0.4 ? 'srbsmoke' : nearPad || v.splashed ? (Math.random() < kerolox * 0.4 ? 'smoke' : 'steam') : Math.random() < 0.6 ? 'steam' : 'dust';
         P.emit({
           kind, pos: hit, vel: _d.set(Math.cos(ang) * sp, 2 + Math.random() * 5, Math.sin(ang) * sp), spread: sp * 0.2, jitter: 2 + Math.sqrt(MN),
           size: 3 + Math.sqrt(MN) * 1.4, grow: 2 + Math.sqrt(MN) * 0.7, life: 18 + Math.random() * 10, heat: 0.6 * strength,
@@ -332,6 +351,11 @@ export class Effects {
       } else if (hyper > 0.5) { kind = 'smoke'; opacity = 0.3 * Math.exp(-alt / 9000) + 0.25 * contrail; life = 90; heat = 0.3; } else {
         kind = 'trail'; opacity = 0.12 * Math.exp(-alt / 12000) + 0.45 * contrail; life = 80;
       }
+      // a booster coming down engines first (a landing or entry burn) flies along its own exhaust:
+      // the jet carries the gas down ahead of it toward the ground, and at these heights it
+      // leaves little to see, so the trail fades away rather than gathering round the vehicle
+      const descent = vSurf.dot(dirL);
+      opacity *= 1 - smooth(5, 30, descent);
       // trail starts where the luminous plume ends
       const tailLen = 22 * Math.sqrt(MN) * (1 + alt / 12000);
       const tail = _c.copy(exitL).addScaledVector(dirL, tailLen);
@@ -351,7 +375,7 @@ export class Effects {
           const pos = _d.copy(tr.last).lerp(tail, Math.min(1, Math.max(0, f)));
           if (opacity > 0.02) {
             P.emit({
-              kind, pos, vel: _e.copy(P.wind).addScaledVector(dirL, 8), spread: 2, jitter: sizeEff * 0.15, size: sizeEff, grow: sizeEff * 0.04 + 0.6, life: life * (alt > 20000 ? 0.6 : 1),
+              kind, pos, vel: _e.copy(P.wind).addScaledVector(dirL, Math.min(150, Math.max(8, descent * 1.3 + 15))), spread: 2, jitter: sizeEff * 0.15, size: sizeEff, grow: sizeEff * 0.04 + 0.6, life: life * (alt > 20000 ? 0.6 : 1),
               heat, opacity: Math.min(1, opacity), drag: 1,
             });
           }
@@ -441,7 +465,8 @@ export class Effects {
         const w = this.vehiclePoint(v, local, new Vector3());
         const pl = P.toLocal(w, new Vector3());
         const out = P.dirToLocal(_d.set(Math.cos(ang), 0, Math.sin(ang)).applyQuaternion(v.rot), new Vector3());
-        P.emit({ kind: 'vapor', pos: pl, vel: out.multiplyScalar(vac ? 25 : 10).add(vel), spread: vac ? 8 : 3, size: r * 0.5, grow: vac ? 12 : 3, life: vac ? 1.2 : 3.5, opacity: 0.6, drag: vac ? 0 : 1 });
+        // in air a ring of billows; in vacuum the pushers' gas flashes out into a fading haze
+        P.emit({ kind: vac ? 'gas' : 'vapor', pos: pl, vel: out.multiplyScalar(vac ? 25 : 10).add(vel), spread: vac ? 8 : 3, size: r * 0.5, grow: vac ? 12 : 3, life: vac ? 1.2 : 3.5, opacity: vac ? 0.8 : 0.6, drag: vac ? 0 : 1 });
       }
       for (let i = 0; i < 12; i++) {
         const local = _c.set(a.offX, y, a.offZ);
@@ -486,9 +511,9 @@ export class Effects {
   }
 
   /**
-   * Reaction-control puffs: short white jets from the thruster quads whenever the attitude
+   * Reaction-control puffs: short white jets from the thruster pods whenever the attitude
    * system commands torque with RCS enabled (or translation). In vacuum the gas flashes out
-   * into a wide, fast-fading cone; in air it is a small, quickly dispersed puff.
+   * into a wide, fast-fading cone; in air it is a small puff that the air soon stops.
    */
   private rcsPuffs(v: Vessel, dt: number): void {
     const c = v.controls;
@@ -502,29 +527,32 @@ export class Effects {
     for (const a of v.assemblies) {
       const f = a.def.features?.rcs;
       if (!f || a.rcsFuel <= 0 || a.destroyed) continue;
-      const y = a.bottomY + (a.topY - a.bottomY) * 0.72;
-      const R = a.maxRadius + 0.08;
-      for (let q = 0; q < 4; q++) {
-        const ang = (q / 4) * Math.PI * 2 + Math.PI / 4;
+      const pods = rcsPods(a);
+      for (let q = 0; q < pods.angles.length; q++) {
+        const ang = pods.angles[q];
         const cx = Math.cos(ang), cz = Math.sin(ang);
-        // which nozzles of this quad fire: roll -> tangential, pitch/yaw -> radial (up/down pairs)
-        const roll = c.roll * (q % 2 === 0 ? 1 : -1);
-        const pitchYaw = (q < 2 ? c.pitch : -c.pitch) * 0.7 + (q % 3 === 0 ? c.yaw : -c.yaw) * 0.7;
-        const fireT = Math.abs(roll) > 0.05, fireR = Math.abs(pitchYaw) > 0.05 || trans > 0.06;
+        // which nozzles fire: roll -> tangential, from one opposite pair turning the same way;
+        // pitch/yaw -> fore or aft, opposite pods in opposite directions
+        const fireT = Math.abs(c.roll) > 0.05 && (pods.angles.length < 4 || q % 2 === 0);
+        const pitchYaw = c.pitch * cz + c.yaw * cx;
+        const fireR = Math.abs(pitchYaw) > 0.05 || trans > 0.06;
         if (!fireT && !fireR) continue;
-        const n = this.rate(`rcs${v.id}-${a.def.id}-${q}`, 42 * Math.min(1, rot + trans), dt);
-        if (!n) continue;
-        const base = this.vehiclePoint(v, _c.set(a.offX + cx * R, y, a.offZ + cz * R), new Vector3());
+        const n = this.rate(`rcs${v.id}-${a.def.id}-${q}`, (vac ? 75 : 42) * Math.min(1, rot + trans), dt);
+        // (and in vacuum the dense core of the jet, a short bright cone at the nozzle)
+        const nc = vac ? this.rate(`rcsc${v.id}-${a.def.id}-${q}`, 60, dt) : 0;
+        if (!n && !nc) continue;
+        const base = this.vehiclePoint(v, _c.set(a.offX + cx * pods.r, pods.y, a.offZ + cz * pods.r), new Vector3());
         const pl = P.toLocal(base, new Vector3());
+        // jet direction in the vehicle frame
+        const dir = fireT ? _e.set(-cz * Math.sign(c.roll), 0, cx * Math.sign(c.roll)) : _e.set(0, Math.sign(pitchYaw || 1), 0);
+        const dw = P.dirToLocal(dir.applyQuaternion(v.rot), new Vector3()).normalize();
         for (let i = 0; i < n; i++) {
-          // jet direction in the vehicle frame
-          const dir = fireT ? _e.set(-cz * Math.sign(roll), 0, cx * Math.sign(roll)) : _e.set(0, Math.sign(pitchYaw || 1), 0);
-          const dw = P.dirToLocal(dir.applyQuaternion(v.rot), new Vector3()).normalize();
-          P.emit({
-            kind: 'vapor', pos: pl, vel: dw.multiplyScalar(vac ? 260 : 40).add(vel), spread: vac ? 90 : 6,
-            size: 0.12, grow: vac ? 9 : 1.6, life: vac ? 0.28 : 0.6, opacity: vac ? 0.4 : 0.5, drag: vac ? 0 : 1,
-          });
+          // in vacuum the gas flashes into a wide cone that is densest at the nozzle and thins to
+          // nothing within a few tens of metres; in air, a small puff that stops within metres
+          if (vac) P.emit({ kind: 'gas', pos: pl, vel: dw.clone().multiplyScalar(140).add(vel), spread: 45, size: 0.4, grow: 38, life: 0.25, opacity: 0.9, drag: 0 });
+          else P.emit({ kind: 'vapor', pos: pl, vel: dw.clone().multiplyScalar(40).add(vel), spread: 6, size: 0.15, grow: 2.4, life: 0.7, opacity: 0.5, drag: 5 });
         }
+        for (let i = 0; i < nc; i++) P.emit({ kind: 'gas', pos: pl, vel: dw.clone().multiplyScalar(70).add(vel), spread: 9, size: 0.35, grow: 12, life: 0.12, opacity: 1, drag: 0 });
       }
     }
   }

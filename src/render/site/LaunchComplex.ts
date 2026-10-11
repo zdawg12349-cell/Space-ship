@@ -1,11 +1,12 @@
-import { Group, Matrix4, Mesh, Object3D, PointLight, Quaternion, SpotLight, Vector3 } from 'three';
+import { type Camera, Group, Matrix4, Mesh, Object3D, PointLight, Quaternion, SpotLight, Vector3 } from 'three';
 import type { VehicleDef } from '../../vehicles/types';
 import type { LaunchSite } from '../../world/sites';
+import { CATCH_BASE_HEIGHT } from '../../world/zones';
 import { box, GeoBuilder, lathe, tube } from '../vehicle/shapes';
-import { createSiteMaterials, SiteMaterials } from './siteMaterials';
+import { createSiteMaterials, SITE_LAMPS, SiteMaterials } from './siteMaterials';
 import {
   Batch, beam, boxTruss, BROAD_CROWN, broadleafGeometry, building, cable, CrownShape, hangar, horizontalTank, instanced, latticeTower, lightMast, palmGeometry,
-  PINE_CROWN, pineGeometry, planarTruss, shrubGeometry, sphereTank, tuftGeometry, verticalTank,
+  PINE_CROWN, pineGeometry, planarTruss, shrubGeometry, type SiteLamp, sphereTank, tuftGeometry, verticalTank,
 } from './structures';
 
 /**
@@ -81,6 +82,8 @@ export class LaunchComplex {
   readonly beacons: PointLight[] = [];
   /** lamp positions for lens glows */
   readonly lampPositions: Vector3[] = [];
+  /** small lamps that light the site's own surfaces after dark (wall packs, door floods, road lamps) */
+  readonly siteLamps: SiteLamp[] = [];
   readonly towerTop = new Vector3();
   private time = 0;
   private night = 0;
@@ -308,10 +311,10 @@ export class LaunchComplex {
       const { x: hx, z: hz } = HANGAR;
       const y = this.hAt(hx, -hz);
       box(B.get(M.concrete), 150, 0.2, 76, new Matrix4().makeTranslation(hx, y + 0.1, hz - 12));
-      hangar({
+      this.siteLamps.push(...hangar({
         wall: B.get(M.cladding), door: B.get(M.claddingGrey), trim: B.get(M.steelWhite), plinth: B.get(M.concrete), dark: B.get(M.vabDark),
         roof: B.get(M.concreteDark), lamp: B.get(M.lampWarm), glass: B.get(M.glass),
-      }, new Vector3(hx, y + 0.2, hz), 95, 22, 40);
+      }, new Vector3(hx, y + 0.2, hz), 95, 22, 40));
     }
     // a neighbouring pad's lightning towers on the horizon (2.6 km north)
     for (let i = 0; i < 3; i++) {
@@ -525,8 +528,11 @@ export class LaunchComplex {
       latticeTower(B.get(M.steelGrey), B.get(M.grating), at, { width: tw, height, bay: 9, column: 0.9, brace: 0.4, floors: 4 });
       box(B.get(M.steelDark), 6, height, 6, new Matrix4().makeTranslation(at.x, height / 2, at.z));
       this.towerTop.set(0, height, -dist);
-      // chopsticks: two long arms on a carriage near the booster/ship interface
-      const carriageY = D + 70;
+      // chopsticks: two long arms on a carriage at the booster's catch hardpoints, just below its
+      // grid fins, at the height they reach as it settles over the mount (the arms close as it
+      // sinks within ~7 m of the catch point)
+      const fins = this.vehicle.assemblies.find((a) => a.features?.gridFins)?.features?.gridFins;
+      const carriageY = CATCH_BASE_HEIGHT + 7 + (fins ? fins.y - fins.size - 0.5 : 65);
       box(B.get(M.steelDark), tw + 3, 8, tw + 3, new Matrix4().makeTranslation(at.x, carriageY, at.z));
       for (const s of [-1, 1]) {
         const pivot = new Group();
@@ -625,9 +631,11 @@ export class LaunchComplex {
       tube(B.get(M.steelGrey), new Vector3(x * 0.15, 0.6, z * 0.15), new Vector3(0, 0.6, -fp - 4), 0.45, 8);
     }
     // pad buildings
-    building(B.get(M.concrete), B.get(M.concreteDark), B.get(M.glass), new Vector3(70, 0, 95), 22, 6, 12, 0.2);
-    building(B.get(M.steelWhite), B.get(M.steelGrey), B.get(M.glass), new Vector3(-95, 0, -110), 16, 8, 10, -0.4);
-    building(B.get(M.concrete), B.get(M.concreteDark), B.get(M.glass), new Vector3(-180, 0, 60), 30, 5, 14, 0);
+    this.siteLamps.push(
+      ...building(B.get(M.concrete), B.get(M.concreteDark), B.get(M.glass), new Vector3(70, 0, 95), 22, 6, 12, 0.2, B.get(M.lampWarm)),
+      ...building(B.get(M.steelWhite), B.get(M.steelGrey), B.get(M.glass), new Vector3(-95, 0, -110), 16, 8, 10, -0.4, B.get(M.lampWarm)),
+      ...building(B.get(M.concrete), B.get(M.concreteDark), B.get(M.glass), new Vector3(-180, 0, 60), 30, 5, 14, 0, B.get(M.lampWarm)),
+    );
     // fence posts on a ring
     for (let i = 0; i < 160; i++) {
       const a = (i / 160) * Math.PI * 2;
@@ -685,6 +693,8 @@ export class LaunchComplex {
       tube(B.get(M.galvanized), new Vector3(x, y, z), new Vector3(x, y + 9, z), 0.12, 6);
       tube(B.get(M.galvanized), new Vector3(x, y + 9, z), new Vector3(x, y + 9.3, z - Math.sign(z) * 1.6), 0.06, 4);
       box(B.get(M.lampWarm), 0.5, 0.15, 0.3, new Matrix4().makeTranslation(x, y + 9.2, z - Math.sign(z) * 1.6));
+      // a warm sodium-like pool on the road beneath
+      this.siteLamps.push({ pos: new Vector3(x, y + 9.05, z - Math.sign(z) * 1.6), dir: new Vector3(0, -1, 0), kcd: 3.5, cone: [0.22, 0.62], color: [1, 0.74, 0.46] });
     }
   }
 
@@ -866,6 +876,40 @@ export class LaunchComplex {
 
   get nightFactor(): number { return this.night; }
 
+  private lampDist = new Float32Array(0);
+  private lampOrder: number[] = [];
+  /**
+   * Hand the lamps nearest the camera to the site materials, in view space. Call just before
+   * rendering, once the camera and the complex are placed. The last few before the cut fade out,
+   * so no pool of light pops on or off as the camera moves.
+   */
+  updateLamps(camera: Camera): void {
+    const L = this.mats.lamps;
+    const lamps = this.siteLamps;
+    if (this.night <= 0.001 || !lamps.length || !this.group.visible) { L.count.value = 0; return; }
+    this.group.updateMatrixWorld();
+    camera.updateMatrixWorld();
+    const mw = this.group.matrixWorld, vm = camera.matrixWorldInverse;
+    const cam = _lv.setFromMatrixPosition(camera.matrixWorld).applyMatrix4(_lm.copy(mw).invert());
+    if (this.lampDist.length !== lamps.length) { this.lampDist = new Float32Array(lamps.length); this.lampOrder = lamps.map((_, i) => i); }
+    const dist = this.lampDist;
+    for (let i = 0; i < lamps.length; i++) dist[i] = lamps[i].pos.distanceTo(cam);
+    this.lampOrder.sort((a, b) => dist[a] - dist[b]);
+    const n = Math.min(SITE_LAMPS, lamps.length);
+    const cut = lamps.length > SITE_LAMPS ? dist[this.lampOrder[SITE_LAMPS]] : Infinity;
+    for (let k = 0; k < n; k++) {
+      const l = lamps[this.lampOrder[k]];
+      const fade = Number.isFinite(cut) ? Math.min(1, Math.max(0, (cut - dist[this.lampOrder[k]]) / (0.2 * cut))) : 1;
+      const I = l.kcd * this.night * fade;
+      L.pos.value[k].copy(l.pos).applyMatrix4(mw).applyMatrix4(vm);
+      L.dir.value[k].copy(l.dir).transformDirection(mw).transformDirection(vm);
+      // reach: where the light has fallen to a lux or two
+      L.col.value[k].set(l.color[0] * I, l.color[1] * I, l.color[2] * I, l.kcd / 0.0015);
+      L.cone.value[k].set(l.cone[0], l.cone[1]);
+    }
+    L.count.value = n;
+  }
+
   /** Free GPU resources (geometry + materials). */
   dispose(): void {
     const mats = new Set<{ dispose(): void }>();
@@ -881,5 +925,7 @@ export class LaunchComplex {
 
 const _up = new Vector3(0, 1, 0);
 const _q = new Quaternion();
+const _lv = new Vector3();
+const _lm = new Matrix4();
 /** the integration hangar beside the access road (pads without a crawlerway), site metres */
 const HANGAR = { x: -420, z: 95 };

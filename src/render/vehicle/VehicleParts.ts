@@ -1,4 +1,4 @@
-import { Group, Matrix4, Mesh, MeshPhysicalMaterial, Vector3 } from 'three';
+import { Group, Matrix4, Mesh, MeshPhysicalMaterial, Quaternion, Vector3 } from 'three';
 import type { EngineMount } from '../../vehicles/types';
 import { bellProfile, box, GeoBuilder, lathe, tube } from './shapes';
 import { AssemblyShaderState, createHardware, createSkin } from './VehicleMaterials';
@@ -141,6 +141,58 @@ export interface HingedPart {
   axis: Vector3;
   stowed: number;
   deployed: number;
+  /** a telescoping actuator from a fitting on the body to a point on the part, re-aimed as it swings */
+  strut?: Strut;
+}
+
+/** Telescoping strut: a barrel fixed at the body fitting, a piston running out of it to the part. */
+export interface Strut {
+  /** body fitting (in the pivot's parent frame) */
+  anchor: Vector3;
+  /** where it meets the part (in the part's own frame) */
+  attach: Vector3;
+  /** length of the barrel (m) */
+  barrelLength: number;
+  barrel: Mesh;
+  rod: Mesh;
+}
+
+/** A strut of the given barrel radius between a body fitting and a point on a hinged part. */
+export function buildStrut(anchor: Vector3, attach: Vector3, barrelLength: number, radius: number, barrelMat: MeshPhysicalMaterial, rodMat: MeshPhysicalMaterial): Strut {
+  // unit-length cylinders along +Y, stretched to fit each frame
+  const unit = (r: number, mat: MeshPhysicalMaterial) => {
+    const g = new GeoBuilder();
+    tube(g, new Vector3(0, 0, 0), new Vector3(0, 1, 0), r, 12);
+    const m = new Mesh(g.build(), mat);
+    m.castShadow = true;
+    return m;
+  };
+  return { anchor, attach, barrelLength, barrel: unit(radius, barrelMat), rod: unit(radius * 0.6, rodMat) };
+}
+
+const _sp = new Vector3();
+const _sd = new Vector3();
+const _sq = new Quaternion();
+const _SY = new Vector3(0, 1, 0);
+/** Aim and stretch a hinged part's strut to where the part now is. */
+export function updateStrut(h: HingedPart): void {
+  const s = h.strut;
+  if (!s) return;
+  const p = _sp.copy(s.attach).applyQuaternion(h.pivot.quaternion).add(h.pivot.position);
+  const d = _sd.copy(p).sub(s.anchor);
+  const len = d.length();
+  if (len < 1e-4) return;
+  d.multiplyScalar(1 / len);
+  _sq.setFromUnitVectors(_SY, d);
+  const lb = Math.min(len, s.barrelLength);
+  s.barrel.position.copy(s.anchor);
+  s.barrel.quaternion.copy(_sq);
+  s.barrel.scale.set(1, lb, 1);
+  // (the piston starts a little inside the barrel's mouth)
+  const r0 = Math.max(0, lb - 0.15);
+  s.rod.position.copy(s.anchor).addScaledVector(d, r0);
+  s.rod.quaternion.copy(_sq);
+  s.rod.scale.set(1, Math.max(1e-3, len - r0), 1);
 }
 
 /** Titanium/aluminium lattice grid fin hinged at the body surface. */
@@ -195,18 +247,27 @@ export function buildLeg(length: number, bodyRadius: number, carbon: MeshPhysica
   const gb = new GeoBuilder();
   const hw = new GeoBuilder();
   if (!lunar) {
-    // A-frame: tapered beam along +Y (stowed against the body), hinge at origin
-    const wBase = Math.max(0.35, bodyRadius * 0.32), wTip = wBase * 0.55, thick = Math.max(0.12, bodyRadius * 0.08);
+    // a deep carbon box beam along +Y (stowed against the body, hinge at the origin), tapering
+    // in width and depth toward the foot, with a raised flange down its outer face
+    const wBase = Math.max(0.35, bodyRadius * 0.34), wTip = wBase * 0.55;
+    const dBase = Math.max(0.2, bodyRadius * 0.2), dTip = dBase * 0.5;
     const steps = 6;
     for (let i = 0; i < steps; i++) {
       const y0 = (i / steps) * length, y1 = ((i + 1) / steps) * length;
-      const w0 = wBase + (wTip - wBase) * (i / steps), w1 = wBase + (wTip - wBase) * ((i + 1) / steps);
-      box(gb, (w0 + w1) / 2, y1 - y0 + 0.01, thick, new Matrix4().makeTranslation(0, (y0 + y1) / 2, thick / 2));
+      const f = (i + 0.5) / steps;
+      const w = wBase + (wTip - wBase) * f, d = dBase + (dTip - dBase) * f;
+      box(gb, w, y1 - y0 + 0.01, d, new Matrix4().makeTranslation(0, (y0 + y1) / 2, d / 2));
+      box(gb, w * 0.3, y1 - y0 + 0.01, 0.05, new Matrix4().makeTranslation(0, (y0 + y1) / 2, d + 0.025));
     }
-    // telescoping strut from mid-leg back to the body (pneumatic damper)
-    tube(hw, new Vector3(0, length * 0.55, thick), new Vector3(0, length * 0.1, -bodyRadius * 0.05 + 0.02), Math.max(0.05, thick * 0.35), 10);
-    // footpad
-    lathe(hw, [[0, length], [wTip * 0.9, length], [wTip * 0.75, length + 0.12], [0, length + 0.12]], { segments: 16, offset: [0, thick * 0.6] });
+    // hinge fitting at the root, and the clevis on the leg's inner face where its deployment
+    // actuator (a separate strut from the body, see buildStrut) takes hold
+    box(hw, wBase * 1.1, 0.35, dBase * 1.2, new Matrix4().makeTranslation(0, 0.1, dBase * 0.5));
+    const yA = length * 0.4;
+    box(hw, wBase * 0.7, 0.4, 0.12, new Matrix4().makeTranslation(0, yA, -0.04));
+    g.userData.strutAttach = new Vector3(0, yA, -0.06);
+    g.userData.strutRadius = Math.max(0.06, dBase * 0.32);
+    // footpad: a broad shallow dish on a short ankle
+    lathe(hw, [[0, length], [wTip * 1.5, length], [wTip * 1.35, length + 0.16], [wTip * 0.5, length + 0.2], [0, length + 0.2]], { segments: 20, offset: [0, dTip * 0.6] });
   } else {
     // lunar: primary strut + secondary braces + saucer footpad, fixed deployed (pointing down/out)
     const r = Math.max(0.05, length * 0.03);

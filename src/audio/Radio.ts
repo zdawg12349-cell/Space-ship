@@ -11,7 +11,7 @@ const ROLE_NAMES: Record<string, string> = {
   LAUNCH: 'LAUNCH CONTROL', FLIGHT: 'FLIGHT', CAPCOM: 'CAPCOM', RANGE: 'RANGE', RECOVERY: 'RECOVERY', GNC: 'GUIDANCE',
 };
 
-interface Queued { id: string; at: number; priority: number }
+interface Queued { id: string; at: number; simAt: number; priority: number }
 
 export class Radio {
   private cache = new Map<string, Promise<AudioBuffer | null>>();
@@ -22,6 +22,12 @@ export class Radio {
   private time = 0;
   onLine: ((who: string, text: string, duration: number) => void) | null = null;
   enabled = true;
+  /**
+   * The flight's clock (simulation seconds), when there is a flight: a call-out goes stale by
+   * the simulation's time too, so time warp or a fast-forward never plays "T minus forty five
+   * seconds" minutes after liftoff.
+   */
+  clock: (() => number) | null = null;
 
   constructor(private readonly ctx: AudioContext, out: AudioNode, private readonly manifest: Record<string, VoiceLine>, white: AudioBuffer) {
     const hp = ctx.createBiquadFilter(); hp.type = 'highpass'; hp.frequency.value = 330; hp.Q.value = 0.7;
@@ -68,7 +74,7 @@ export class Radio {
       try { this.playing.src.stop(); } catch { /* already stopped */ }
       this.playing = null;
     }
-    this.queue.push({ id, at: this.time, priority });
+    this.queue.push({ id, at: this.time, simAt: this.clock ? this.clock() : NaN, priority });
     this.queue.sort((a, b) => b.priority - a.priority || a.at - b.at);
     if (this.queue.length > 4) this.queue.length = 4;
   }
@@ -92,6 +98,7 @@ export class Radio {
     // count-outs and time-critical calls go stale fast
     const stale = q.id.startsWith('cnt_') || q.id.startsWith('ign') ? 1.2 : 8;
     if (this.time - q.at > stale) return;
+    if (this.clock && this.clock() - q.simAt > stale) return;
     const line = this.manifest[q.id];
     const marker = { src: null as unknown as AudioBufferSourceNode, until: this.time + 0.5, priority: q.priority };
     this.playing = marker;

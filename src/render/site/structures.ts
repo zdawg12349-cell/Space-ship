@@ -9,6 +9,22 @@ import { box, GeoBuilder, lathe, tube } from '../vehicle/shapes';
  * into per-material batches so a whole complex renders in a few dozen draw calls.
  */
 
+/** A lamp that lights the site's own surfaces after dark (site frame: x east, y up, z south). */
+export interface SiteLamp {
+  pos: Vector3;
+  /** where the beam points (unit) */
+  dir: Vector3;
+  /** peak luminous intensity (kcd) */
+  kcd: number;
+  /** cosines of the beam's edge (dark) and of its core (full strength) */
+  cone: [number, number];
+  /** colour of the light (linear) */
+  color: [number, number, number];
+}
+
+/** a small LED wall pack over a door: warm white, a broad downward spread */
+const WALL_PACK = { kcd: 1.2, cone: [0.09, 0.7] as [number, number], color: [1, 0.8, 0.58] as [number, number, number] };
+
 export class Batch {
   private gbs = new Map<Material, GeoBuilder>();
   get(m: Material): GeoBuilder {
@@ -159,19 +175,30 @@ export function horizontalTank(gb: GeoBuilder, saddle: GeoBuilder, at: Vector3, 
 }
 
 /** Simple building: box with a parapet, door and window band. */
-export function building(wall: GeoBuilder, roof: GeoBuilder, glass: GeoBuilder, at: Vector3, sx: number, sy: number, sz: number, yaw = 0): void {
+/** A plain block with a window band on its long sides and, given a lamp, a wall pack over each. */
+export function building(wall: GeoBuilder, roof: GeoBuilder, glass: GeoBuilder, at: Vector3, sx: number, sy: number, sz: number, yaw = 0, lamp?: GeoBuilder): SiteLamp[] {
   const m = new Matrix4().makeRotationY(yaw).setPosition(at.x, at.y + sy / 2, at.z);
   box(wall, sx, sy, sz, m);
   box(roof, sx + 0.3, 0.4, sz + 0.3, new Matrix4().makeRotationY(yaw).setPosition(at.x, at.y + sy + 0.2, at.z));
   // window band on the long sides
+  const Y = new Vector3(0, 1, 0);
   const n = Math.max(1, Math.floor(sx / 3));
   for (let i = 0; i < n; i++) {
     const x = -sx / 2 + (i + 0.5) * (sx / n);
     for (const s of [1, -1]) {
-      const p = new Vector3(x, sy * 0.62, s * (sz / 2 + 0.02)).applyAxisAngle(new Vector3(0, 1, 0), yaw).add(at);
+      const p = new Vector3(x, sy * 0.62, s * (sz / 2 + 0.02)).applyAxisAngle(Y, yaw).add(at);
       box(glass, 1.6, 1.1, 0.05, new Matrix4().makeRotationY(yaw).setPosition(p));
     }
   }
+  if (!lamp) return [];
+  const lamps: SiteLamp[] = [];
+  for (const s of [1, -1]) {
+    const out = new Vector3(0, 0, s).applyAxisAngle(Y, yaw);
+    const p = new Vector3(sx * 0.3 * s, Math.min(sy - 0.7, 3.4), s * (sz / 2 + 0.15)).applyAxisAngle(Y, yaw).add(at);
+    box(lamp, 0.35, 0.2, 0.25, new Matrix4().makeRotationY(yaw).setPosition(p));
+    lamps.push({ ...WALL_PACK, pos: p.clone().addScaledVector(out, 0.2), dir: new Vector3(0, -1, 0).addScaledVector(out, 0.6).normalize() });
+  }
+  return lamps;
 }
 
 export interface HangarParts {
@@ -187,7 +214,8 @@ export interface HangarParts {
  * - personnel doors, louvres high on the end walls, downpipes, and a two-storey office annex
  *   with window bands on the +x end.
  */
-export function hangar(g: HangarParts, at: Vector3, sx: number, sy: number, sz: number): void {
+export function hangar(g: HangarParts, at: Vector3, sx: number, sy: number, sz: number): SiteLamp[] {
+  const lamps: SiteLamp[] = [];
   const T = (x: number, y: number, z: number) => new Matrix4().makeTranslation(at.x + x, at.y + y, at.z + z);
   const hx = sx / 2, hz = sz / 2;
   box(g.plinth, sx + 0.4, 1, sz + 0.4, T(0, 0.5, 0));
@@ -235,11 +263,15 @@ export function hangar(g: HangarParts, at: Vector3, sx: number, sy: number, sz: 
   box(g.wall, dw + 3.2, sy - dh - 0.2, postD, T(0, dh + 0.2 + (sy - dh - 0.2) / 2, -hz - postD / 2 + 0.1));
   box(g.trim, dw + 3.4, 0.35, postD + 0.2, T(0, dh + 0.25, -hz - postD / 2 + 0.1));
   box(g.plinth, dw + 4, 0.12, 2.6, T(0, 0.06, -hz - 1.3));
-  // flood lights on short arms over the door
+  // flood lights on short arms over the door, washing down the leaves and out over the apron
   for (let i = 0; i < 4; i++) {
     const x = -dw / 2 + (i + 0.5) * (dw / 4);
     box(g.trim, 0.15, 0.15, 1.3, T(x, dh + 1.6, -hz - postD - 0.6));
     box(g.lamp, 0.8, 0.25, 0.5, T(x, dh + 1.45, -hz - postD - 1.2));
+    lamps.push({
+      pos: new Vector3(at.x + x, at.y + dh + 1.3, at.z - hz - postD - 1.2), dir: new Vector3(0, -1, -0.62).normalize(),
+      kcd: 9, cone: [0.3, 0.8], color: [1, 0.93, 0.84],
+    });
   }
   // personnel doors with canopies
   const pdoor = (x: number, z: number, along: 'x' | 'z') => {
@@ -247,6 +279,8 @@ export function hangar(g: HangarParts, at: Vector3, sx: number, sy: number, sz: 
     box(g.dark, ax ? 1.2 : 0.12, 2.3, ax ? 0.12 : 1.2, T(x, 1.15 + 0.2, z));
     box(g.trim, ax ? 1.8 : 1.0, 0.12, ax ? 1.0 : 1.8, T(x + (ax ? 0 : Math.sign(x) * 0.45), 2.75, z + (ax ? Math.sign(z) * 0.45 : 0)));
     box(g.lamp, 0.3, 0.12, 0.2, T(x + (ax ? 0 : Math.sign(x) * 0.15), 2.95, z + (ax ? Math.sign(z) * 0.15 : 0)));
+    const out = ax ? new Vector3(0, 0, Math.sign(z)) : new Vector3(Math.sign(x), 0, 0);
+    lamps.push({ ...WALL_PACK, pos: new Vector3(at.x + x, at.y + 2.85, at.z + z).addScaledVector(out, 0.35), dir: new Vector3(0, -1, 0).addScaledVector(out, 0.6).normalize() });
   };
   pdoor(-dw / 2 - 4.5, -hz - 0.07, 'x');
   pdoor(dw / 2 + 4.5, -hz - 0.07, 'x');
@@ -273,6 +307,7 @@ export function hangar(g: HangarParts, at: Vector3, sx: number, sy: number, sz: 
     box(g.trim, 0.3, 0.12, ad - 1.6, T(ax + aw / 2 + 0.15, fy - 0.72, az));
   }
   box(g.dark, 0.12, 2.3, 1.8, T(ax + aw / 2 + 0.06, 1.95, az + ad * 0.3));
+  return lamps;
 }
 
 /** Light mast with a lamp bank aimed at `target`; returns the lamp position. */

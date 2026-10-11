@@ -1,4 +1,4 @@
-import { type InstancedMesh, type Material, Matrix4, PCFSoftShadowMap, Quaternion, Vector3, WebGLRenderer } from 'three';
+import { type InstancedMesh, type Material, Matrix4, Quaternion, Vector3, WebGLRenderer } from 'three';
 import { PhysicsWorld } from '../physics/world';
 import { EarthAtmosphere } from '../physics/atmosphere';
 import type { Vessel } from '../physics/vessel';
@@ -22,7 +22,6 @@ export async function runViewer(canvas: HTMLCanvasElement): Promise<void> {
   const w = window as any;
   w.__state = { frames: 0, ready: false, error: null };
   renderer.shadowMap.enabled = true;
-  renderer.shadowMap.type = PCFSoftShadowMap;
   const assets = await loadAssets(() => {});
   await loadLiveryFonts();
   const utc = q.get('utc') ?? '2026-10-06T22:40:00Z';
@@ -121,6 +120,12 @@ export async function runViewer(canvas: HTMLCanvasElement): Promise<void> {
     if (gf && q.get('fins') === '1') gf.gridFinsDeployed = 1;
     for (const a of vessel.assemblies) if (q.get('frost') === '0') a.def.sections.forEach(() => undefined);
     (window as any).__vessel = vessel;
+    // reaction control firing (static test): ?rcs=pitch,yaw,roll (-1..1)&palt=pressure-altitude (m)
+    if (q.has('rcs')) {
+      const [p, y, r] = q.get('rcs')!.split(',').map(Number);
+      Object.assign(vessel.controls, { rcs: true, pitch: p || 0, yaw: y || 0, roll: r || 0 });
+      vessel.atm.pressure = EarthAtmosphere.sample(num('palt', 0), vessel.atm).pressure;
+    }
     // engines firing (static test): ?fire=throttle&palt=pressure-altitude (m)
     if (q.has('fire')) {
       const thr = num('fire', 1);

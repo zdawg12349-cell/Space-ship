@@ -68,6 +68,7 @@ const R_EARTH_KM = 6371;
 /** Uniform declarations shared by every shader that sees the deck. */
 export const DECK_UNIFORMS = /* glsl */ `
 uniform float uDeckOn;
+uniform float uDeckRegion;  // 1 while there is local weather (at any altitude): the planet-wide layer takes it on near the site
 uniform vec4 uDeckParams;   // base, top (km above sea level), extinction (1/km), cover
 uniform vec4 uDeckForm;     // form (0 cumulus .. 1 stratus .. 2 cumulonimbus), rain, erosion, time (s)
 uniform sampler2D uDeckWeather;
@@ -162,7 +163,9 @@ float deckDensity(vec3 p, float hn, float cov, bool detail) {
     vec4 d = texture(uDeckNoise, (p - uDeckOrigin) / DECK_DETAIL_TILE + vec3(0.0, 0.0, uDeckForm.w * 0.0025));
     float det = d.g * 0.6 + d.b * 0.4;
     float er = mix(1.0 - det, det, clamp(hn * 2.5, 0.0, 1.0));
-    s = clamp(deckRemap(s, er * uDeckForm.z, 1.0, 0.0, 1.0), 0.0, 1.0);
+    // a cumulonimbus base is a broad dark ceiling, not wisps: erode it far less
+    float ero = uDeckForm.z * (1.0 - 0.7 * clamp(uDeckForm.x - 1.0, 0.0, 1.0) * (1.0 - smoothstep(0.0, 0.12, hn)));
+    s = clamp(deckRemap(s, er * ero, 1.0, 0.0, 1.0), 0.0, 1.0);
   }
   // density climbs quickly inside the edge: crisp outlines rather than cotton wool
   s = 1.0 - (1.0 - s) * (1.0 - s);
@@ -334,7 +337,8 @@ void main() {
   vec3 roF = uPlanetRotInv * ro;
   float tFront, tMean;
   vec4 dk = deckMarch(roF, uPlanetRotInv * rd, uPlanetRotInv * uSunDir, tLim, dkHash(gl_FragCoord.xy + fract(uTime * 7.13) * 97.0), tFront, tMean);
-  float a = (1.0 - dk.a) * uDeckOn;
+  // (drawn whole: the hand-over to the planet-wide layer is by distance, inside the march)
+  float a = 1.0 - dk.a;
   if (a <= 0.001) return;
   // the air between the camera and the cloud
   float t0 = max(tTop.x, 0.0);
@@ -347,7 +351,7 @@ void main() {
     Lf = mix(Lf, mix(Lf, vec3(dkLum(Lf)), 0.6) * dimF, under);
   }
   if (uDeckDbg > 3.5) { if (uDeckDbg < 4.5) dk.rgb = vec3(0.0); else Lf = vec3(0.0); }
-  oCloud = vec4(a * Lf + Tf * dk.rgb * uDeckOn, mix(1.0, dk.a, uDeckOn));
+  oCloud = vec4(a * Lf + Tf * dk.rgb, dk.a);
   oDepth = vec4(tMean, tFront, 0.0, 0.0);
 }
 `;
@@ -522,6 +526,7 @@ export class CloudDeck {
     uDeckCity: { value: new Vector3() },
     uDeckGroundL: { value: new Vector3() },
     uDeckSkyE: { value: new Vector3() },
+    uDeckRegion: { value: 0 },
     uDeckCloudL: { value: new Vector3() },
     uDeckSkyK: { value: new Vector2(1.6, 0.5) },
     uDeckDbg: { value: 0 },
@@ -693,10 +698,16 @@ export class CloudDeck {
     const u = this.uniforms;
     const p = this.params;
     const camAlt = camF.length() - R_EARTH_KM;
-    // from high up the planet-wide cloud map reads better: hand over between 20 and 50 km, and
-    // as the camera climbs the deck already gives way to it closer in, so there is no rim
+    // from high up the planet-wide cloud map reads better. The two hand over by distance, so each
+    // cloud is drawn by one of them (only a narrow band has both, where the deck thins out by
+    // density and its thick clouds stay opaque): the deck out to its reach, the layer beyond.
+    // As the camera climbs the reach draws in from the horizon, and by 50 km it ends short of
+    // the nearest cloud top, so the deck has gone before it is switched off
     this.active = p ? 1 - smooth(20, 50, camAlt) : 0;
-    u.uDeckFadeStart.value = u.uDeckMaxDist.value * (0.65 - 0.5 * smooth(3, 30, camAlt));
+    const toTop = Math.max(0.5, camAlt - (p ? p.top : 2) - this.ground);
+    const reach = 150 + (0.95 * toTop - 150) * smooth(15, 50, camAlt);
+    u.uDeckMaxDist.value = reach;
+    u.uDeckFadeStart.value = reach * 0.65;
     u.uDeckOn.value = this.active;
     // the deck stands on the terrain: follow the ground under the camera, slowly (mountains
     // in passing should not make the sky bob)
@@ -704,6 +715,11 @@ export class CloudDeck {
     if (!this.groundInit) { this.ground = g; this.groundInit = true; }
     else this.ground += (g - this.ground) * (1 - Math.exp(-dt / 8));
     if (p) { u.uDeckParams.value.x = p.base + this.ground; u.uDeckParams.value.y = p.top + this.ground; }
+    // the weather map is laid out around the camera even when it starts out too high for the
+    // deck itself (a flight resumed in orbit), so the planet-wide layer below shows the same
+    // local weather a climb out of the deck would have left behind
+    if (p && this.mapDirty) { this.ensureNoise(); this.buildMap(_v.copy(camF).normalize()); }
+    u.uDeckRegion.value = p && !this.mapDirty ? 1 : 0;
     if (!p || this.active <= 0) {
       this.rainAtCamera = 0; this.camInCloud = 0; this.focusInCloud = 0; this.overcast = 0; this.focusSun = 1;
       u.uDeckProbe.value.set(0, 0, 0, 0);

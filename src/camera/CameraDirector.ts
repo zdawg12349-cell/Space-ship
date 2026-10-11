@@ -44,6 +44,8 @@ export interface CamContext {
   /** total plume thrust of all vessels (MN), for acoustic shake */
   plumeMN: number;
   plumeSourceHelio: Vector3 | null;
+  /** the picture's width over its height (fields of view are vertical) */
+  aspect: number;
 }
 
 export interface SiteQuery {
@@ -67,6 +69,8 @@ interface ShotState {
   subject: Vessel | null;
   a: number; b: number; c: number;
   adj: SpotAdj | null;
+  /** shot clock (tau) at which a held shot may end, once what it waits for has happened */
+  holdUntil?: number;
 }
 
 interface CamOut {
@@ -130,6 +134,12 @@ export class CameraDirector {
   private lastMount: CamOut['mount'] = 'free';
   /** cloud_break: where the vehicle will come out of the deck (body-fixed) */
   private cloudExit = new Vector3();
+  /**
+   * What the picture is about when that isn't the active vessel: the recovering booster (or the
+   * pair of them) in their chase and landing shots. Lighting, shadows, particles and photo mode
+   * centre on these; empty means the active vessel.
+   */
+  viewed: Vessel[] = [];
 
   constructor(readonly camera: PerspectiveCamera) {}
 
@@ -311,6 +321,7 @@ export class CameraDirector {
     const v = ctx.active;
     if (!v) return;
     if (!this.orbitTargetDist) this.orbitTargetDist = Math.max(30, this.vesselLength(v) * 2.2);
+    this.viewed = [];
     switch (this.mode) {
       case 'cinematic': this.cinematic(ctx, out); break;
       case 'chase': this.chase(ctx, v, out); break;
@@ -894,6 +905,7 @@ export class CameraDirector {
         out.mount = 'free';
         out.handheld = 0.2;
         if (b.body.def.hasSurface) this.clampGround(ctx, b.body, out.pos, 3);
+        this.viewed = [b];
         return true;
       }
       case 'lz_ground': {
@@ -929,13 +941,24 @@ export class CameraDirector {
         this.clampGround(ctx, st.anchorBody!, out.pos, 1.8);
         // look at the booster, or at the middle of the pair
         const pair = twin ? ctx.boosters.filter((x) => !x.destroyed).slice(0, 2) : [];
+        // stay on the landing until the boosters are down (a tower catch outlasts one shot), then
+        // hold the moment a few seconds
+        const coming = (pair.length === 2 ? pair : [target]).some((x) => !x.landed && !x.destroyed && x.telemetry.radarAltitude < 2500);
+        if (coming) { st.dur = Math.max(14, st.tau + 1); st.holdUntil = undefined; }
+        else if (st.tau > 2) st.dur = st.holdUntil ??= Math.max(14, st.tau + 4);
         const com = pair.length === 2 ? this.com(ctx, pair[0], _c).add(this.com(ctx, pair[1], _d)).multiplyScalar(0.5) : this.com(ctx, target, _c);
         this.smoothLookAt(ctx, st.anchorBody!, com, 4, out.look);
         const d = out.pos.distanceTo(com);
-        const extent = pair.length === 2 ? Math.max(this.vesselLength(target) * 3, this.com(ctx, pair[0], _a).distanceTo(this.com(ctx, pair[1], _b)) * 1.5 + this.vesselLength(target) * 1.5) : this.vesselLength(target) * 3;
-        out.fov = MathUtils.clamp(MathUtils.radToDeg(2 * Math.atan(extent / 2 / d)), 1, 55);
+        // the booster's height with room around it; a pair side by side must also fit the width
+        const tall = this.vesselLength(target) * 3;
+        const wide = pair.length === 2 ? this.com(ctx, pair[0], _a).distanceTo(this.com(ctx, pair[1], _b)) * 1.3 + this.vesselLength(target) * 1.5 : 0;
+        out.fov = MathUtils.clamp(MathUtils.radToDeg(2 * Math.atan(Math.max(tall / 2 / d, wide / 2 / d / Math.max(0.5, ctx.aspect)))), 1, 55);
+        // a wide pair on the horizon: tilt up a little so the ground takes about the lower third
+        // of the letterboxed picture, not half of it
+        if (pair.length === 2) out.look.addScaledVector(this.upAt(ctx, st.anchorBody!, out.look, _a), (d * Math.tan(MathUtils.degToRad(out.fov) / 2)) / 6);
         out.up.copy(this.upAt(ctx, st.anchorBody!, out.pos, _a));
         out.handheld = 0.5;
+        this.viewed = pair.length === 2 ? pair : target !== v ? [target] : [];
         return true;
       }
       case 'entry_front': case 'entry_chase': {

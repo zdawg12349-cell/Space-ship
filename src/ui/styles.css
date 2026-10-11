@@ -123,6 +123,7 @@ input[type=range]::-moz-range-thumb { width: 14px; height: 14px; background: var
 }
 #hud > * { z-index: 1; }
 #hud.hidden { opacity: 0; }
+#hud.dimmed:not(.hidden) { opacity: 0.08; }
 .hud-tl { position: absolute; left: 28px; top: 24px; }
 .hud-tl .mission { font-family: var(--cond); font-size: 12px; letter-spacing: 0.3em; text-transform: uppercase; color: var(--amber); }
 .hud-tl .vehicle { font-family: var(--cond); font-weight: 700; font-size: 20px; letter-spacing: 0.18em; margin-top: 2px; }

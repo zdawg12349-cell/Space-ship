@@ -7,7 +7,7 @@ import { BoosterGuidance, LandingZone } from '../src/game/recovery';
 import type { TerrainProvider, Vessel } from '../src/physics/vessel';
 import { GameTerrain, GameWeather, WEATHER_PRESETS } from '../src/game/providers';
 import type { WeatherProvider } from '../src/physics/vessel';
-import { landingZonesFor } from '../src/world/zones';
+import { CATCH_BASE_HEIGHT, landingZonesFor } from '../src/world/zones';
 import { LAUNCH_SITES } from '../src/world/sites';
 import { PhysicsWorld } from '../src/physics/world';
 import { SolarSystem } from '../src/physics/bodies';
@@ -160,7 +160,7 @@ describe('drone ship recovery', () => {
 describe('tower catch', () => {
   // the Catch mission flies in breezy weather (onshore wind, as the session sets it up)
   const breezy = new GameWeather({ kind: 'breezy', windDir: ((90 + 180) * Math.PI) / 180, ...WEATHER_PRESETS.breezy });
-  it.each([['calm air', calm, '2026-10-06T22:30:00Z'], ['breezy weather, mission date', breezy, '2026-10-09T13:00:00Z']] as [string, WeatherProvider, string][])('LEVIATHAN booster flies back to the tower and is caught (%s)', (_name, weather, date) => {
+  it.each([['calm air', calm, '2026-10-06T22:30:00Z'], ['breezy weather, mission date', breezy, '2026-10-09T13:00:00Z'], ['breezy weather, afternoon', breezy, '2026-10-09T19:40:00Z']] as [string, WeatherProvider, string][])('LEVIATHAN booster flies back to the tower and is caught (%s)', (_name, weather, date) => {
     const site = LAUNCH_SITES.find((s) => s.id === 'boca')!;
     const epoch = dateToJ2000Seconds(new Date(date));
     const world = new PhysicsWorld(new SolarSystem(epoch), epoch, flatTerrainForTest, weather);
@@ -214,6 +214,13 @@ describe('tower catch', () => {
     console.log('caught', b.v.landed, 'destroyed', b.v.destroyReason, 'dist', dist.toFixed(1), 'peak q·α', peakQA.toFixed(0), 'kPa·deg');
     expect(b.v.destroyed, b.v.destroyReason).toBe(false);
     expect(b.v.landed).toBe(true);
-    expect(dist).toBeLessThan(15);
+    // the arms only close round a booster that is over them
+    expect(dist).toBeLessThan(8);
+    // caught hovering a few metres over the launch mount, so the arms close on the hardpoints
+    // just below the grid fins rather than round the engines
+    const base = b.v.pos.length() - world.system.earth.radius - (b.v.com.y - b.v.lowestY()) - 5;
+    console.log('booster base at the catch', base.toFixed(1), 'm above the pad');
+    expect(base).toBeGreaterThan(CATCH_BASE_HEIGHT - 1);
+    expect(base).toBeLessThan(CATCH_BASE_HEIGHT + 8);
   }, 300_000);
 });

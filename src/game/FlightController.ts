@@ -116,6 +116,7 @@ export class FlightController {
     const radio = app.audio.radio;
     if (radio) {
       radio.onLine = (who, text, dur) => this.hud.subtitle(who, text, dur);
+      radio.clock = () => this.session.world.t;
       radio.clear();
       radio.prefetch(s.seq.events.filter((e) => e.voice).map((e) => e.voice!));
     }
@@ -151,7 +152,8 @@ export class FlightController {
     const audio = this.app.audio;
     if (this.photo && a !== 'photo' && a !== 'pause' && a !== 'screenshot') return;
     switch (a) {
-      case 'pause': if (this.photo) this.togglePhoto(); else if (this.map) this.toggleMap(); else this.togglePause(); return;
+      // Escape backs out of whatever is on top: photo mode, the map, a panel, then pause
+      case 'pause': if (this.photo) this.togglePhoto(); else if (this.map) this.toggleMap(); else if (this.overlay) this.toggleOverlay(null); else this.togglePause(); return;
     }
     if (this.paused) return;
     switch (a) {
@@ -192,7 +194,7 @@ export class FlightController {
       case 'hold': s.holdCountdown(!s.seq.held); break;
       case 'skip': s.skipCountdown(-10); break;
       case 'screenshot': this.screenshot(); break;
-      case 'help': this.toggleOverlay(HUD.helpPanel(() => this.toggleOverlay(null))); break;
+      case 'help': this.toggleOverlay(this.overlay ? null : HUD.helpPanel(() => this.toggleOverlay(null))); break;
       case 'quicksave': this.quicksave(); break;
       case 'abort': {
         const why = s.abort();
@@ -482,7 +484,11 @@ export class FlightController {
     const s = this.session;
     const app = this.app;
     // headless capture: hold the simulation and the camera still while a frame is grabbed
-    if ((window as unknown as { __freezeSim?: boolean }).__freezeSim) { s.render(0); app.rw.render(dt); return; }
+    if ((window as unknown as { __freezeSim?: boolean }).__freezeSim) {
+      if (this.photo) { this.photo.update(0, this.input); s.renderStatic(0); } else s.render(0);
+      app.rw.render(dt);
+      return;
+    }
     if (!this.paused && !this.photo) {
       this.applyManualControls(dt);
       s.update(dt);
@@ -518,7 +524,8 @@ export class FlightController {
   private updateAudio(dt: number): void {
     const s = this.session;
     const audio = this.app.audio;
-    const v = s.active;
+    // the vehicle on screen (a booster in its landing shots) is the one the air rushes past
+    const v = s.viewedVessels()[0];
     const camPos = s.director.posHelio;
     // loudest burning vessel as the source
     let best: { thrust: number; d: number; v: typeof v; solid: number } | null = null;
@@ -577,6 +584,7 @@ export class FlightController {
   private toggleOverlay(el: HTMLElement | null): void {
     if (this.overlay) { this.overlay.remove(); this.overlay = null; }
     if (el) { this.overlay = el; this.app.ui.appendChild(el); }
+    this.hud.setDimmed(!!this.overlay || !!this.pauseEl);
   }
 
   private toggleCinematic(): void {
@@ -627,6 +635,7 @@ export class FlightController {
     this.pauseEl = h('div', { class: 'screen overlay pause' }, box);
     this.app.ui.appendChild(this.pauseEl);
     show(this.pauseEl);
+    this.hud.setDimmed(true);
   }
 
   private quicksave(): void {
@@ -730,6 +739,7 @@ export class FlightController {
     this.overlay?.remove();
     this.tutorial?.dispose();
     this.app.audio.radio?.clear();
+    if (this.app.audio.radio) this.app.audio.radio.clock = null;
     this.app.audio.setEngine(null);
     this.app.audio.setAmbience(0, 0, 0, 0);
     this.app.audio.setWeather(0, 1);

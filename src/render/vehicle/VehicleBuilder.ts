@@ -4,7 +4,7 @@ import { liveryTexture } from './Livery';
 import { box, domeProfile, GeoBuilder, lathe, ogiveProfile, Profile, radialFrame, SurfaceAttrs, tube } from './shapes';
 import { AssemblyShaderState, createHardware, createSkin, newAssemblyState } from './VehicleMaterials';
 import {
-  buildChute, buildEngine, buildFlap, buildGridFin, buildLeg, buildSolarArrays, ChuteVisual, EngineVisual, HingedPart, PanelVisual,
+  buildChute, buildEngine, buildFlap, buildGridFin, buildLeg, buildSolarArrays, buildStrut, ChuteVisual, EngineVisual, HingedPart, PanelVisual, updateStrut,
 } from './VehicleParts';
 
 /**
@@ -623,6 +623,8 @@ function buildFeatures(B: AssemblyBuild): void {
     const r = radiusAt(L.y);
     const carbon = createSkin({ style: 'black_carbon', state: B.vis.state });
     const metal = createHardware([0.55, 0.55, 0.57], 0.9, 0.35);
+    // the actuators' polished piston rods
+    const chrome = createHardware([0.78, 0.78, 0.8], 0.25, 1);
     for (let i = 0; i < L.count; i++) {
       const th = (i / L.count) * Math.PI * 2 + Math.PI / L.count;
       const pivot = pivotFrame(th, r + 0.02, L.y, off);
@@ -636,7 +638,18 @@ function buildFeatures(B: AssemblyBuild): void {
         const reach = B.vis.radius + L.length * 0.72;
         const foot = L.y - L.length * 0.62;
         const ang = Math.PI - Math.atan2(reach - r, L.y - foot);
-        B.vis.legs.push({ pivot, axis: new Vector3(1, 0, 0), stowed: 0, deployed: ang });
+        const part: HingedPart = { pivot, axis: new Vector3(1, 0, 0), stowed: 0, deployed: ang };
+        // the deployment actuator, from a fitting on the body a quarter of a leg above the hinge
+        const attach = leg.userData.strutAttach as Vector3 | undefined;
+        if (attach) {
+          const Z = new Vector3(Math.cos(th), 0, Math.sin(th));
+          const anchor = new Vector3(off[0] + Z.x * (r + 0.08), L.y + L.length * 0.25, off[1] + Z.z * (r + 0.08));
+          const strut = buildStrut(anchor, attach, L.length * 0.36, leg.userData.strutRadius as number, metal, chrome);
+          B.vis.group.add(strut.barrel, strut.rod);
+          part.strut = strut;
+          updateStrut(part);
+        }
+        B.vis.legs.push(part);
       }
     }
   }
@@ -792,4 +805,5 @@ export function setHinge(h: HingedPart, t: number, extra = 0): void {
   if (!base) h.pivot.userData.baseQuat = h.pivot.quaternion.clone();
   _q.setFromAxisAngle(_ax, ang);
   h.pivot.quaternion.copy(h.pivot.userData.baseQuat as Quaternion).multiply(_q);
+  updateStrut(h);
 }

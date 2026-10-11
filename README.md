@@ -125,6 +125,10 @@ materials are generated from that definition.
   - An overcast takes away the direct sun. The ground and everything beneath it are lit by
     the grey base the camera sees, and a storm's deep base is darker still.
   - A climbing rocket punches a channel through the deck that slowly spreads.
+  - From high up the planet-wide cloud layer takes over, from the horizon inward as the camera
+    climbs, with each cloud drawn by one or the other. Around the launch site the layer keeps the
+    local weather's own cells, with their parallax, so the hand-over shows no second layer and
+    a fair day stays fair all the way to orbit.
 - **Moon and planets:** the Moon, and Jupiter with its banded atmosphere and Galilean moons.
 - **Image pipeline:** HDR rendering with auto-exposure, AgX tone mapping, energy-conserving
   bloom and a night colour grade.
@@ -133,12 +137,17 @@ materials are generated from that definition.
     vacuum expansion.
   - Lit particle systems for steam, smoke, deluge water, cryogenic venting, ground clouds and
     exhaust trails.
-- **Flight effects:** transonic vapour cones, entry plasma sheaths, heat shimmer, RCS puffs,
-  stage break-ups and booster burn-up.
+- **Flight effects:** transonic vapour cones, entry plasma sheaths, heat shimmer, stage
+  break-ups and booster burn-up. RCS jets fire from the thruster pods themselves: in air, white
+  puffs that the air soon stops; in vacuum, a bright cone at the nozzle that flashes out into
+  a thin haze.
 - **Launch complexes:** procedural sites with towers, swing arms, flame trenches, lightning
   masts, floodlights and an integration hangar in profiled steel. Each site has
   climate-specific vegetation that bends in the wind. Tree crowns break up into tufts close
   to the camera, and their leaves glow when the sun is behind them.
+  - After dark, floods over the hangar doors, wall packs and road lamps throw pools of light
+    on the concrete, the roads, the walls and the plants around them. They are lit through
+    each material's own shading, at no cost to the rest of the scene.
 - **Recovery hardware:** landing-zone pads and the drone ship.
 
 ### Cinematography and sound
@@ -146,6 +155,8 @@ materials are generated from that definition.
 - **Camera:** an automatic camera director with more than thirty shot types, cued by flight
   events, among them a camera hovering above the cloud tops as the rocket bursts out. Camera shake models sound arriving at the speed of sound, vibration, dynamic
   pressure and the lens in use. Ground cameras find a clear line of sight through the trees.
+  - When the director cuts away to a booster coming home, the lighting, shadows, particles
+    and airflow sound follow it. Pressing P there opens photo mode around the booster.
 - **Other camera modes:** chase, orbit, onboard, ground-tracking and free cameras, plus a photo
   mode.
 - **Sound:** layered engine sound with distance delay and air absorption. Rain hisses on the

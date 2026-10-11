@@ -1,4 +1,4 @@
-import { Color, DoubleSide, MeshPhysicalMaterial, MeshStandardMaterial, Vector4 } from 'three';
+import { Color, DoubleSide, MeshPhysicalMaterial, MeshStandardMaterial, Vector2, Vector3, Vector4 } from 'three';
 
 /**
  * Materials for ground infrastructure. Concrete and asphalt get procedural staining in object
@@ -12,6 +12,63 @@ float s_noise(vec2 p) { vec2 i = floor(p); vec2 f = fract(p); vec2 u = f * f * (
   return mix(mix(s_hash12(i), s_hash12(i + vec2(1, 0)), u.x), mix(s_hash12(i + vec2(0, 1)), s_hash12(i + vec2(1, 1)), u.x), u.y); }
 float s_fbm(vec2 p) { float s = 0.0, a = 0.5; for (int i = 0; i < 5; i++) { s += a * s_noise(p); p *= 2.07; a *= 0.5; } return s; }
 `;
+
+/** how many of the site's lamps (the nearest to the camera) light its surfaces at once */
+export const SITE_LAMPS = 16;
+
+/** The site lamps as the shaders see them (view space), shared by every material they light. */
+export interface SiteLampUniforms {
+  count: { value: number };
+  pos: { value: Vector3[] };
+  /** beam direction */
+  dir: { value: Vector3[] };
+  /** colour x intensity (kcd), w: squared reach (m^2) */
+  col: { value: Vector4[] };
+  /** cosines of the beam's edge and core */
+  cone: { value: Vector2[] };
+}
+
+/**
+ * Light from the site's lamps after dark (door floods, wall packs, road lamps), through the
+ * material's own BRDF like any light, but evaluated only in the site's materials so it costs
+ * nothing anywhere else. Each lamp reaches only so far, and the loop is empty by day.
+ */
+function withLamps<M extends MeshStandardMaterial>(m: M, L: SiteLampUniforms): M {
+  const prev = m.onBeforeCompile.bind(m);
+  const key = m.customProgramCacheKey.bind(m);
+  m.onBeforeCompile = (sh, r) => {
+    prev(sh, r);
+    sh.uniforms.uLampCount = L.count;
+    sh.uniforms.uLampPos = L.pos;
+    sh.uniforms.uLampDir = L.dir;
+    sh.uniforms.uLampCol = L.col;
+    sh.uniforms.uLampCone = L.cone;
+    sh.fragmentShader = sh.fragmentShader
+      .replace('#include <common>', `#include <common>
+        uniform int uLampCount;
+        uniform vec3 uLampPos[${SITE_LAMPS}];
+        uniform vec3 uLampDir[${SITE_LAMPS}];
+        uniform vec4 uLampCol[${SITE_LAMPS}];
+        uniform vec2 uLampCone[${SITE_LAMPS}];`)
+      .replace('#include <lights_fragment_end>', `#include <lights_fragment_end>
+        for (int i = 0; i < ${SITE_LAMPS}; i++) {
+          if (i >= uLampCount) break;
+          vec3 Lv = uLampPos[i] - geometryPosition;
+          float d2 = dot(Lv, Lv);
+          if (d2 >= uLampCol[i].w) continue;
+          IncidentLight siteLamp;
+          siteLamp.direction = Lv * inversesqrt(max(d2, 1e-6));
+          float q = d2 / uLampCol[i].w;
+          float reach = (1.0 - q * q) * (1.0 - q * q);
+          float beam = smoothstep(uLampCone[i].x, uLampCone[i].y, dot(-siteLamp.direction, uLampDir[i]));
+          siteLamp.color = uLampCol[i].rgb * (beam * reach / max(d2, 0.25));
+          siteLamp.visible = true;
+          RE_Direct(siteLamp, geometryPosition, geometryNormal, geometryViewDir, geometryClearcoatNormal, material, reflectedLight);
+        }`);
+  };
+  m.customProgramCacheKey = () => `${key()}-lamps`;
+  return m;
+}
 
 export interface SiteMaterials {
   concrete: MeshStandardMaterial;
@@ -63,6 +120,8 @@ export interface SiteMaterials {
   wind: { value: Vector4 };
   /** clock for the plants' sway (s) */
   windTime: { value: number };
+  /** the lamps lighting the site after dark (filled in each frame by the complex) */
+  lamps: SiteLampUniforms;
 }
 
 /**
@@ -340,7 +399,14 @@ export function createSiteMaterials(): SiteMaterials {
   const lampWarm = new MeshStandardMaterial({ color: new Color(0.05, 0.05, 0.05), emissive: new Color(1, 0.72, 0.42), emissiveIntensity: 0, roughness: 0.4 });
   const lampOn = new MeshStandardMaterial({ color: new Color(0, 0, 0), emissive: new Color(1, 0.86, 0.62), emissiveIntensity: 0, roughness: 0.3 });
   const beaconRed = new MeshStandardMaterial({ color: new Color(0.1, 0, 0), emissive: new Color(1, 0.05, 0.02), emissiveIntensity: 0, roughness: 0.4 });
-  return {
+  const lamps: SiteLampUniforms = {
+    count: { value: 0 },
+    pos: { value: Array.from({ length: SITE_LAMPS }, () => new Vector3()) },
+    dir: { value: Array.from({ length: SITE_LAMPS }, () => new Vector3(0, -1, 0)) },
+    col: { value: Array.from({ length: SITE_LAMPS }, () => new Vector4()) },
+    cone: { value: Array.from({ length: SITE_LAMPS }, () => new Vector2(0, 1)) },
+  };
+  const mats: SiteMaterials = {
     concrete: stained(lin(0.62, 0.61, 0.58), 0.88, { scorch, wet, joints: true, key: 'concrete' }),
     concreteDark: stained(lin(0.42, 0.41, 0.39), 0.9, { scorch, wet, key: 'concrete-dark' }),
     asphalt: stained(lin(0.13, 0.13, 0.135), 0.82, { wet, scale: 2, key: 'asphalt' }),
@@ -382,5 +448,14 @@ export function createSiteMaterials(): SiteMaterials {
     wet,
     wind,
     windTime,
+    lamps,
   };
+  // after dark the lamps light the hard surfaces, the plants and trunks, and the water around them
+  const lit = [
+    'concrete', 'concreteDark', 'asphalt', 'steelGrey', 'steelWhite', 'steelRed', 'steelDark', 'galvanized', 'tankWhite', 'glass', 'grating',
+    'gravel', 'vabWall', 'vabDark', 'cladding', 'claddingGrey', 'trenchFloor', 'sand', 'water', 'rubber', 'berm', 'vehiclePaint',
+    'leaf', 'palmLeaf', 'pineLeaf', 'canopy', 'grass', 'dryGrass', 'dryShrub', 'trunk', 'trunkPine', 'trunkBroad',
+  ] as const;
+  for (const k of lit) withLamps(mats[k], lamps);
+  return mats;
 }

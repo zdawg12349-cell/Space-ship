@@ -14,7 +14,7 @@ import {
  * so a cloud can sit both behind and in front of the flame.
  */
 
-export type ParticleKind = 'steam' | 'smoke' | 'soot' | 'srbsmoke' | 'dust' | 'water' | 'vapor' | 'spark' | 'fire' | 'trail' | 'plasma' | 'regolith';
+export type ParticleKind = 'steam' | 'smoke' | 'soot' | 'srbsmoke' | 'dust' | 'water' | 'vapor' | 'spark' | 'fire' | 'trail' | 'plasma' | 'regolith' | 'gas';
 
 interface KindDef {
   albedo: [number, number, number];
@@ -51,7 +51,12 @@ const KINDS: Record<ParticleKind, KindDef> = {
   trail: { albedo: [0.8, 0.8, 0.81], emissive: [1.0, 0.6, 0.3], opacity: 0.6, drag: 0.05, buoyancy: 0, gravity: 0, cool: 2.0, breakup: 0.5, thin: 0.7, streak: 0, glow: 0 },
   plasma: { albedo: [0, 0, 0], emissive: [1.0, 0.45, 0.6], opacity: 0.8, drag: 0.5, buoyancy: 0, gravity: 0, cool: 3.0, breakup: 0.4, thin: 0.5, streak: 0.8, glow: 1 },
   regolith: { albedo: [0.32, 0.31, 0.3], emissive: [0, 0, 0], opacity: 0.8, drag: 0, buoyancy: 0, gravity: 1.62, cool: 1, breakup: 0.5, thin: 0.6, streak: 0.4, glow: 0 },
+  // gas flashing into vacuum (cold-gas thrusters, vents): a smooth haze with no billows. Its
+  // column density falls about as fast as its area grows, so it is only seen near the nozzle
+  gas: { albedo: [0.93, 0.94, 0.95], emissive: [0, 0, 0], opacity: 1, drag: 0, buoyancy: 0, gravity: 0, cool: 1, breakup: 0, thin: 1.1, streak: 0, glow: 0 },
 };
+/** size of the per-kind uniform arrays in the shaders */
+const MAX_KINDS = 16;
 const KIND_LIST = Object.keys(KINDS) as ParticleKind[];
 const KIND_INDEX = new Map(KIND_LIST.map((k, i) => [k, i] as const));
 
@@ -88,7 +93,7 @@ uniform vec3 uSunIrr;      // klux-ish RGB
 uniform vec3 uAmbient;
 uniform vec3 uLightPos[3]; // view space
 uniform vec3 uLightCol[3]; // colour * intensity
-uniform vec3 uEmissive[12];
+uniform vec3 uEmissive[${MAX_KINDS}];
 uniform float uExposureHint;
 varying vec2 vUv;
 varying vec4 vParams;
@@ -148,7 +153,7 @@ uniform vec2 uResolution;
 uniform vec3 uSunDirV;
 uniform vec3 uSunIrr;
 uniform vec3 uAtmT;
-uniform float uBreakup[12];
+uniform float uBreakup[${MAX_KINDS}];
 varying vec2 vUv;
 varying vec4 vParams;
 varying vec4 vExtra;
@@ -296,7 +301,7 @@ export class ParticleSystem {
   readonly framePos = new Vector3();
   /** ground height in the local frame (smoke stops at the ground) */
   groundY = 0;
-  /** radius of the anchor body (ground curvature in the tangent frame) */
+  /** distance from the body's centre to the frame origin: the ground is the sphere through the origin (lifted by groundY) */
   bodyRadius = 6_371_000;
   /** wind in the local frame (m/s) */
   readonly wind = new Vector3();
@@ -324,7 +329,7 @@ export class ParticleSystem {
     this.depth = new Float32Array(max);
     const emissive: Vector3[] = [];
     const breakup: number[] = [];
-    for (let i = 0; i < 12; i++) {
+    for (let i = 0; i < MAX_KINDS; i++) {
       const k = KINDS[KIND_LIST[i]] ?? KINDS.steam;
       emissive.push(new Vector3(...k.emissive).multiplyScalar(i < KIND_LIST.length ? (k.glow > 0 ? 60 : 25) : 0));
       breakup.push(k.breakup);
@@ -440,20 +445,24 @@ export class ParticleSystem {
       this.px[i] += this.vx[i] * dt;
       this.py[i] += this.vy[i] * dt;
       this.pz[i] += this.vz[i] * dt;
-      // the ground: clouds roll along it, water splashes and dies
+      // the ground: clouds roll along it, water splashes and dies. The local frame is a tangent
+      // plane, so the ground falls away with distance; far from the origin "down" tilts with it.
       const r = this.size[i] * 0.35;
-      // the local frame is a tangent plane: the ground falls away with distance (curvature)
-      const h2 = this.px[i] * this.px[i] + this.pz[i] * this.pz[i];
-      const gy = this.groundY - h2 / (2 * this.bodyRadius);
-      if (h2 < 4e10 && this.py[i] < gy + r) {
+      const Rb = this.bodyRadius;
+      const dx = this.px[i], dy = this.py[i] + Rb, dz = this.pz[i];
+      const rr = Math.sqrt(dx * dx + dy * dy + dz * dz);
+      const hgt = rr - Rb - this.groundY;
+      if (hgt < r) {
         if (kd.gravity > 5) { this.kill(i); i--; continue; }
-        this.py[i] = gy + r;
-        if (this.vy[i] < 0) {
-          // convert downward momentum into radial spread
-          const sp = -this.vy[i] * 0.6;
-          const h = Math.hypot(this.vx[i], this.vz[i]) || 1;
-          this.vx[i] += (this.vx[i] / h) * sp; this.vz[i] += (this.vz[i] / h) * sp;
-          this.vy[i] = 0;
+        const nx = dx / rr, ny = dy / rr, nz = dz / rr;
+        this.px[i] += nx * (r - hgt); this.py[i] += ny * (r - hgt); this.pz[i] += nz * (r - hgt);
+        const vn = this.vx[i] * nx + this.vy[i] * ny + this.vz[i] * nz;
+        if (vn < 0) {
+          // convert the downward momentum into spreading along the ground
+          this.vx[i] -= nx * vn; this.vy[i] -= ny * vn; this.vz[i] -= nz * vn;
+          const sp = -vn * 0.6;
+          const h = Math.hypot(this.vx[i], this.vy[i], this.vz[i]) || 1;
+          this.vx[i] += (this.vx[i] / h) * sp; this.vy[i] += (this.vy[i] / h) * sp; this.vz[i] += (this.vz[i] / h) * sp;
         }
       }
       this.size[i] += this.grow[i] * dt * (1 - 0.5 * this.age[i] / this.life[i]);
@@ -544,14 +553,17 @@ export class ParticleSystem {
       return ((c00 * (1 - tz) + c01 * tz) * (1 - ty) + (c10 * (1 - tz) + c11 * tz) * ty);
     };
     const sx = this.sunLocal.x * CELL, sy = this.sunLocal.y * CELL, sz = this.sunLocal.z * CELL;
+    const Rb = this.bodyRadius;
     for (let i = 0; i < n; i++) {
       const px = this.px[i], py = this.py[i], pz = this.pz[i];
+      // height above the curved ground (a particle far from the origin sits well below y = 0)
+      const hgt = Math.sqrt(px * px + (py + Rb) * (py + Rb) + pz * pz) - Rb - this.groundY;
       let tau = 0;
       for (let k = 1; k <= 8; k++) tau += sample(px + sx * k, py + sy * k, pz + sz * k);
       tau *= CELL;
       // the sun below the horizon is blocked by the ground for low clouds anyway
       this.vis[i] = Math.exp(-tau * 0.5);
-      this.ao[i] = Math.exp(-sample(px, py, pz) * 14) * 0.7 + 0.3 * Math.min(1, (py - this.groundY) / 60 + 0.4);
+      this.ao[i] = Math.exp(-sample(px, py, pz) * 14) * 0.7 + 0.3 * Math.min(1, Math.max(0, hgt / 60 + 0.4));
     }
   }
 

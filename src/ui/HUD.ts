@@ -133,6 +133,9 @@ export class HUD {
     this.root.classList.toggle('hidden', !v);
   }
 
+  /** Under a panel or the pause menu the read-outs fade back, so they don't show through it. */
+  setDimmed(d: boolean): void { this.root.classList.toggle('dimmed', d); }
+
   banner(big: string, small = '', seconds = 4): void {
     (this.bannerEl.children[0] as HTMLElement).textContent = big;
     (this.bannerEl.children[1] as HTMLElement).textContent = small;

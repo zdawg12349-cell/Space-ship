@@ -174,21 +174,55 @@ export class PostPipeline {
           vec2 tt = raySphere2(ro, rd, rc);
           float t = tt.x > 0.0 ? tt.x : tt.y;
           if (t <= 0.0 || t > tMaxKm) return vec4(0.0);
+          // within its reach the low cloud deck stands in for the planet-wide map, the two
+          // crossing over in the band where the deck thins out (and low down the layer is faded
+          // out altogether)
+          float shown = uCloudOpacity * uCloudShellFade * (1.0 - step(1e-4, uDeckOn) * (1.0 - smoothstep(uDeckFadeStart, uDeckMaxDist, t)));
+          if (shown <= 0.001) return vec4(0.0);
           vec3 p = ro + rd * t;
           vec3 n = normalize(p);
           vec3 nf = uPlanetRotInv * n;
           vec2 uv = dirToUV(rotZ(nf, -uCloudRot));
           float c = texture(uClouds, uv).r;
-          float a = smoothstep(0.08, 0.75, c) * uCloudOpacity * uCloudShellFade;
-          // near the camera the low cloud deck stands in for the planet-wide map
-          a *= 1.0 - uDeckOn * (1.0 - smoothstep(uDeckFadeStart, uDeckMaxDist, t));
+          float a = smoothstep(0.08, 0.75, c);
+          float wLocal = 0.0;
+          // around the launch site the layer is the local weather: the deck's own cells, so a fair
+          // day stays fair as the camera climbs out of the deck's reach; the world's cloud map
+          // returns over a few hundred kilometres. The cells are taken where the ray crosses the
+          // deck at several heights: seen obliquely a cloud covers the union of its slices,
+          // shifted by parallax, and only that footprint lines up with the volumetric deck it
+          // takes over from (one mid-height slice showed beside it as a second, flat layer)
+          if (uDeckRegion > 0.0) {
+            float off = acos(clamp(dot(nf, uDeckCenter), -1.0, 1.0)) * uAtmBottom;
+            // (its edge a ragged front a hundred-odd kilometres across, not a circle, and inside
+            // the weather map)
+            off += (texture(uDeckNoise, nf * 23.0).a - 0.5) * uDeckSpan * 0.14;
+            float w = uDeckRegion * (1.0 - smoothstep(uDeckSpan * 0.2, uDeckSpan * 0.42, off));
+            if (w > 0.0) {
+              float thickKm = uDeckParams.y - uDeckParams.x;
+              float clear = 1.0;
+              for (int k = 0; k < 4; k++) {
+                float hn = 0.12 + 0.25 * float(k);
+                vec2 tk = raySphere2(ro, rd, uAtmBottom + uDeckParams.x + hn * thickKm);
+                float tq = tk.x > 0.0 ? tk.x : tk.y;
+                if (tq <= 0.0 || tq > tMaxKm) continue;
+                vec3 pk = uPlanetRotInv * (ro + rd * tq);
+                // (seen edge-on even a cloud's thin margin is opaque in the deck's march, so
+                // the slices count from low in the shape too, or the hand-over shows gaps)
+                clear *= 1.0 - smoothstep(0.0, 0.1, deckShape(pk, hn, deckCoverage(pk)));
+              }
+              a = mix(a, 1.0 - clear, w);
+              wLocal = w;
+            }
+          }
+          a *= shown;
           if (a <= 0.001) return vec4(0.0);
           float muS = dot(n, uSunDir);
           vec3 sunT = getTransmittance(length(p), muS) * planetShadow(p, uSunDir);
           // thickness-dependent self-shadowing: thick clouds darker on the side away from the sun
           vec3 nfs = uPlanetRotInv * normalize(p + uSunDir * 4.0);
           float c2 = texture(uClouds, dirToUV(rotZ(nfs, -uCloudRot))).r;
-          float self = mix(1.0, 0.55, smoothstep(0.3, 1.0, c2) * smoothstep(0.2, 0.9, c));
+          float self = mix(1.0, 0.55, smoothstep(0.3, 1.0, c2) * smoothstep(0.2, 0.9, c) * (1.0 - wLocal));
           float cosTheta = dot(rd, uSunDir);
           float phase = 0.75 * miePhaseCS(0.6, cosTheta) * 4.0 * ATM_PI * 0.08 + 0.75;
           vec3 amb = getMultiScat(length(p), muS) * 6.0;

@@ -9,6 +9,13 @@ import { LaunchSite, offsetDir } from './sites';
  * by the launch-tower arms.
  */
 
+/**
+ * A caught booster's base above the pad ground (m): it is caught high on the tower, well clear
+ * of the launch mount, the arms closing on the hardpoints just below its grid fins. (Lower down
+ * there is no room to fly across from a return that comes in off the mark.)
+ */
+export const CATCH_BASE_HEIGHT = 75;
+
 export interface ZoneSpec extends LandingZone {
   /** local offset from the pad (m east, m north) for visuals */
   east: number;
@@ -26,7 +33,7 @@ export function landingZonesFor(site: LaunchSite, def: VehicleDef, launchAzimuth
   if (!recoverable.length) return zones;
   if (def.id === 'leviathan') {
     // booster returns to the tower and is caught by the arms
-    zones.push(mk('TOWER', 'Launch tower catch', 0, 0, 'tower', { catchHeight: 75 }));
+    zones.push(mk('TOWER', 'Launch tower catch', 0, 0, 'tower', { catchHeight: CATCH_BASE_HEIGHT }));
     return zones;
   }
   const [lzE, lzN] = site.lz;

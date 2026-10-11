@@ -19,7 +19,7 @@ import type { CelestialBody, SolarSystem } from '../physics/bodies';
 import { Atmosphere } from './atmosphere/Atmosphere';
 import { PostPipeline } from './post/PostPipeline';
 import { QuadtreePlanet } from './planet/QuadtreePlanet';
-import { createEarthMaterial, createMoonMaterial, setGroundPalette } from './planet/TerrainMaterial';
+import { createEarthMaterial, createMoonMaterial, lampUniforms, setGroundPalette } from './planet/TerrainMaterial';
 import type { GlobalMap, HeightContext, SiteDef } from './planet/heightfield';
 import { SkyBackground, Starfield } from './sky/Sky';
 import { FullscreenQuad } from './util/Fullscreen';
@@ -307,6 +307,7 @@ export class RenderWorld {
       this.scene.remove(this.complex.group);
       this.complex.dispose();
       this.complex = null;
+      Object.assign(this.earthMat.uniforms, lampUniforms(null));
     }
     if (!site || !def) return null;
     const hs = { h: 0, water: 0, sand: 0, flat: 0 };
@@ -321,6 +322,8 @@ export class RenderWorld {
     });
     this.scene.add(this.complex.group);
     setGroundPalette(this.earthMat, site.climate);
+    // the site's lamps light the ground around it as well as its own surfaces
+    Object.assign(this.earthMat.uniforms, lampUniforms(this.complex.mats.lamps));
     return this.complex;
   }
 
@@ -570,8 +573,11 @@ export class RenderWorld {
     this.lightning.strikeNow(this.deck, this._wc, fwd);
   }
 
-  /** Vehicles, plumes and particles for this frame (after update(), before render()). */
-  updateVehicles(dt: number, t: number, vessels: Vessel[], active: Vessel | null, bodyPos: (v: Vessel) => Vector3): void {
+  /**
+   * Vehicles, plumes and particles for this frame (after update(), before render()). The
+   * particles gather around `viewed`, the vessel the camera shows (the active one by default).
+   */
+  updateVehicles(dt: number, t: number, vessels: Vessel[], active: Vessel | null, bodyPos: (v: Vessel) => Vector3, viewed: Vessel | null = active): void {
     this.vessels.sync(vessels, bodyPos, this.cameraHelio, dt);
     this.plumes.update(dt, vessels, this.vessels, this.post.size, this.atmToFocus);
     // a climbing rocket bores a channel through the deck
@@ -586,7 +592,7 @@ export class RenderWorld {
       this.deck.setGlow(gp, L0.intensity, this._ws.set(L0.color.r, L0.color.g, L0.color.b));
     } else this.deck.setGlow(null);
     this.updateHaze();
-    this.effects.update(dt, t, vessels, active, this.complex);
+    this.effects.update(dt, t, vessels, active, this.complex, viewed);
     this.aero.update(dt, vessels, this.vessels, this.effects.sheetLight);
   }
 
@@ -624,6 +630,8 @@ export class RenderWorld {
     this.post.beginScene();
     this.skyQuad.render(r, this.post.sceneRT, this.sky.material);
     r.render(this.bgScene, this.camera);
+    // the site's own lamps, in view space now the camera is final
+    this.complex?.updateLamps(this.camera);
     r.render(this.scene, this.camera);
     this.post.composite();
     r.setRenderTarget(this.post.compRT);
