@@ -63,6 +63,9 @@
 .menu-item { font-family: var(--cond); font-weight: 600; font-size: 22px; letter-spacing: 0.2em; text-transform: uppercase; color: var(--dim); padding: 9px 0 9px 18px; cursor: pointer; border-left: 2px solid transparent; transition: all 0.3s var(--ease); }
 .menu-item:hover, .menu-item.focus { color: #fff; border-left-color: var(--amber); padding-left: 28px; background: linear-gradient(90deg, rgba(255, 176, 74, 0.12), transparent); }
 .menu-item .hint { display: block; font-family: var(--font); font-size: 12px; letter-spacing: 0.04em; text-transform: none; color: var(--faint); margin-top: 2px; }
+/* a screen opened over the menu: the menu's own title and items step aside */
+#menu > * { transition: opacity 0.35s ease, transform 0.35s ease; }
+#menu.sub-open > * { opacity: 0; transform: translateX(-16px); pointer-events: none; }
 #menu .foot { position: absolute; right: 4vw; bottom: 4vh; text-align: right; font-family: var(--cond); font-size: 12px; letter-spacing: 0.2em; color: var(--faint); text-transform: uppercase; }
 
 /* ------------------------------------------------------------------ panels (missions, sandbox, settings) */
@@ -99,6 +102,10 @@ input[type=range]::-moz-range-thumb { width: 14px; height: 14px; background: var
 .objectives li.done::before { background: var(--green); border-color: var(--green); }
 .objectives li.failed::before { background: var(--red); border-color: var(--red); }
 .vehicle-list { display: flex; flex-direction: column; gap: 2px; max-height: 62vh; overflow-y: auto; padding-right: 8px; }
+.vehicle-list { scrollbar-width: thin; scrollbar-color: rgba(255, 255, 255, 0.2) transparent; }
+.vehicle-list::-webkit-scrollbar { width: 4px; }
+.vehicle-list::-webkit-scrollbar-thumb { background: rgba(255, 255, 255, 0.2); border-radius: 2px; }
+.vehicle-list.more { -webkit-mask-image: linear-gradient(to bottom, #000 80%, transparent); mask-image: linear-gradient(to bottom, #000 80%, transparent); }
 .vehicle-list .row { padding: 8px 12px; cursor: pointer; border-left: 2px solid transparent; display: flex; flex-direction: column; gap: 1px; transition: all 0.2s; pointer-events: auto; }
 .vehicle-list .row:hover { background: rgba(255, 255, 255, 0.03); }
 .vehicle-list .row.on { border-left-color: var(--amber); background: rgba(255, 176, 74, 0.07); }

@@ -223,42 +223,45 @@ export class LaunchComplex {
       for (const z of [-11, 11]) this.roadStrip(B.get(M.gravel), new Vector3(-apronR, 0, z), new Vector3(-5000, 0, z - 1100 * (z > 0 ? 1 : 1)), 12, 0.12);
     }
     // flame trench: concrete-lined channel guiding the exhaust east and west under the mount,
-    // walls buttressed by earth berms, scorched floor
-    const w = Math.max(6, fp * 2.2);
-    const wallH = Math.max(3, this.deckHeight * 0.45);
-    const trenchL = apronR * 1.25;
-    for (const s of [-1, 1]) {
-      box(B.get(M.concreteDark), trenchL, wallH, 1.4, new Matrix4().makeTranslation(0, wallH / 2, s * (w / 2 + 0.7)));
-      // berm: sloped wedge outside each wall
-      const g = B.get(M.berm);
-      const z0 = s * (w / 2 + 1.4), z1 = s * (w / 2 + 1.4 + wallH * 2.2);
-      const n = new Vector3(0, wallH * 2.2, s * wallH).normalize();
-      const v = (x: number, y: number, z: number) => g.vertex(new Vector3(x, y, z), n, 0, 0, [0, y, 0], {}, [0, 0]);
-      const hl = trenchL / 2;
-      const a0 = v(-hl, wallH, z0), a1 = v(hl, wallH, z0), b0 = v(-hl, 0.02, z1), b1 = v(hl, 0.02, z1);
-      if (s > 0) { g.tri(a0, b0, a1); g.tri(a1, b0, b1); } else { g.tri(a0, a1, b0); g.tri(a1, b1, b0); }
-      // end slopes of the berm
-      for (const ex of [-1, 1]) {
-        const ne = new Vector3(ex, 0.6, 0).normalize();
-        const ve = (x: number, y: number, z: number) => g.vertex(new Vector3(x, y, z), ne, 0, 0, [0, y, 0], {}, [0, 0]);
-        const c0 = ve(ex * hl, wallH, z0), c1 = ve(ex * hl, 0.02, z1), c2 = ve(ex * (hl + wallH * 1.5), 0.02, z0);
-        if (ex * s > 0) g.tri(c0, c1, c2); else g.tri(c0, c2, c1);
+    // walls buttressed by earth berms, scorched floor (a raised orbital launch mount has none:
+    // its jet spreads under the table over a flat deflector, built with the mount)
+    if (this.pad !== 'olm') {
+      const w = Math.max(6, fp * 2.2);
+      const wallH = Math.max(3, this.deckHeight * 0.45);
+      const trenchL = apronR * 1.25;
+      for (const s of [-1, 1]) {
+        box(B.get(M.concreteDark), trenchL, wallH, 1.4, new Matrix4().makeTranslation(0, wallH / 2, s * (w / 2 + 0.7)));
+        // berm: sloped wedge outside each wall
+        const g = B.get(M.berm);
+        const z0 = s * (w / 2 + 1.4), z1 = s * (w / 2 + 1.4 + wallH * 2.2);
+        const n = new Vector3(0, wallH * 2.2, s * wallH).normalize();
+        const v = (x: number, y: number, z: number) => g.vertex(new Vector3(x, y, z), n, 0, 0, [0, y, 0], {}, [0, 0]);
+        const hl = trenchL / 2;
+        const a0 = v(-hl, wallH, z0), a1 = v(hl, wallH, z0), b0 = v(-hl, 0.02, z1), b1 = v(hl, 0.02, z1);
+        if (s > 0) { g.tri(a0, b0, a1); g.tri(a1, b0, b1); } else { g.tri(a0, a1, b0); g.tri(a1, b1, b0); }
+        // end slopes of the berm
+        for (const ex of [-1, 1]) {
+          const ne = new Vector3(ex, 0.6, 0).normalize();
+          const ve = (x: number, y: number, z: number) => g.vertex(new Vector3(x, y, z), ne, 0, 0, [0, y, 0], {}, [0, 0]);
+          const c0 = ve(ex * hl, wallH, z0), c1 = ve(ex * hl, 0.02, z1), c2 = ve(ex * (hl + wallH * 1.5), 0.02, z0);
+          if (ex * s > 0) g.tri(c0, c1, c2); else g.tri(c0, c2, c1);
+        }
       }
+      box(B.get(M.trenchFloor), trenchL, 0.1, w, new Matrix4().makeTranslation(0, 0.1, 0));
+      // deflector: double wedge with steel facing, ridge along z
+      const dh = Math.max(2.5, this.deckHeight * 0.55), dl = Math.max(6, fp * 3);
+      const g = B.get(M.steelDark);
+      for (const sx of [-1, 1]) {
+        // one sloped face per side, normal tilted toward its exit
+        const n = new Vector3(sx * dh, dl, 0).normalize();
+        const v = (x: number, y: number, z: number) => g.vertex(new Vector3(x, y, z), n, 0, 0, [0, y, 0], {}, [0, 0]);
+        const p0 = v(0, dh, -w / 2), p1 = v(0, dh, w / 2), p2 = v(sx * dl, 0.05, w / 2), p3 = v(sx * dl, 0.05, -w / 2);
+        if (sx > 0) { g.tri(p0, p1, p2); g.tri(p0, p2, p3); } else { g.tri(p0, p2, p1); g.tri(p0, p3, p2); }
+      }
+      // exits for the exhaust FX (both ends of the trench)
+      this.exits.push({ pos: new Vector3(trenchL / 2, 1.5, 0), dir: new Vector3(1, 0.18, 0).normalize(), width: w });
+      this.exits.push({ pos: new Vector3(-trenchL / 2, 1.5, 0), dir: new Vector3(-1, 0.18, 0).normalize(), width: w });
     }
-    box(B.get(M.trenchFloor), trenchL, 0.1, w, new Matrix4().makeTranslation(0, 0.1, 0));
-    // deflector: double wedge with steel facing, ridge along z
-    const dh = Math.max(2.5, this.deckHeight * 0.55), dl = Math.max(6, fp * 3);
-    const g = B.get(M.steelDark);
-    for (const sx of [-1, 1]) {
-      // one sloped face per side, normal tilted toward its exit
-      const n = new Vector3(sx * dh, dl, 0).normalize();
-      const v = (x: number, y: number, z: number) => g.vertex(new Vector3(x, y, z), n, 0, 0, [0, y, 0], {}, [0, 0]);
-      const p0 = v(0, dh, -w / 2), p1 = v(0, dh, w / 2), p2 = v(sx * dl, 0.05, w / 2), p3 = v(sx * dl, 0.05, -w / 2);
-      if (sx > 0) { g.tri(p0, p1, p2); g.tri(p0, p2, p3); } else { g.tri(p0, p2, p1); g.tri(p0, p3, p2); }
-    }
-    // exits for the exhaust FX (both ends of the trench)
-    this.exits.push({ pos: new Vector3(trenchL / 2, 1.5, 0), dir: new Vector3(1, 0.18, 0).normalize(), width: w });
-    this.exits.push({ pos: new Vector3(-trenchL / 2, 1.5, 0), dir: new Vector3(-1, 0.18, 0).normalize(), width: w });
   }
 
   /** Flat strip (road / crawlerway) following the terrain in ~25 m segments. */
