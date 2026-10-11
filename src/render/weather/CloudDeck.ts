@@ -84,6 +84,7 @@ uniform vec4 uDeckProbe;    // camera: x under a deck (0..1), y above one (its c
 uniform vec3 uDeckFlashIrr; // lightning: irradiance on the ground around the camera
 uniform float uDeckSteps;
 uniform float uDeckMaxDist;
+uniform float uDeckFadeStart; // the deck thins out from here to uDeckMaxDist (km from the camera)
 uniform vec3 uDeckGlowPos;   // exhaust light (body-fixed km) and its intensity x colour
 uniform vec3 uDeckGlowI;
 uniform vec3 uDeckFlashPos;  // lightning inside the cloud
@@ -230,7 +231,7 @@ vec4 deckMarch(vec3 ro, vec3 rd, vec3 sunF, float tLimit, float jitter, out floa
     if (hn < 0.0 || hn > 1.0) continue;
     float cov = deckCoverage(p);
     if (cov < 0.03) continue;
-    float sig = deckDensity(p, hn, cov, t < 30.0) * (1.0 - smoothstep(uDeckMaxDist * 0.65, uDeckMaxDist, t));
+    float sig = deckDensity(p, hn, cov, t < 30.0) * (1.0 - smoothstep(uDeckFadeStart, uDeckMaxDist, t));
     if (sig < 0.05) continue;
     // a sheet's (or storm's) base is not even: thicker rolls above darken it, thin spots glow
     float patchy = mix(1.0, 0.45 + 1.1 * gDeckLow, clamp(uDeckForm.x, 0.0, 1.0) * (1.0 - hn));
@@ -466,6 +467,7 @@ export class CloudDeck {
     uDeckFlashIrr: { value: new Vector3() },
     uDeckSteps: { value: 32 },
     uDeckMaxDist: { value: 150 },
+    uDeckFadeStart: { value: 100 },
     uDeckGlowPos: { value: new Vector3() },
     uDeckGlowI: { value: new Vector3() },
     uDeckFlashPos: { value: new Vector3() },
@@ -603,8 +605,10 @@ export class CloudDeck {
     const u = this.uniforms;
     const p = this.params;
     const camAlt = camF.length() - R_EARTH_KM;
-    // from high up the planet-wide cloud map reads better: hand over between 20 and 50 km
+    // from high up the planet-wide cloud map reads better: hand over between 20 and 50 km, and
+    // as the camera climbs the deck already gives way to it closer in, so there is no rim
     this.active = p ? 1 - smooth(20, 50, camAlt) : 0;
+    u.uDeckFadeStart.value = u.uDeckMaxDist.value * (0.65 - 0.5 * smooth(3, 30, camAlt));
     u.uDeckOn.value = this.active;
     if (!p || this.active <= 0) {
       this.rainAtCamera = 0; this.camInCloud = 0; this.focusInCloud = 0; this.overcast = 0; this.focusSun = 1;

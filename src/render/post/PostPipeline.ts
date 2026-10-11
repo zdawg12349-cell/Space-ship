@@ -181,7 +181,7 @@ export class PostPipeline {
           float c = texture(uClouds, uv).r;
           float a = smoothstep(0.08, 0.75, c) * uCloudOpacity * uCloudShellFade;
           // near the camera the low cloud deck stands in for the planet-wide map
-          a *= 1.0 - uDeckOn * (1.0 - smoothstep(uDeckMaxDist * 0.55, uDeckMaxDist, t));
+          a *= 1.0 - uDeckOn * (1.0 - smoothstep(uDeckFadeStart, uDeckMaxDist, t));
           if (a <= 0.001) return vec4(0.0);
           float muS = dot(n, uSunDir);
           vec3 sunT = getTransmittance(length(p), muS) * planetShadow(p, uSunDir);

@@ -112,15 +112,21 @@ export class Lightning {
     }
   }
 
-  private start(deck: CloudDeck, camF: Vector3): void {
+  /** Strike now, ahead along `aheadF` (body-fixed) if given: for capture tools and tests. */
+  strikeNow(deck: CloudDeck, camF: Vector3, aheadF?: Vector3): void {
+    if (!deck.params) return;
+    this.start(deck, camF, aheadF);
+  }
+
+  private start(deck: CloudDeck, camF: Vector3, aheadF?: Vector3): void {
     const p = deck.params!;
     const up = _a.copy(camF).normalize();
     const east = _b.set(-up.y, up.x, 0);
     if (east.lengthSq() < 1e-8) east.set(1, 0, 0);
     east.normalize();
     const north = _c.crossVectors(up, east);
-    const az = Math.random() * Math.PI * 2;
-    const dist = 3 + Math.pow(Math.random(), 0.7) * 19; // km
+    const az = aheadF ? Math.atan2(aheadF.dot(east), aheadF.dot(north)) + (Math.random() - 0.5) * 0.4 : Math.random() * Math.PI * 2;
+    const dist = aheadF ? 6 + Math.random() * 6 : 3 + Math.pow(Math.random(), 0.7) * 19; // km
     const dir = new Vector3().copy(north).multiplyScalar(Math.cos(az) * dist).addScaledVector(east, Math.sin(az) * dist);
     const groundDir = new Vector3().copy(up).multiplyScalar(6371).add(dir).normalize();
     const ground = groundDir.clone().multiplyScalar(6371);

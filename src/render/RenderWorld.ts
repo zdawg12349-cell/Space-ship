@@ -560,6 +560,12 @@ export class RenderWorld {
     this.ambient.intensity = Math.max(fi.x, fi.y, fi.z);
   }
 
+  /** Capture tools: a lightning strike ahead of the camera. */
+  debugLightning(): void {
+    const fwd = new Vector3(0, 0, -1).applyQuaternion(this.camera.quaternion).applyQuaternion(this.earthRotInv);
+    this.lightning.strikeNow(this.deck, this._wc, fwd);
+  }
+
   /** Vehicles, plumes and particles for this frame (after update(), before render()). */
   updateVehicles(dt: number, t: number, vessels: Vessel[], active: Vessel | null, bodyPos: (v: Vessel) => Vector3): void {
     this.vessels.sync(vessels, bodyPos, this.cameraHelio, dt);
