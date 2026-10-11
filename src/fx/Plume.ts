@@ -193,6 +193,10 @@ void main() {
   float lum = dot(emis, vec3(0.2126, 0.7152, 0.0722));
   float knee = 3.0 * uIntensity * dot(uColCore, vec3(0.2126, 0.7152, 0.0722));
   if (lum > knee) emis *= (knee + knee * (1.0 - exp(-(lum - knee) / knee))) / lum;
+  // a vacuum jet seen from a camera on its own stage, right beside the nozzle: the camera sits in
+  // the cold fringe of the bell and, as the stage's own cameras show, sees the glowing nozzle with
+  // only a faint plume beyond it (at sea level the jet stays bright from anywhere)
+  emis *= mix(1.0, smoothstep(uRe * 2.0, uRe * 12.0, length(uCamLocal)), smoothstep(1.0, 1.4, uCool));
   emis *= uAtmT;
   gl_FragColor = vec4(emis, 1.0 - trans);
 }`;

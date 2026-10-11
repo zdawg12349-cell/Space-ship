@@ -852,7 +852,8 @@ export class FlightSession {
         if (main) {
           this.setPhase(ev.water ? 'splashed' : 'landed');
           this.emit({ type: 'radio', id: ev.water ? 'splashdown' : 'touchdown_land' });
-          this.director.cue('splashdown');
+          // (the splashdown shot is a camera on the water: on land, uneven ground hid the vehicle)
+          this.director.cue(ev.water ? 'splashdown' : 'touchdown');
         }
         this.director.shake.kick(0.5, 3);
         break;

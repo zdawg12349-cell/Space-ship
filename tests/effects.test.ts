@@ -136,6 +136,11 @@ describe('camera ground clamp', () => {
       // (the ground clamp used to lift such cameras to the mean radius, kilometres up)
       expect(d.posHelio.distanceTo(at)).toBeLessThan(250);
     }
+    // touching down on land away from any recovery zone, the director circles the vehicle close in
+    d.cue('touchdown');
+    for (let i = 0; i < 60; i++) d.update(ctx);
+    expect(d.shotLabel).toBe('orbit_drift');
+    expect(d.posHelio.distanceTo(at)).toBeLessThan(80);
   });
 });
 
