@@ -132,7 +132,7 @@ materials are generated from that definition.
 - **Flight effects:** transonic vapour cones, entry plasma sheaths, heat shimmer, RCS puffs,
   stage break-ups and booster burn-up.
 - **Launch complexes:** procedural sites with towers, swing arms, flame trenches, lightning
-  masts and floodlights. Each site has climate-specific vegetation.
+  masts and floodlights. Each site has climate-specific vegetation that bends in the wind.
 - **Recovery hardware:** landing-zone pads and the drone ship.
 
 ### Cinematography and sound
