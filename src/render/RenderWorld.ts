@@ -19,7 +19,7 @@ import type { CelestialBody, SolarSystem } from '../physics/bodies';
 import { Atmosphere } from './atmosphere/Atmosphere';
 import { PostPipeline } from './post/PostPipeline';
 import { QuadtreePlanet } from './planet/QuadtreePlanet';
-import { createEarthMaterial, createMoonMaterial, lampUniforms, setGroundPalette } from './planet/TerrainMaterial';
+import { createEarthMaterial, createMoonMaterial, lampUniforms, setGroundPalette, shadowUniforms } from './planet/TerrainMaterial';
 import type { GlobalMap, HeightContext, SiteDef } from './planet/heightfield';
 import { SkyBackground, Starfield } from './sky/Sky';
 import { FullscreenQuad } from './util/Fullscreen';
@@ -168,6 +168,8 @@ export class RenderWorld {
   readonly earth: QuadtreePlanet;
   readonly moon: QuadtreePlanet;
   readonly earthMat: ShaderMaterial;
+  /** the sun's shadow map as the terrain shaders see it (shared by the Earth and the Moon) */
+  private readonly terrainShadow = shadowUniforms();
   readonly moonMat: ShaderMaterial;
   readonly sunLight: DirectionalLight;
   readonly hemi: HemisphereLight;
@@ -252,6 +254,9 @@ export class RenderWorld {
     this.moonMat = createMoonMaterial({ albedo: assets.moonAlbedo, detail: this.detailTex });
     this.moon = new QuadtreePlanet({ radius: 1_737_400, ctx: this.heightCtxMoon, material: this.moonMat, maxLevel: 15, splitFactor: 2.4, workers: 2 });
     this.scene.add(this.moon.group);
+    // one set of sun-shadow uniforms for both bodies' terrain
+    Object.assign(this.earthMat.uniforms, this.terrainShadow);
+    Object.assign(this.moonMat.uniforms, this.terrainShadow);
 
     const add = (id: string, tex: Texture, opts: ConstructorParameters<typeof SimpleBody>[2]) => {
       const sb = new SimpleBody(system.get(id), tex, opts);
@@ -624,6 +629,26 @@ export class RenderWorld {
     }
   }
 
+  /**
+   * The sun's shadow map for the terrain shaders (three.js only feeds its own materials): the
+   * light's shadow matrix as the coming shadow pass will compute it, from this camera's view.
+   */
+  private updateTerrainShadow(): void {
+    const u = this.terrainShadow;
+    const sl = this.sunLight;
+    const map = sl.shadow.map;
+    // (PCF maps only: a depth texture set up for hardware comparison)
+    const on = this.renderer.shadowMap.enabled && sl.castShadow && sl.visible && !!map?.depthTexture?.compareFunction;
+    (u.uShadowParams.value as Vector4).set(sl.shadow.mapSize.x, -0.00008, Math.max(1, sl.shadow.radius), on ? 1 : 0);
+    if (!on) return;
+    sl.updateMatrixWorld();
+    sl.target.updateMatrixWorld();
+    sl.shadow.updateMatrices(sl);
+    this.camera.updateMatrixWorld();
+    (u.uShadowFromView.value as Matrix4).multiplyMatrices(sl.shadow.matrix, this.camera.matrixWorld);
+    u.uSunShadow.value = map!.depthTexture;
+  }
+
   render(dt: number, extra?: () => void): void {
     const r = this.renderer;
     r.autoClear = false;
@@ -632,6 +657,7 @@ export class RenderWorld {
     r.render(this.bgScene, this.camera);
     // the site's own lamps, in view space now the camera is final
     this.complex?.updateLamps(this.camera);
+    this.updateTerrainShadow();
     r.render(this.scene, this.camera);
     this.post.composite();
     r.setRenderTarget(this.post.compRT);

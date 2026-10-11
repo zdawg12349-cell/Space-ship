@@ -181,6 +181,8 @@ export interface Telemetry {
   altitude: number; // above reference radius (sea level)
   radarAltitude: number; // above terrain/ocean
   terrainHeight: number;
+  /** the ground below is sea */
+  overWater: boolean;
   speedOrbital: number;
   speedSurface: number;
   verticalSpeed: number;
@@ -276,7 +278,7 @@ export class Vessel {
     }
     this.relink();
     this.telemetry = {
-      altitude: 0, radarAltitude: 0, terrainHeight: 0, speedOrbital: 0, speedSurface: 0, verticalSpeed: 0, horizontalSpeed: 0, mach: 0,
+      altitude: 0, radarAltitude: 0, terrainHeight: 0, overWater: false, speedOrbital: 0, speedSurface: 0, verticalSpeed: 0, horizontalSpeed: 0, mach: 0,
       dynamicPressure: 0, density: 0, pressure: 0, temperatureAir: 288, gForce: 0, axialG: 0, heading: 0, pitch: 90, roll: 0, aoa: 0, heatFlux: 0,
       latitude: 0, longitude: 0, thrust: 0, twr: 0, massTotal: 0, inAtmosphere: true, airVelocity: new Vector3(), qAlpha: 0, maxQ: 0, downrange: 0,
     };
@@ -1331,6 +1333,7 @@ export class Vessel {
   private fillTelemetry(t: number, altitude: number, terrainH: number, water: boolean, lat: number, lon: number, q: number, mach: number, aoa: number, heat: number): void {
     const tm = this.telemetry;
     tm.altitude = altitude;
+    tm.overWater = water;
     tm.terrainHeight = water ? 0 : terrainH;
     tm.radarAltitude = altitude - Math.max(water ? 0 : terrainH, water ? 0 : -1e9);
     if (this.body.def.hasSurface && !water) tm.radarAltitude = altitude - terrainH;

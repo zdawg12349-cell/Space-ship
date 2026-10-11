@@ -174,10 +174,16 @@ export class PostPipeline {
           vec2 tt = raySphere2(ro, rd, rc);
           float t = tt.x > 0.0 ? tt.x : tt.y;
           if (t <= 0.0 || t > tMaxKm) return vec4(0.0);
-          // within its reach the low cloud deck stands in for the planet-wide map, the two
-          // crossing over in the band where the deck thins out (and low down the layer is faded
-          // out altogether)
-          float shown = uCloudOpacity * uCloudShellFade * (1.0 - step(1e-4, uDeckOn) * (1.0 - smoothstep(uDeckFadeStart, uDeckMaxDist, t)));
+          // within its reach the low cloud deck stands in for the planet-wide map. Across the
+          // hand-over band the deck's cells shrink away inside this layer's, which comes in early
+          // (opaque a third of the way in) and fills in around them (and low down the layer is
+          // faded out altogether)
+          // (measured, as the deck measures its own, at the deck's height: a downward ray meets
+          // this layer well before it, and by this layer's distance the deck's cells were gone
+          // before it came in, leaving a ring of open sea between the two)
+          vec2 tm = raySphere2(ro, rd, uAtmBottom + 0.5 * (uDeckParams.x + uDeckParams.y));
+          float tD = tm.x > 0.0 ? tm.x : (tm.y > 0.0 ? tm.y : t);
+          float shown = uCloudOpacity * uCloudShellFade * (1.0 - step(1e-4, uDeckOn) * (1.0 - smoothstep(uDeckFadeStart, mix(uDeckFadeStart, uDeckMaxDist, 0.3), tD)));
           if (shown <= 0.001) return vec4(0.0);
           vec3 p = ro + rd * t;
           vec3 n = normalize(p);
@@ -186,6 +192,7 @@ export class PostPipeline {
           float c = texture(uClouds, uv).r;
           float a = smoothstep(0.08, 0.75, c);
           float wLocal = 0.0;
+          float relief = 1.0;
           // around the launch site the layer is the local weather: the deck's own cells, so a fair
           // day stays fair as the camera climbs out of the deck's reach; the world's cloud map
           // returns over a few hundred kilometres. The cells are taken where the ray crosses the
@@ -201,18 +208,42 @@ export class PostPipeline {
             if (w > 0.0) {
               float thickKm = uDeckParams.y - uDeckParams.x;
               float clear = 1.0;
+              // (in the order the ray meets them: the first slice in cloud is the surface it
+              // shows, and how much cloud the ray crosses tells a thick core from a thin margin)
+              bool fromAbove = length(ro) > uAtmBottom + uDeckParams.y;
+              vec3 pS = vec3(0.0);
+              float hS = -1.0, mass = 0.0;
               for (int k = 0; k < 4; k++) {
-                float hn = 0.12 + 0.25 * float(k);
+                float hn = fromAbove ? 0.87 - 0.25 * float(k) : 0.12 + 0.25 * float(k);
                 vec2 tk = raySphere2(ro, rd, uAtmBottom + uDeckParams.x + hn * thickKm);
                 float tq = tk.x > 0.0 ? tk.x : tk.y;
                 if (tq <= 0.0 || tq > tMaxKm) continue;
                 vec3 pk = uPlanetRotInv * (ro + rd * tq);
                 // (seen edge-on even a cloud's thin margin is opaque in the deck's march, so
                 // the slices count from low in the shape too, or the hand-over shows gaps)
-                clear *= 1.0 - smoothstep(0.0, 0.1, deckShape(pk, hn, deckCoverage(pk)));
+                float s = deckShape(pk, hn, deckCoverage(pk));
+                float m = smoothstep(0.0, 0.1, s);
+                if (hS < 0.0 && m > 0.5) { hS = hn; pS = pk; }
+                mass += s;
+                clear *= 1.0 - m;
               }
               a = mix(a, 1.0 - clear, w);
               wLocal = w;
+              // relief, as the deck's own march shades it: a dome's flank turned away from the sun
+              // lies in the shadow of its crown (with the sun high only steep towers cast any),
+              // and a thin margin sends back less light than a thick core
+              if (hS >= 0.0) {
+                vec3 sunF = uPlanetRotInv * uSunDir;
+                float muF = max(dot(normalize(pS), sunF), 0.12);
+                float occl = 0.0;
+                for (int j = 1; j <= 2; j++) {
+                  float hq = hS + 0.25 * float(j);
+                  if (hq > 1.0) break;
+                  vec3 q = pS + sunF * (0.25 * float(j) * thickKm / muF);
+                  occl = max(occl, smoothstep(0.0, 0.25, deckShape(q, hq, deckCoverage(q))));
+                }
+                relief = mix(1.0, (1.0 - 0.6 * occl) * mix(0.8, 1.0, smoothstep(0.1, 0.9, mass)), w);
+              }
             }
           }
           a *= shown;
@@ -222,7 +253,7 @@ export class PostPipeline {
           // thickness-dependent self-shadowing: thick clouds darker on the side away from the sun
           vec3 nfs = uPlanetRotInv * normalize(p + uSunDir * 4.0);
           float c2 = texture(uClouds, dirToUV(rotZ(nfs, -uCloudRot))).r;
-          float self = mix(1.0, 0.55, smoothstep(0.3, 1.0, c2) * smoothstep(0.2, 0.9, c) * (1.0 - wLocal));
+          float self = mix(1.0, 0.55, smoothstep(0.3, 1.0, c2) * smoothstep(0.2, 0.9, c) * (1.0 - wLocal)) * relief;
           float cosTheta = dot(rd, uSunDir);
           float phase = 0.75 * miePhaseCS(0.6, cosTheta) * 4.0 * ATM_PI * 0.08 + 0.75;
           vec3 amb = getMultiScat(length(p), muS) * 6.0;

@@ -287,7 +287,10 @@ export class HUD {
       this.recoveryEl.appendChild(h('div', { class: 'label' }, 'Recovery'));
       for (const b of s.boosters) {
         const st = b.v.destroyed ? 'LOST' : b.v.landed ? 'LANDED' : b.g.phase.toUpperCase();
-        this.recoveryEl.appendChild(h('div', { class: 'item' }, h('b', {}, b.zone.id), h('span', { style: b.v.destroyed ? 'color:var(--red)' : b.v.landed ? 'color:var(--green)' : '' }, `${st} · ${(b.v.telemetry.altitude / 1000).toFixed(1)} km`)));
+        // in flight: how high and how fast it is coming home
+        const tm = b.v.telemetry;
+        const live = b.v.destroyed || b.v.landed ? '' : ` · ${tm.speedSurface.toFixed(0)} m/s`;
+        this.recoveryEl.appendChild(h('div', { class: 'item' }, h('b', {}, b.zone.id), h('span', { style: b.v.destroyed ? 'color:var(--red)' : b.v.landed ? 'color:var(--green)' : '' }, `${st} · ${(tm.altitude / 1000).toFixed(1)} km${live}`)));
       }
     }
   }

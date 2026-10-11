@@ -405,7 +405,13 @@ export class AudioEngine {
         this.burst({ buf: 'crackle', dur: 4, gain: 0.8 * far, lp: Math.min(lp, 4000), attack: 0.01, decay: 1.2, delay });
         this.burst({ buf: 'white', dur: 0.4, gain: 0.9 * far, lp, delay, reverb: 0.8 });
         break;
-      case 'rcs': this.burst({ buf: 'white', dur: 0.12, gain: 0.08, hp: 1800, lp: 7000, decay: 0.03 }); break;
+      // landing legs: the pneumatic push as they swing out, then the clunk as they lock
+      case 'legs':
+        this.burst({ buf: 'white', dur: 0.7, gain: 0.3 * far, hp: 500, lp: Math.min(lp, 4000), attack: 0.03, decay: 0.35, delay });
+        this.burst({ buf: 'brown', dur: 0.35, gain: 0.5 * far, lp: 260, delay: delay + 2.4 });
+        break;
+      // a cold-gas thruster's hiss is quiet: heard close by, or through the structure on board
+      case 'rcs': this.burst({ buf: 'white', dur: 0.12, gain: 0.08 * (onboard ? 1 : Math.min(1, 60 / Math.max(15, distance))), hp: 1800, lp: Math.min(lp, 7000), decay: 0.03, delay }); break;
       case 'ui': this.tone(1400, 0.06, 0.03, 'sine'); break;
       case 'ui_select': this.tone(880, 0.09, 0.04, 'sine'); this.tone(1320, 0.12, 0.03, 'sine', 0.05); break;
       case 'stage': this.tone(520, 0.12, 0.05, 'square'); break;

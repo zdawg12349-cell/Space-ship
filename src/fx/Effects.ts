@@ -311,17 +311,23 @@ export class Effects {
       const hit = _c.copy(exitL).addScaledVector(dirL, tHit);
       hit.y = P.groundY + 1;
       const strength = 1 - h / reach;
-      const n = this.rate(`gnd${v.id}`, Math.min(200, (12 + MN * 16) * strength), dt);
       const nearPad = complex && Math.hypot(hit.x, hit.z) < 400;
+      // away from the launch pad (a landing zone, the drone ship, open ground) a single engine or
+      // three make the cloud: many smaller, shorter-lived puffs, so it billows as one mass
+      // instead of a few huge discs
+      const land = !nearPad;
+      const n = this.rate(`gnd${v.id}`, Math.min(200, (12 + MN * 16) * strength) * (land ? 3 : 1), dt);
       for (let i = 0; i < n; i++) {
         const ang = Math.random() * Math.PI * 2;
         const sp = (20 + Math.sqrt(MN) * 18) * (0.4 + strength);
-        // (away from the launch pad - a landing zone, the drone ship, open ground - the cloud is
-        // mostly the exhaust's own steam, with dust and grit from the surface through it)
-        const kind: ParticleKind = solid > 0.4 ? 'srbsmoke' : nearPad || v.splashed ? (Math.random() < kerolox * 0.4 ? 'smoke' : 'steam') : Math.random() < 0.6 ? 'steam' : 'dust';
+        // (there the cloud is mostly the exhaust's own steam, with dust and grit from the ground;
+        // at sea - the drone ship - steam and exhaust smoke alone)
+        const wet = v.splashed || v.telemetry.overWater;
+        const kind: ParticleKind = solid > 0.4 ? 'srbsmoke' : nearPad || wet ? (Math.random() < kerolox * 0.4 ? 'smoke' : 'steam') : Math.random() < 0.6 ? 'steam' : 'dust';
         P.emit({
           kind, pos: hit, vel: _d.set(Math.cos(ang) * sp, 2 + Math.random() * 5, Math.sin(ang) * sp), spread: sp * 0.2, jitter: 2 + Math.sqrt(MN),
-          size: 3 + Math.sqrt(MN) * 1.4, grow: 2 + Math.sqrt(MN) * 0.7, life: 18 + Math.random() * 10, heat: 0.6 * strength,
+          size: land ? 2.2 + Math.sqrt(MN) : 3 + Math.sqrt(MN) * 1.4, grow: land ? 1.3 + Math.sqrt(MN) * 0.5 : 2 + Math.sqrt(MN) * 0.7,
+          life: land ? 9 + Math.random() * 6 : 18 + Math.random() * 10, heat: 0.6 * strength,
         });
       }
     } else if (!airBody && h < 60 && dirL.y < -0.2) {

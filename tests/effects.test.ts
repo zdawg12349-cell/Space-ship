@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { PerspectiveCamera, Scene, Texture, Vector2, Vector3 } from 'three';
-import { ParticleSystem } from '../src/fx/Particles';
+import { createPuffAtlas, ParticleSystem } from '../src/fx/Particles';
 import { CameraDirector, type CamContext } from '../src/camera/CameraDirector';
 import type { CelestialBody } from '../src/physics/bodies';
 import { getVehicle } from '../src/vehicles/catalog';
@@ -109,5 +109,33 @@ describe('camera director', () => {
     d.setMode('chase');
     d.update(ctx);
     expect(d.viewed).toEqual([]);
+  });
+});
+
+describe('puff atlas', () => {
+  it('has no step at a billow\'s rim (a lit cloud must not read as a heap of bubbles)', () => {
+    const tex = createPuffAtlas();
+    const { data, width: S } = tex.image as { data: Uint8Array; width: number };
+    const C = S / 4;
+    const A = (x: number, y: number) => data[(y * S + x) * 4 + 3];
+    // a step: one jump in coverage far larger than the jumps either side of it (a steep but
+    // smooth flank rises over several texels, each jump much like its neighbours)
+    let steps = 0, filled = 0;
+    for (let y = 0; y < S; y++) for (let x = 0; x < S; x++) {
+      if (A(x, y) > 128) filled++;
+      const cx = x % C, cy = y % C;
+      if (cx >= 1 && cx <= C - 3) {
+        const d0 = Math.abs(A(x, y) - A(x - 1, y)), d1 = Math.abs(A(x + 1, y) - A(x, y)), d2 = Math.abs(A(x + 2, y) - A(x + 1, y));
+        if (d1 > 60 && d1 > 2.5 * (Math.max(d0, d2) + 8)) steps++;
+      }
+      if (cy >= 1 && cy <= C - 3) {
+        const d0 = Math.abs(A(x, y) - A(x, y - 1)), d1 = Math.abs(A(x, y + 1) - A(x, y)), d2 = Math.abs(A(x, y + 2) - A(x, y + 1));
+        if (d1 > 60 && d1 > 2.5 * (Math.max(d0, d2) + 8)) steps++;
+      }
+    }
+    // (the old atlas, a lifted hemisphere per billow, had thousands)
+    expect(steps).toBe(0);
+    // and the puffs still fill a good part of their sprites
+    expect(filled / (S * S)).toBeGreaterThan(0.25);
   });
 });

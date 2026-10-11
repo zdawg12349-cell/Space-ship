@@ -86,7 +86,8 @@ uniform vec3 uDeckCloudL;   // mean radiance of a broken deck seen from below (s
 uniform vec3 uDeckFlashIrr; // lightning: irradiance on the ground around the camera
 uniform float uDeckSteps;
 uniform float uDeckMaxDist;
-uniform float uDeckFadeStart; // the deck thins out from here to uDeckMaxDist (km from the camera)
+uniform float uDeckFadeStart; // the deck gives way from here to uDeckMaxDist (km from the camera)
+uniform float uDeckShrink;    // 0: it thins out (low down, nothing takes over); 1: its cells shrink inside the planet-wide layer's
 uniform vec3 uDeckGlowPos;   // exhaust light (body-fixed km) and its intensity x colour
 uniform vec3 uDeckGlowI;
 uniform vec3 uDeckFlashPos;  // lightning inside the cloud
@@ -142,9 +143,10 @@ float deckShape(vec3 p, float hn, float cov) {
   vec3 pc = normalize(p) * (rb + (length(p) - rb) * squash);
   vec4 n = texture(uDeckNoise, (pc - uDeckOrigin) / DECK_BASE_TILE);
   gDeckLow = n.a;
-  // cumulus: flat bases, tops that narrow; stratus: an even slab; cumulonimbus: towers that
-  // spread into an anvil under the tropopause
-  float cu = smoothstep(0.0, 0.1, hn) * smoothstep(1.0, 0.4, hn);
+  // cumulus: flat bases and domed tops, a cell's core standing well above its edges (seen from
+  // above, tops that all levelled off at one height lit up as a flat sheet); stratus: an even
+  // slab; cumulonimbus: towers that spread into an anvil under the tropopause
+  float cu = smoothstep(0.0, 0.1, hn) * (1.0 - hn * hn);
   float st = smoothstep(0.0, 0.22, hn) * smoothstep(1.0, 0.68, hn);
   float cb = smoothstep(0.0, 0.05, hn) * smoothstep(1.0, 0.9, hn) * (0.78 + 0.22 * smoothstep(0.72, 0.9, hn));
   float prof = form <= 1.0 ? mix(cu, st, form) : mix(st, cb, form - 1.0);
@@ -240,9 +242,15 @@ vec4 deckMarch(vec3 ro, vec3 rd, vec3 sunF, float tLimit, float jitter, out floa
     vec3 p = ro + rd * t;
     float hn = (length(p) - rb) / thick;
     if (hn < 0.0 || hn > 1.0) continue;
-    float cov = deckCoverage(p);
+    // past the start of its hand-over band the deck gives way: from high up, where the
+    // planet-wide layer takes over (opaque by mid-band), by shrinking its cells, which stay
+    // opaque, rather than thinning them into grey veils; low down, where nothing takes over,
+    // by thinning into the haze toward the horizon
+    // (shrinking only once the layer has fully come in beneath, a third of the way through)
+    float fadeD = 1.0 - smoothstep(mix(uDeckFadeStart, mix(uDeckFadeStart, uDeckMaxDist, 0.3), uDeckShrink), uDeckMaxDist, t);
+    float cov = deckCoverage(p) * mix(1.0, fadeD, uDeckShrink);
     if (cov < 0.03) continue;
-    float sig = deckDensity(p, hn, cov, t < 30.0) * (1.0 - smoothstep(uDeckFadeStart, uDeckMaxDist, t));
+    float sig = deckDensity(p, hn, cov, t < 30.0) * mix(fadeD, 1.0, uDeckShrink);
     if (sig < 0.05) continue;
     // a sheet's (or storm's) base is not even: thicker rolls above darken it, thin spots glow
     float patchy = mix(1.0, 0.45 + 1.1 * gDeckLow, clamp(uDeckForm.x, 0.0, 1.0) * (1.0 - hn));
@@ -519,6 +527,7 @@ export class CloudDeck {
     uDeckSteps: { value: 32 },
     uDeckMaxDist: { value: 150 },
     uDeckFadeStart: { value: 100 },
+    uDeckShrink: { value: 0 },
     uDeckGlowPos: { value: new Vector3() },
     uDeckGlowI: { value: new Vector3() },
     uDeckFlashPos: { value: new Vector3() },
@@ -699,15 +708,17 @@ export class CloudDeck {
     const p = this.params;
     const camAlt = camF.length() - R_EARTH_KM;
     // from high up the planet-wide cloud map reads better. The two hand over by distance, so each
-    // cloud is drawn by one of them (only a narrow band has both, where the deck thins out by
-    // density and its thick clouds stay opaque): the deck out to its reach, the layer beyond.
+    // cloud is drawn by one of them: the deck out to its reach, the layer beyond (across a band
+    // between, the deck's cells shrink away inside the layer's).
     // As the camera climbs the reach draws in from the horizon, and by 50 km it ends short of
     // the nearest cloud top, so the deck has gone before it is switched off
     this.active = p ? 1 - smooth(20, 50, camAlt) : 0;
     const toTop = Math.max(0.5, camAlt - (p ? p.top : 2) - this.ground);
     const reach = 150 + (0.95 * toTop - 150) * smooth(15, 50, camAlt);
     u.uDeckMaxDist.value = reach;
-    u.uDeckFadeStart.value = reach * 0.65;
+    u.uDeckFadeStart.value = reach * 0.75;
+    // (as the planet-wide layer fades in: see RenderWorld's uCloudShellFade)
+    u.uDeckShrink.value = smooth(12, 37, camAlt);
     u.uDeckOn.value = this.active;
     // the deck stands on the terrain: follow the ground under the camera, slowly (mountains
     // in passing should not make the sky bob)

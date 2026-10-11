@@ -2,6 +2,7 @@ import { Vector3 } from 'three';
 import type { App } from '../core/App';
 import { dateToJ2000Seconds } from '../physics/constants';
 import { EarthAtmosphere } from '../physics/atmosphere';
+import type { Vessel } from '../physics/vessel';
 import { WARP_LEVELS } from '../physics/world';
 import { CAMERA_MODES } from '../camera/CameraDirector';
 import { HUD } from '../ui/HUD';
@@ -63,6 +64,10 @@ export class FlightController {
   readonly director: MissionDirector;
   private map: MapView | null = null;
   private photo: PhotoMode | null = null;
+  /** time to the next RCS hiss (s) */
+  private rcsPulse = 0;
+  /** how far each vessel's landing legs were out when last heard (for the deployment sound) */
+  private legsHeard = new WeakMap<Vessel, number>();
   private pauseEl: HTMLElement | null = null;
   private overlay: HTMLElement | null = null;
   private summaryShown = false;
@@ -543,6 +548,24 @@ export class FlightController {
     const camAir = v.body.id === 'earth' || best?.v.body.id === 'earth' ? EarthAtmosphere.sample(Math.max(0, camAlt), { pressure: 0, density: 0, temperature: 0, speedOfSound: 0 }).pressure / 101325 : 0;
     const comDist = v.pos.clone().add(s.bodyPos(v.body)).distanceTo(camPos);
     const onboard = s.director.mount === 'vehicle' && comDist < 120;
+    // reaction-control thrusters: short hisses as they pulse, faster the harder they work, heard
+    // close by in air (or through the structure on an onboard camera)
+    const c = v.controls;
+    const cmd = Math.abs(c.pitch) + Math.abs(c.yaw) + Math.abs(c.roll) + Math.abs(c.tx) + Math.abs(c.ty) + Math.abs(c.tz);
+    const live = !this.paused && !this.photo;
+    // landing legs swinging out
+    let legs = 0;
+    for (const a of v.assemblies) if (a.def.features?.landingLegs) legs = Math.max(legs, a.legsDeployed);
+    const legsBefore = this.legsHeard.get(v) ?? legs;
+    if (live && legsBefore <= 0.001 && legs > 0.001) audio.play('legs', comDist, onboard);
+    this.legsHeard.set(v, legs);
+    if (live && c.rcs && cmd > 0.06 && (onboard || (comDist < 250 && v.atm.pressure > 2000)) && v.assemblies.some((a) => a.def.features?.rcs && a.rcsFuel > 0 && !a.destroyed)) {
+      this.rcsPulse -= dt;
+      if (this.rcsPulse <= 0) {
+        audio.play('rcs', comDist, onboard);
+        this.rcsPulse = 0.08 + 0.26 * (1 - Math.min(1, cmd)) + Math.random() * 0.05;
+      }
+    }
     audio.setEngine(best ? {
       thrustMN: best.thrust / 1e6, distance: best.d, onboard: onboard && best.v === v, airAtCamera: Math.min(1, camAir), airAtVehicle: Math.min(1, best.v.atm.pressure / 101325),
       solid: best.solid, q: v.telemetry.dynamicPressure, mach: v.telemetry.mach, plasma: v.plasmaIntensity, nearVehicle: comDist < 400,

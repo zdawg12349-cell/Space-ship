@@ -99,6 +99,8 @@ varying vec2 vUv;
 varying vec4 vParams;
 varying vec4 vExtra;
 varying vec3 vLight;
+varying vec3 vLightP;
+varying vec3 vLightDir;
 varying vec3 vEmis;
 varying vec3 vAlbedo;
 varying float vDepth;
@@ -134,10 +136,14 @@ void main() {
   // lighting at the particle centre
   vec3 centre = (modelViewMatrix * vec4(aPos, 1.0)).xyz;
   vec3 L = uAmbient * aVel.w;
+  vLightP = vec3(0.0);
+  vLightDir = vec3(0.0, 1.0, 0.0);
   for (int i = 0; i < 3; i++) {
     vec3 d = uLightPos[i] - centre;
     float d2 = max(dot(d, d), size * size * 0.5 + 4.0);
-    L += uLightCol[i] / d2;
+    // the brightest (the active vehicle's flame) also keeps its direction, for shading
+    if (i == 0) { vLightP = uLightCol[i] / d2; vLightDir = d * inversesqrt(max(dot(d, d), 1e-6)); }
+    else L += uLightCol[i] / d2;
   }
   vLight = L;
   int k = int(aParams.w + 0.5);
@@ -158,6 +164,8 @@ varying vec2 vUv;
 varying vec4 vParams;
 varying vec4 vExtra;
 varying vec3 vLight;
+varying vec3 vLightP;
+varying vec3 vLightDir;
 varying vec3 vEmis;
 varying vec3 vAlbedo;
 varying float vDepth;
@@ -184,14 +192,17 @@ void main() {
     float cellI = floor(seed * 15.99);
     vec2 cell = vec2(mod(cellI, 4.0), floor(cellI / 4.0));
     vec4 pf = texture(uPuff, (cell + ruv * 0.5 + 0.5) * 0.25);
-    // dissolve with age: the threshold climbs so puffs thin from the edges inward
+    // dissolve with age: the threshold climbs so puffs thin from the edges inward, and the edge
+    // itself softens as the puff diffuses (an old, thinned puff has no outline left: dozens of
+    // them hanging over a landing zone read as a haze, not as overlapping translucent discs)
     float thr = mix(0.04, 0.5, age * age) * br;
-    dens = smoothstep(thr, thr + 0.35, pf.a * (0.8 + 0.4 * n));
+    dens = smoothstep(thr, thr + 0.35 + 0.55 * age, pf.a * (0.8 + 0.4 * n));
     vec2 nxy = pf.xy * 2.0 - 1.0;
     // rotate the atlas normal back into screen orientation
     nxy = vec2(nxy.x * vRot.x + nxy.y * vRot.y, -nxy.x * vRot.y + nxy.y * vRot.x);
-    // big puffs in a dense cloud read as one volume: their own relief fades
-    float relief = mix(1.0, 0.45, smoothstep(6.0, 30.0, vParams.x));
+    // big puffs, and puffs buried deep in a dense cloud, read as one volume: their own relief
+    // fades (those on the outside keep it, for the cloud's lumpy outline)
+    float relief = mix(1.0, 0.45, smoothstep(6.0, 30.0, vParams.x)) * mix(0.5, 1.0, smoothstep(0.2, 0.75, vShade.y));
     N = normalize(vec3(nxy * relief, pf.z * 1.2 + 0.25));
   }
   float alpha = dens * vParams.y;
@@ -208,7 +219,10 @@ void main() {
   float fwd = pow(clamp(-uSunDirV.z, 0.0, 1.0), 6.0) * (1.0 - dens) * 1.5 * vis;
   // multiple scattering keeps shadowed parts from going black; sky light from above
   float skyN = 0.55 + 0.45 * N.y;
-  vec3 lit = vAlbedo * (uSunIrr * (selfShadow + fwd + 0.3 * (1.0 - vis) * vShade.y) + vLight * skyN) / 3.14159;
+  // the flame's light falls from one side: billows turned toward it lit, the far side shaded
+  // (at night this is all the relief a cloud has)
+  float wrapP = clamp((dot(N, vLightDir) + 0.5) / 1.5, 0.0, 1.0);
+  vec3 lit = vAlbedo * (uSunIrr * (selfShadow + fwd + 0.3 * (1.0 - vis) * vShade.y) + vLight * skyN + vLightP * (0.35 + 1.3 * wrapP)) / 3.14159;
   vec3 col = lit + vEmis * (0.6 + 0.8 * n);
   col *= uAtmT;
   if (vExtra.w > 0.5) { gl_FragColor = vec4(col * alpha, 0.0); return; }
@@ -223,7 +237,7 @@ const _q = new Quaternion();
  * upper envelope gives a lumpy outline and a height field; we store the envelope normal (xy),
  * its height (z) and a soft coverage (a).
  */
-function createPuffAtlas(): DataTexture {
+export function createPuffAtlas(): DataTexture {
   const C = 128, S = C * 4;
   const data = new Uint8Array(S * S * 4);
   let seed = 4242;
@@ -244,13 +258,24 @@ function createPuffAtlas(): DataTexture {
     }
     for (let y = 0; y < C; y++) for (let x = 0; x < C; x++) {
       const u = ((x + 0.5) / C) * 2 - 1, v = ((y + 0.5) / C) * 2 - 1;
-      let h = 0;
+      // a core of big domes joined by a smooth maximum, with the billows added on as rounded
+      // bumps (lumps on its top, lobes round its edge). Every piece meets the rest without a
+      // step, ring or crease: a step at each billow's rim drew it as a hard-edged disc with a
+      // bright ring, so a lit cloud read as a heap of bubbles
+      const K = 10;
+      let acc = 1, bumps = 0;
       for (const [sx, sy, sr] of spheres) {
         const d2 = (u - sx) * (u - sx) + (v - sy) * (v - sy);
-        if (d2 < sr * sr) h = Math.max(h, Math.sqrt(sr * sr - d2) + (sr > 0.3 ? 0 : 0.18));
+        if (d2 >= sr * sr) continue;
+        const q = 1 - d2 / (sr * sr);
+        const foot = Math.min(1, q / 0.3);
+        if (sr > 0.3) acc += Math.exp(K * sr * Math.sqrt(q) * foot * foot * (3 - 2 * foot)) - 1;
+        else bumps += (sr * 0.8 + 0.04) * q * Math.sqrt(q);
       }
-      // keep the puff inside the sprite
-      h *= Math.max(0, Math.min(1, (1 - Math.hypot(u, v)) * 6));
+      let h = Math.log(acc) / K + bumps;
+      // keep the puff inside the sprite (smoothly, or the cut-off rings it too)
+      const e = Math.max(0, Math.min(1, (1 - Math.hypot(u, v)) * 5));
+      h *= e * e * (3 - 2 * e);
       hf[y * C + x] = h;
     }
     const cx = (cell % 4) * C, cy = Math.floor(cell / 4) * C;

@@ -99,6 +99,8 @@ uniform float uLambda;
 uniform float uDiamond;
 uniform float uSoot;
 uniform float uIntensity;
+// how fast the glow fades as an under-expanded jet balloons and cools (0 in dense air)
+uniform float uCool;
 uniform float uFlow;
 uniform float uIgnite;
 uniform float uSpread;
@@ -171,7 +173,14 @@ void main() {
     float cool = clamp(rho * 0.9 + mixing * 0.3 + s / uLp * 0.35 - turb * 0.25, 0.0, 1.0);
     vec3 cBody = mix(mix(uColCore, uColBody, smoothstep(0.0, 0.35, cool)), uColEdge, smoothstep(0.35, 1.0, cool));
     float bodyLum = body * (0.7 + 0.6 * clamp(turb * mixing + 0.3, 0.0, 1.0));
-    vec3 c = uColCore * core * 2.5 + cBody * bodyLum + uColDiamond * dia * 2.5;
+    // the gas cools as it expands: a vacuum jet's white-hot core fades within a few nozzle radii
+    // (so looking down the jet from beside the nozzle does not add up to a white ball). In air the
+    // bell keeps glowing as it afterburns; in near-vacuum there is no air to burn in and its glow
+    // fades steeply with its spread, so a camera on the stage looking down the jet sees the hot gas
+    // at the exit, not an orange fog filling the whole bell
+    float expand = uRe / R;
+    float bodyCool = uCool * 0.3 + max(0.0, uCool - 1.0) * 2.0;
+    vec3 c = uColCore * core * 2.5 * pow(expand, uCool * 1.4) + cBody * bodyLum * pow(expand, bodyCool) + uColDiamond * dia * 2.5;
     // ignition transient (TEA-TEB green for kerosene engines)
     c = mix(c, vec3(0.25, 1.0, 0.35) * (core * 2.0 + body), uIgnite);
     float dens = uIntensity / R;
@@ -277,7 +286,7 @@ export class PlumeSystem {
       uniforms: {
         uCamLocal: { value: new Vector3() }, uNoise: { value: this.noise }, uLinDepth: { value: null }, uResolution: { value: this.resolution },
         uTime: { value: 0 }, uSeed: { value: Math.random() }, uLen: { value: 10 }, uRmax: { value: 1 }, uRe: { value: 0.5 }, uRfar: { value: 0.6 },
-        uSexp: { value: 2 }, uLp: { value: 8 }, uLcore: { value: 2 }, uLambda: { value: 1 }, uDiamond: { value: 0 }, uSoot: { value: 0 }, uIntensity: { value: 0 },
+        uSexp: { value: 2 }, uLp: { value: 8 }, uLcore: { value: 2 }, uLambda: { value: 1 }, uDiamond: { value: 0 }, uSoot: { value: 0 }, uIntensity: { value: 0 }, uCool: { value: 0 },
         uFlow: { value: 60 }, uIgnite: { value: 0 }, uSpread: { value: 0.08 }, uR0: { value: 1 },
         uColCore: { value: new Vector3(...st.core) }, uColBody: { value: new Vector3(...st.body) }, uColEdge: { value: new Vector3(...st.edge) },
         uColDiamond: { value: new Vector3(...st.diamond) }, uAtmT: { value: new Vector3(1, 1, 1) },
@@ -363,6 +372,7 @@ export class PlumeSystem {
       u.uDiamond.value = diamonds;
       u.uSoot.value = st.soot * air * Math.min(1, thrustFrac * 1.5);
       u.uIntensity.value = intensity;
+      u.uCool.value = Math.min(1.5, Math.max(0, Math.log10(k) * 0.5));
       u.uFlow.value = Math.min(300, 40 + re * 30);
       u.uTime.value = this.time;
       u.uLinDepth.value = linDepth;
