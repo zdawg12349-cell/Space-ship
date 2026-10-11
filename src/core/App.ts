@@ -38,8 +38,11 @@ export class App {
     this.ui = document.getElementById('ui')!;
     this.settings = loadSettings();
     this.progress = loadProgress();
-    this.renderer = new WebGLRenderer({ canvas, antialias: false, logarithmicDepthBuffer: true, powerPreference: 'high-performance', stencil: false, preserveDrawingBuffer: true });
+    this.renderer = new WebGLRenderer({ canvas, antialias: false, logarithmicDepthBuffer: true, powerPreference: 'high-performance', stencil: false });
     this.renderer.shadowMap.enabled = true;
+    // (in a release build, skip three.js's shader error checks: they wait for every compile to finish
+    // on the spot, which turns each new shader into a visible hitch on a slow GPU)
+    if (import.meta.env.PROD) this.renderer.debug.checkShaderErrors = false;
   }
 
   async boot(): Promise<void> {
@@ -104,8 +107,11 @@ export class App {
       rw.sunLight.shadow.map = null;
     }
     rw.plumes.quality = g.plumeQuality;
+    rw.plumes.setLightCount(g.plumeLights);
     rw.effects.setBudget(g.particles);
     rw.envProbe.setSize(g.envProbe);
+    // (the sky's lighting changes slowly: on a low-end GPU refresh it less often, a periodic spike less)
+    rw.envProbe.interval = g.envProbe <= 32 ? 1.2 : 0.35;
     rw.deck.steps = g.cloudSteps;
     this.resize(true);
   }

@@ -203,7 +203,7 @@ export class Effects {
 
     // lighting
     const rw = this.rw;
-    const sunIrr = _a.copy(rw.sunColorAtFocus).multiplyScalar(rw.sunLight.visible ? rw.sunLight.intensity / Math.max(1e-6, Math.max(rw.sunColorAtFocus.x, rw.sunColorAtFocus.y, rw.sunColorAtFocus.z)) : 0);
+    const sunIrr = _a.copy(rw.sunColorAtFocus).multiplyScalar(rw.sunLight.intensity > 0 ? rw.sunLight.intensity / Math.max(1e-6, Math.max(rw.sunColorAtFocus.x, rw.sunColorAtFocus.y, rw.sunColorAtFocus.z)) : 0);
     const upW = _c.set(0, 1, 0).applyQuaternion(this.frameQuat);
     const sunEl = upW.dot(rw.sunDir);
     const day = smooth(-0.12, 0.25, sunEl);

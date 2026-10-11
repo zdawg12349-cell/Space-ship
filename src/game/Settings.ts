@@ -22,14 +22,15 @@ export interface GraphicsConfig {
   envProbe: number; // environment cube size
   maxPixelRatio: number;
   cloudSteps: number; // cloud-deck ray-march steps (half-resolution pass)
+  plumeLights: number; // exhaust point lights lighting the vehicle and pad (each costs every lit pixel)
 }
 
 export const GRAPHICS: Record<GraphicsPreset, GraphicsConfig> = {
-  LOW: { resolutionScale: 0.6, msaa: 0, shadows: 0, terrainDetail: 1.3, particles: 1500, vegetation: 0.25, plumeQuality: 0.6, bloom: 0.03, grain: 0.02, vignette: 0.2, chromatic: 0, envProbe: 32, maxPixelRatio: 1, cloudSteps: 24 },
-  MEDIUM: { resolutionScale: 0.8, msaa: 2, shadows: 1024, terrainDetail: 1.8, particles: 3000, vegetation: 0.55, plumeQuality: 0.8, bloom: 0.04, grain: 0.03, vignette: 0.25, chromatic: 0.001, envProbe: 48, maxPixelRatio: 1, cloudSteps: 36 },
-  HIGH: { resolutionScale: 1, msaa: 4, shadows: 2048, terrainDetail: 2.4, particles: 6000, vegetation: 1, plumeQuality: 1, bloom: 0.045, grain: 0.035, vignette: 0.28, chromatic: 0.0008, envProbe: 64, maxPixelRatio: 1.5, cloudSteps: 56 },
-  ULTRA: { resolutionScale: 1, msaa: 4, shadows: 4096, terrainDetail: 3.0, particles: 10000, vegetation: 1, plumeQuality: 1, bloom: 0.045, grain: 0.035, vignette: 0.28, chromatic: 0.0008, envProbe: 96, maxPixelRatio: 2, cloudSteps: 80 },
-  CINEMATIC: { resolutionScale: 1, msaa: 8, shadows: 4096, terrainDetail: 3.4, particles: 14000, vegetation: 1, plumeQuality: 1.15, bloom: 0.055, grain: 0.05, vignette: 0.36, chromatic: 0.0014, envProbe: 128, maxPixelRatio: 2, cloudSteps: 112 },
+  LOW: { resolutionScale: 0.6, msaa: 0, shadows: 0, terrainDetail: 1.3, particles: 1500, vegetation: 0.25, plumeQuality: 0.6, bloom: 0.03, grain: 0.02, vignette: 0.2, chromatic: 0, envProbe: 32, maxPixelRatio: 1, cloudSteps: 24, plumeLights: 1 },
+  MEDIUM: { resolutionScale: 0.8, msaa: 2, shadows: 1024, terrainDetail: 1.8, particles: 3000, vegetation: 0.55, plumeQuality: 0.8, bloom: 0.04, grain: 0.03, vignette: 0.25, chromatic: 0.001, envProbe: 48, maxPixelRatio: 1, cloudSteps: 36, plumeLights: 2 },
+  HIGH: { resolutionScale: 1, msaa: 4, shadows: 2048, terrainDetail: 2.4, particles: 6000, vegetation: 1, plumeQuality: 1, bloom: 0.045, grain: 0.035, vignette: 0.28, chromatic: 0.0008, envProbe: 64, maxPixelRatio: 1.5, cloudSteps: 56, plumeLights: 3 },
+  ULTRA: { resolutionScale: 1, msaa: 4, shadows: 4096, terrainDetail: 3.0, particles: 10000, vegetation: 1, plumeQuality: 1, bloom: 0.045, grain: 0.035, vignette: 0.28, chromatic: 0.0008, envProbe: 96, maxPixelRatio: 2, cloudSteps: 80, plumeLights: 3 },
+  CINEMATIC: { resolutionScale: 1, msaa: 8, shadows: 4096, terrainDetail: 3.4, particles: 14000, vegetation: 1, plumeQuality: 1.15, bloom: 0.055, grain: 0.05, vignette: 0.36, chromatic: 0.0014, envProbe: 128, maxPixelRatio: 2, cloudSteps: 112, plumeLights: 3 },
 };
 
 export interface Settings {

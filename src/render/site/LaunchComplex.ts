@@ -878,6 +878,30 @@ export class LaunchComplex {
 
   private lampDist = new Float32Array(0);
   private lampOrder: number[] = [];
+  /** drawn at all (false far from the camera) */
+  shown = true;
+  /**
+   * Whether the site's floodlights, work lights and beacon light the scene. Decided once per
+   * flight (at night or twilight when it starts): in daylight they would only cost every lit pixel
+   * at zero brightness, and switching them on mid-flight would recompile every lit material.
+   */
+  useLights(on: boolean): void {
+    for (const l of [...this.floodlights, ...this.apronLights, ...this.workLights, ...this.beacons]) l.visible = on;
+  }
+  /**
+   * Show or hide the site's geometry. Its lights stay in the scene (at their own intensities, no
+   * reach that far): three.js bakes the number of visible lights into every lit material, so
+   * hiding the whole group with its floodlights recompiled every material in view, a freeze
+   * climbing away from the site and again when a booster flew back to it.
+   */
+  setShown(on: boolean): void {
+    if (on === this.shown) return;
+    this.shown = on;
+    this.group.traverse((o) => {
+      const r = o as Object3D & { isMesh?: boolean; isLine?: boolean; isPoints?: boolean; isSprite?: boolean };
+      if (r.isMesh || r.isLine || r.isPoints || r.isSprite) o.visible = on;
+    });
+  }
   /**
    * Hand the lamps nearest the camera to the site materials, in view space. Call just before
    * rendering, once the camera and the complex are placed. The last few before the cut fade out,
@@ -886,7 +910,7 @@ export class LaunchComplex {
   updateLamps(camera: Camera): void {
     const L = this.mats.lamps;
     const lamps = this.siteLamps;
-    if (this.night <= 0.001 || !lamps.length || !this.group.visible) { L.count.value = 0; return; }
+    if (this.night <= 0.001 || !lamps.length || !this.shown) { L.count.value = 0; return; }
     this.group.updateMatrixWorld();
     camera.updateMatrixWorld();
     const mw = this.group.matrixWorld, vm = camera.matrixWorldInverse;

@@ -188,7 +188,15 @@ export class AeroShells {
   /** 0..1 moisture available for condensation (weather) */
   humidity = 0.8;
 
-  constructor(private readonly scene: Scene) {}
+  constructor(private readonly scene: Scene) {
+    // one hidden shell of each kind stays in the scene for good: the renderer's prewarm compiles
+    // their shaders with everything else and keeps them, so the first vapour cone or entry plasma
+    // of a flight does not stall the game while its shader compiles
+    const keep = new Group();
+    keep.add(new Mesh(this.vaporGeo, vaporMaterial()), new Mesh(this.sheathGeo, plasmaMaterial()));
+    keep.visible = false;
+    scene.add(keep);
+  }
 
   clear(): void {
     for (const s of this.items.values()) this.scene.remove(s.holder);

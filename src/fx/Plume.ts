@@ -241,6 +241,8 @@ export class PlumeSystem {
   private time = 0;
   private resolution = new Vector2(1, 1);
   quality = 1;
+  /** lights in use (the rest stay hidden for the whole flight: see setLightCount) */
+  private lightCount = 3;
 
   constructor(private readonly fxScene: Scene, private readonly mainScene: Scene, private readonly noise: Texture, private readonly linDepth: () => Texture) {
     for (let i = 0; i < 3; i++) {
@@ -421,8 +423,10 @@ export class PlumeSystem {
     // assign the brightest clusters to the light pool
     const list = [...clusters.values()].filter((c) => c.intensity > 0).sort((a, b) => b.intensity - a.intensity);
     this.lights.forEach((L, i) => {
-      const c = list[i];
-      if (!c) { L.light.visible = false; L.intensity = 0; return; }
+      const c = i < this.lightCount ? list[i] : undefined;
+      // (lights are never hidden, only dimmed: three.js bakes the number of visible lights into every
+      // lit material, so switching one off at each ignition or cutoff recompiled them all, a freeze)
+      if (!c) { L.light.intensity = 0; L.intensity = 0; return; }
       L.pos.copy(c.sum).multiplyScalar(1 / c.w);
       L.light.position.copy(L.pos);
       L.color.setRGB(c.color.x / c.intensity, c.color.y / c.intensity, c.color.z / c.intensity);
@@ -431,8 +435,17 @@ export class PlumeSystem {
       const fl = 1 + 0.06 * Math.sin(this.time * 37 + i) + 0.04 * Math.sin(this.time * 91 + i * 2);
       L.intensity = c.intensity * fl;
       L.light.intensity = L.intensity;
-      L.light.visible = true;
     });
+  }
+
+  /**
+   * How many exhaust lights light the scene (graphics preset). Each visible light costs every lit
+   * pixel, idle or not, so a low-end preset uses one; the count is fixed until the preset changes,
+   * since changing it recompiles every lit material.
+   */
+  setLightCount(n: number): void {
+    this.lightCount = Math.max(0, Math.min(this.lights.length, Math.round(n)));
+    this.lights.forEach((L, i) => { L.light.visible = i < this.lightCount; if (i >= this.lightCount) { L.light.intensity = 0; L.intensity = 0; } });
   }
 
   /** Total visible plume brightness near the camera (for exposure / audio hints). */
@@ -442,7 +455,7 @@ export class PlumeSystem {
     for (const p of this.volumes) { this.fxScene.remove(p.mesh); p.mat.dispose(); }
     this.volumes = [];
     this.known.clear();
-    for (const L of this.lights) L.light.visible = false;
+    for (const L of this.lights) { L.light.intensity = 0; L.intensity = 0; }
   }
 }
 

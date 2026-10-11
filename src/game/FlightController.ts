@@ -64,6 +64,8 @@ export class FlightController {
   readonly director: MissionDirector;
   private map: MapView | null = null;
   private photo: PhotoMode | null = null;
+  /** the scene's shaders have been compiled ahead of their first use */
+  private prewarmed = false;
   /** time to the next RCS hiss (s) */
   private rcsPulse = 0;
   /** how far each vessel's landing legs were out when last heard (for the deployment sound) */
@@ -503,6 +505,8 @@ export class FlightController {
     } else this.input.consumeMouse();
     if (this.photo) this.photo.update(dt, this.input);
     else s.render(dt);
+    // once the first frame has placed everything: compile the rest of the scene's shaders now
+    if (!this.prewarmed) { this.prewarmed = true; app.rw.prewarm(); }
     if (this.photo) s.renderStatic(dt);
     // post settings: letterbox in cinematic
     const post = app.rw.post.settings;
@@ -675,10 +679,14 @@ export class FlightController {
   }
 
   private screenshot(): void {
-    const url = this.app.canvas.toDataURL('image/png');
-    const a = h('a', { href: url, download: `ascent-${Date.now()}.png` });
-    a.click();
-    this.app.audio.play('shutter');
+    // (read the canvas in the next animation frame, just after the game has drawn it: the drawing
+    // buffer is not preserved between frames, which saves a full-screen copy every frame)
+    requestAnimationFrame(() => {
+      const url = this.app.canvas.toDataURL('image/png');
+      const a = h('a', { href: url, download: `ascent-${Date.now()}.png` });
+      a.click();
+      this.app.audio.play('shutter');
+    });
   }
 
   private showSummary(): void {

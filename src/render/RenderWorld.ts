@@ -1,7 +1,7 @@
 import { RecoveryZones } from './site/RecoveryZones';
 import { AeroShells } from '../fx/AeroShells';
 import {
-  AmbientLight, DirectionalLight, HemisphereLight, Matrix3, Matrix4, Mesh, PerspectiveCamera, Quaternion, RingGeometry, Scene,
+  AmbientLight, DirectionalLight, HemisphereLight, Matrix3, Matrix4, Mesh, Object3D, PerspectiveCamera, Quaternion, RingGeometry, Scene,
   ShaderMaterial, SphereGeometry, Texture, Vector3, Vector4, WebGLRenderer, DoubleSide,
 } from 'three';
 import { segmentTransmittance, sunTransmittance } from './atmosphere/cpuAtmosphere';
@@ -308,6 +308,7 @@ export class RenderWorld {
 
   /** Build (or replace) the launch complex for a site/vehicle pair. */
   setComplex(site: LaunchSite | null, def: VehicleDef | null, quality = 1): LaunchComplex | null {
+    this.complexLightsSet = false;
     if (this.complex) {
       this.scene.remove(this.complex.group);
       this.complex.dispose();
@@ -470,17 +471,20 @@ export class RenderWorld {
     const g = c.group;
     g.position.copy(this.complexPos);
     g.quaternion.copy(this.complexQuat);
-    // only draw it when it could cover more than a few pixels
-    g.visible = this.complexPos.length() < 120_000;
+    // only draw it when it could cover more than a few pixels (its meshes, not its lights: see setShown)
+    c.setShown(this.complexPos.length() < 120_000);
     const cam = this.camera;
     c.mats.pixelAngle.value = (2 * Math.tan((cam.fov * Math.PI) / 360)) / Math.max(1, this.post.size.y);
     // night factor from the sun elevation at the pad (lamps come on in civil twilight)
     const upW = up.applyQuaternion(this.earthRot);
     const sunEl = upW.dot(_v.copy(this.complexPos).negate().sub(this.cameraHelio).normalize());
     this.siteNight = Math.min(1, Math.max(0, (0.06 - sunEl) / 0.12));
+    if (!this.complexLightsSet) { c.useLights(this.siteNight > 0); this.complexLightsSet = true; }
     c.update(dt, this.siteNight);
   }
 
+  /** the site's lights were switched on or off for this flight */
+  private complexLightsSet = false;
   private _fk = new Vector3();
   private _st = new Vector3();
   private updateLighting(dt: number, camKm: Vector3): void {
@@ -502,8 +506,8 @@ export class RenderWorld {
     segmentTransmittance(this.atmosphere.params, camKm, focusKm, this.atmToFocus);
     const mx = Math.max(T.x, T.y, T.z, 1e-6);
     this.sunLight.color.setRGB(T.x / mx, T.y / mx, T.z / mx);
-    this.sunLight.intensity = E * mx;
-    this.sunLight.visible = mx > 1e-4;
+    // (dimmed to nothing at night or in shadow, never hidden: hiding a light recompiles every lit material)
+    this.sunLight.intensity = mx > 1e-4 ? E * mx : 0;
     // shadow frustum around the focus, camera-relative
     const fc = _v2.copy(this.focusHelio).sub(this.cameraHelio);
     this.sunLight.target.position.copy(fc);
@@ -638,7 +642,7 @@ export class RenderWorld {
     const sl = this.sunLight;
     const map = sl.shadow.map;
     // (PCF maps only: a depth texture set up for hardware comparison)
-    const on = this.renderer.shadowMap.enabled && sl.castShadow && sl.visible && !!map?.depthTexture?.compareFunction;
+    const on = this.renderer.shadowMap.enabled && sl.castShadow && sl.intensity > 0 && !!map?.depthTexture?.compareFunction;
     (u.uShadowParams.value as Vector4).set(sl.shadow.mapSize.x, -0.00008, Math.max(1, sl.shadow.radius), on ? 1 : 0);
     if (!on) return;
     sl.updateMatrixWorld();
@@ -647,6 +651,36 @@ export class RenderWorld {
     this.camera.updateMatrixWorld();
     (u.uShadowFromView.value as Matrix4).multiplyMatrices(sl.shadow.matrix, this.camera.matrixWorld);
     u.uSunShadow.value = map!.depthTexture;
+  }
+
+  /**
+   * Compile every material in the scene and the effects now, hidden ones included (exhaust, smoke,
+   * plasma, chutes), in the background where the browser supports it, so none compiles the first
+   * time it appears: on a slow GPU each first appearance froze the game at the very moment worth
+   * watching (ignition, staging, entry). Lights keep their visibility: programs depend on how many
+   * there are.
+   */
+  prewarm(): void {
+    const hidden: Object3D[] = [];
+    for (const sc of [this.scene, this.fxScene]) {
+      sc.traverse((o) => { if (!o.visible && !(o as Object3D & { isLight?: boolean }).isLight) { hidden.push(o); o.visible = true; } });
+    }
+    const r = this.renderer;
+    const prev = r.getRenderTarget();
+    try {
+      // (into the targets they are drawn to: three.js builds a different variant of a shader for
+      // an offscreen target than for the screen. compileAsync gathers the materials synchronously,
+      // then lets the driver compile them in parallel)
+      r.setRenderTarget(this.post.sceneRT);
+      void r.compileAsync(this.scene, this.camera).catch(() => undefined);
+      r.setRenderTarget(this.post.compRT);
+      void r.compileAsync(this.fxScene, this.camera).catch(() => undefined);
+    } catch {
+      // nothing to do: they will compile when first drawn
+    } finally {
+      r.setRenderTarget(prev);
+      for (const o of hidden) o.visible = false;
+    }
   }
 
   render(dt: number, extra?: () => void): void {

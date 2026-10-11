@@ -132,7 +132,10 @@ export class AudioEngine {
     if (this.started) { if (this.ctx?.state === 'suspended') void this.ctx.resume(); return; }
     this.started = true;
     let ctx: AudioContext;
-    try { ctx = new AudioContext({ latencyHint: 'interactive' }); } catch { return; }
+    // (the 'playback' latency's larger buffers ride out a busy main thread and a slow CPU: with
+    // the smallest buffers the sound kept breaking up on low-end laptops. A tenth of a second
+    // more latency is inaudible against engine sound that already arrives with its distance delay)
+    try { ctx = new AudioContext({ latencyHint: 'playback' }); } catch { try { ctx = new AudioContext(); } catch { return; } }
     this.ctx = ctx;
     const comp = ctx.createDynamicsCompressor();
     comp.threshold.value = -10; comp.knee.value = 8; comp.ratio.value = 4; comp.attack.value = 0.005; comp.release.value = 0.25;
@@ -143,7 +146,9 @@ export class AudioEngine {
     this.voiceBus = ctx.createGain(); this.voiceBus.connect(this.master);
     this.ambBus = ctx.createGain(); this.ambBus.connect(this.sfx);
     this.reverb = ctx.createConvolver();
-    this.reverb.buffer = impulseResponse(ctx, 3.5, 3.2);
+    // (a long convolution is the costliest node in the graph: 2.2 s keeps the pad's echo but
+    // leaves the audio thread headroom on a weak CPU)
+    this.reverb.buffer = impulseResponse(ctx, 2.2, 3.0);
     this.reverbSend = ctx.createGain();
     this.reverbSend.gain.value = 0.35;
     this.reverbSend.connect(this.reverb).connect(this.sfx);
