@@ -498,6 +498,13 @@ export class CloudDeck {
   rainAtCamera = 0;
   /** grey daylight under a full deck, as a fraction of clear-sky light (for particles and lamps) */
   overcast = 0;
+  /** ground under the camera (km above sea level, smoothed): cloud bases stand above the terrain */
+  ground = 0;
+  private groundInit = false;
+
+  /** cloud base and tops in use (km above sea level) */
+  get baseKm(): number { return (this.params?.base ?? 0) + this.ground; }
+  get topKm(): number { return (this.params?.top ?? 0) + this.ground; }
 
   private noiseRT: WebGL3DRenderTarget | null = null;
   private weatherRT: WebGLRenderTarget;
@@ -585,9 +592,10 @@ export class CloudDeck {
     this.hole = null;
     this.uniforms.uDeckHoleR.value.set(0, 0);
     this.uniforms.uDeckOn.value = 0;
+    this.groundInit = false;
     if (!this.params) return;
     const p = this.params;
-    this.uniforms.uDeckParams.value.set(p.base, p.top, p.density, p.cover);
+    this.uniforms.uDeckParams.value.set(p.base + this.ground, p.top + this.ground, p.density, p.cover);
     this.uniforms.uDeckForm.value.set(p.form, p.rain, p.erosion, 0);
   }
 
@@ -599,8 +607,9 @@ export class CloudDeck {
    * @param sunE sun irradiance at the top of the atmosphere over the camera, already
    *   multiplied by the air's transmittance (rendering units)
    * @param simDt simulation seconds this frame (clouds drift with the sim, capped at 60x)
+   * @param groundKm terrain height under the camera (km above sea level)
    */
-  update(dt: number, simDt: number, camF: Vector3, focusF: Vector3, sunF: Vector3, sunE: Vector3, skyE: number): void {
+  update(dt: number, simDt: number, camF: Vector3, focusF: Vector3, sunF: Vector3, sunE: Vector3, skyE: number, groundKm = 0): void {
     // a deep deck (storm towers) gets proportionally more steps
     const depth = this.params ? this.params.top - this.params.base : 2;
     this.uniforms.uDeckSteps.value = Math.min(128, Math.round(this.steps * this.stepScale * Math.min(2, Math.max(1, depth / 2.5))));
@@ -612,6 +621,12 @@ export class CloudDeck {
     this.active = p ? 1 - smooth(20, 50, camAlt) : 0;
     u.uDeckFadeStart.value = u.uDeckMaxDist.value * (0.65 - 0.5 * smooth(3, 30, camAlt));
     u.uDeckOn.value = this.active;
+    // the deck stands on the terrain: follow the ground under the camera, slowly (mountains
+    // in passing should not make the sky bob)
+    const g = Math.max(0, groundKm);
+    if (!this.groundInit) { this.ground = g; this.groundInit = true; }
+    else this.ground += (g - this.ground) * (1 - Math.exp(-dt / 8));
+    if (p) { u.uDeckParams.value.x = p.base + this.ground; u.uDeckParams.value.y = p.top + this.ground; }
     if (!p || this.active <= 0) {
       this.rainAtCamera = 0; this.camInCloud = 0; this.focusInCloud = 0; this.overcast = 0; this.focusSun = 1;
       u.uDeckProbe.value.set(0, 0, 0, 0);
@@ -650,13 +665,13 @@ export class CloudDeck {
     if (!this.probePending && this.probeTimer <= 0) this.runProbe(focusF, camF, sunF);
     const kf = 1 - Math.exp(-dt / (this.probeFresh ? 0.6 : 0.01));
     this.focusSun += (this.focusSunTarget - this.focusSun) * kf;
-    const rb = R_EARTH_KM + p.base;
+    const rb = R_EARTH_KM + this.baseKm;
     this.camBelow = camF.length() < rb;
     const under = this.camBelow ? smooth(0.55, 0.9, this.camCover) : 0;
     this.overcast = under * this.active;
     // the sunlit top seen from above: bright, slightly warm with the low sun
     u.uDeckTopL.value.copy(sunE).multiplyScalar(((0.3 + 0.7 * Math.max(0, muS)) * 0.8) / Math.PI);
-    const above = camF.length() > R_EARTH_KM + p.top;
+    const above = camF.length() > R_EARTH_KM + this.topKm;
     u.uDeckProbe.value.set(this.overcast, above ? p.cover * this.active : 0, 0, 0);
     this.rainAtCamera = this.camBelow ? p.rain * smooth(0.6, 0.9, this.camCover) * this.active : 0;
   }
@@ -736,11 +751,11 @@ export class CloudDeck {
     if (this.hole) this.hole.clock += dt;
     if (posF && climbing) {
       const alt = posF.length() - R_EARTH_KM;
-      if (alt > p.base - 0.1 && alt < p.top + 0.3) {
+      if (alt > this.baseKm - 0.1 && alt < this.topKm + 0.3) {
         if (!this.hole || this.hole.done) this.hole = { path: [], drift: this.drift.clone(), clock: 0, done: false };
         const path = this.hole.path;
         if (!path.length || path[path.length - 1].p.distanceTo(posF) > 0.03) path.push({ p: posF.clone(), t: this.hole.clock });
-      } else if (this.hole && alt >= p.top + 0.3) this.hole.done = true;
+      } else if (this.hole && alt >= this.topKm + 0.3) this.hole.done = true;
     }
     const h = this.hole;
     // the channel opens LAG seconds behind the vehicle and spreads at RATE km/s

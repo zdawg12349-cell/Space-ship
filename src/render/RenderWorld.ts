@@ -518,6 +518,7 @@ export class RenderWorld {
   private readonly _wst = new Vector3();
   private readonly _wu = new Vector3();
   private readonly _wc = new Vector3();
+  private readonly _hs = { h: 0, water: 0, sand: 0, flat: 0 };
   private prevSimT = NaN;
   private prevCamR = NaN;
   private climb = 0;
@@ -534,11 +535,14 @@ export class RenderWorld {
     const simDt = Number.isFinite(this.prevSimT) ? t - this.prevSimT : 0;
     this.prevSimT = t;
     // sunlight arriving on top of the deck over the camera
-    const top = this._wt.copy(camKm).normalize().multiplyScalar(6371 + (deck.params?.top ?? 2));
+    const top = this._wt.copy(camKm).normalize().multiplyScalar(6371 + (deck.params ? deck.topKm : 2));
     const muS = this._wu.copy(top).normalize().dot(this.sunDir);
     const sunE = this._we.copy(this.atmosphere.params.sunIlluminance).multiply(sunTransmittance(this.atmosphere.params, top, this.sunDir, this._wst));
     const skyE = 110 * 0.12 * Math.min(1, Math.max(0, muS + 0.1));
-    deck.update(dt, simDt, camF, focusF, sunF, sunE, skyE);
+    // the ground under the camera: cloud bases stand above the terrain, not above sea level
+    const n = this._wu.copy(camF).normalize();
+    const ground = camKm.length() < 6371 + 80 ? sampleHeight(this.heightCtxEarth, n.x, n.y, n.z, this._hs).h / 1000 : 0;
+    deck.update(dt, simDt, camF, focusF, sunF, sunE, skyE, ground);
     // rain on the lens (world axes): local up, a horizontal reference, the camera's climb rate
     this.rainClock += dt;
     const camR = camKm.length() * 1000;

@@ -27,6 +27,7 @@ describe('weather', () => {
     const deck = {
       params: DECK_PRESETS.storm,
       active: 1,
+      ground: 0,
       uniforms: { uDeckFlashIrr: { value: new Vector3() } },
       setFlash: (p: Vector3 | null, i = 0) => { if (p && i > 0) flashes.push(p.length() - 6371); },
     } as unknown as CloudDeck;
@@ -48,6 +49,16 @@ describe('weather', () => {
     for (const h of flashes) {
       expect(h).toBeGreaterThan(DECK_PRESETS.storm.base - 0.01);
       expect(h).toBeLessThan(DECK_PRESETS.storm.top);
+    }
+    // over high ground the storm stands on the terrain: flashes rise with it
+    flashes.length = 0;
+    (deck as unknown as { ground: number }).ground = 0.8;
+    const camHigh = new Vector3(6371.85, 0, 0);
+    for (let t = 0; t < 600; t += 0.05) lightning.update(0.05, deck, camHigh, rot, new Vector3(6_371_850, 0, 0));
+    expect(flashes.length).toBeGreaterThan(5);
+    for (const h of flashes) {
+      expect(h).toBeGreaterThan(0.8 + DECK_PRESETS.storm.base - 0.01);
+      expect(h).toBeLessThan(0.8 + DECK_PRESETS.storm.top);
     }
     // nothing while the camera is high above the weather
     const before = strikes.length;

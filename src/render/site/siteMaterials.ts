@@ -1,4 +1,4 @@
-import { Color, DoubleSide, MeshPhysicalMaterial, MeshStandardMaterial } from 'three';
+import { Color, DoubleSide, MeshPhysicalMaterial, MeshStandardMaterial, Vector4 } from 'three';
 
 /**
  * Materials for ground infrastructure. Concrete and asphalt get procedural staining in object
@@ -42,7 +42,10 @@ export interface SiteMaterials {
   vabWall: MeshStandardMaterial;
   vabDark: MeshStandardMaterial;
   trenchFloor: MeshStandardMaterial;
+  /** trunks of palms, pines and broadleaf trees: each bends as stiffly as its crown */
   trunk: MeshStandardMaterial;
+  trunkPine: MeshStandardMaterial;
+  trunkBroad: MeshStandardMaterial;
   sand: MeshStandardMaterial;
   water: MeshPhysicalMaterial;
   rubber: MeshStandardMaterial;
@@ -53,6 +56,47 @@ export interface SiteMaterials {
   scorch: { value: number };
   /** wetness from the deluge (darkens concrete, adds sheen) */
   wet: { value: number };
+  /** surface wind for the plants: direction it blows toward in the site frame (x, z), speed (m/s), gustiness */
+  wind: { value: Vector4 };
+  /** clock for the plants' sway (s) */
+  windTime: { value: number };
+}
+
+/**
+ * Plants bend in the wind: a steady lean that grows with the square of the wind speed and of
+ * height above the plant's foot, gusts with a per-plant phase, a little sideways rocking and a
+ * fast flutter in the leaves. Applied after instancing, in the site frame, so every plant leans
+ * the same way whatever its rotation; trunks use the same bend so crowns stay on them.
+ */
+function swayVertex(sh: { uniforms: Record<string, { value: unknown }>; vertexShader: string }, wind: { value: Vector4 }, time: { value: number }, stiffness: number, flutter: number): void {
+  sh.uniforms.uWind = wind;
+  sh.uniforms.uWindT = time;
+  sh.uniforms.uWindK = { value: stiffness };
+  sh.uniforms.uWindFlutter = { value: flutter };
+  sh.vertexShader = sh.vertexShader
+    .replace('#include <common>', `#include <common>
+      uniform vec4 uWind;
+      uniform float uWindT;
+      uniform float uWindK;
+      uniform float uWindFlutter;`)
+    .replace('#include <project_vertex>', `
+      vec4 mvPosition = vec4(transformed, 1.0);
+      #ifdef USE_INSTANCING
+      mvPosition = instanceMatrix * mvPosition;
+      {
+        float hh = max(0.0, mvPosition.y - instanceMatrix[3].y);
+        float ph = dot(instanceMatrix[3].xz, vec2(0.037, 0.053));
+        float A = 0.00088 * uWindK * uWind.z * uWind.z * hh * hh / (hh + 6.0);
+        float gust = 0.5 + 0.5 * sin(uWindT * 1.1 + ph) * (0.55 + 0.45 * sin(uWindT * 0.29 + ph * 1.7));
+        vec2 dir = uWind.xy, perp = vec2(-uWind.y, uWind.x);
+        mvPosition.xz += dir * A * (0.55 + 0.45 * gust * (0.6 + uWind.w)) + perp * A * 0.12 * sin(uWindT * 2.3 + ph * 3.1);
+        mvPosition.xyz += uWindFlutter * A * 0.09 * vec3(sin(uWindT * 7.1 + mvPosition.x * 1.3 + ph), sin(uWindT * 6.3 + mvPosition.z * 1.7), cos(uWindT * 7.9 + mvPosition.x * 0.9));
+        // the tip comes down a little as the stem bends over
+        mvPosition.y -= A * A / max(hh, 1.0) * 0.5;
+      }
+      #endif
+      mvPosition = modelViewMatrix * mvPosition;
+      gl_Position = projectionMatrix * mvPosition;`);
 }
 
 function stained(base: [number, number, number], rough: number, opts: { scorch?: { value: number }; wet?: { value: number }; scale?: number; joints?: boolean; key: string }): MeshStandardMaterial {
@@ -94,6 +138,8 @@ function stained(base: [number, number, number], rough: number, opts: { scorch?:
 export function createSiteMaterials(): SiteMaterials {
   const scorch = { value: 0 };
   const wet = { value: 0 };
+  const wind = { value: new Vector4(0.94, 0.34, 4, 0.15) };
+  const windTime = { value: 0 };
   const lin = (r: number, g: number, b: number): [number, number, number] => {
     const c = new Color().setRGB(r, g, b, 'srgb');
     return [c.r, c.g, c.b];
@@ -110,11 +156,21 @@ export function createSiteMaterials(): SiteMaterials {
   const dryShrub = foliage([0.12, 0.11, 0.07], 0.9);
   // foliage: wrap lighting, per-plant tint variation; tree crowns also shade as one soft volume
   // (crown-envelope normals + baked occlusion) and glow when back-lit by the sun
+  // how readily each kind of plant gives to the wind (palms most, pines least)
+  const K_PALM = 1, K_PINE = 0.4, K_BROAD = 0.55;
+  const stiff = new Map<MeshStandardMaterial, number>([[leaf, 0.6], [palmLeaf, K_PALM], [pineLeaf, K_PINE], [canopy, K_BROAD], [grass, 1.6], [dryGrass, 1.6], [dryShrub, 0.6]]);
+  const trunkMat = (k: number, key: string) => {
+    const t = std(lin(0.38, 0.32, 0.25), 0.9, 0);
+    t.customProgramCacheKey = () => key;
+    t.onBeforeCompile = (sh) => swayVertex(sh, wind, windTime, k, 0);
+    return t;
+  };
   for (const m of [leaf, palmLeaf, pineLeaf, canopy, grass, dryGrass, dryShrub]) {
     const crown = m === pineLeaf || m === canopy;
     if (crown) m.defines = { ...(m.defines ?? {}), CROWN: '' };
     m.customProgramCacheKey = () => (crown ? 'site-leaf-crown' : 'site-leaf');
     m.onBeforeCompile = (sh) => {
+      swayVertex(sh, wind, windTime, stiff.get(m) ?? 0.6, 1);
       sh.vertexShader = sh.vertexShader
         .replace('#include <common>', `#include <common>
           varying float vTint;
@@ -210,12 +266,16 @@ export function createSiteMaterials(): SiteMaterials {
     vabDark: std(lin(0.25, 0.26, 0.27), 0.7, 0.2),
     berm: stained(lin(0.3, 0.32, 0.2), 0.95, { key: 'berm', scale: 0.7 }),
     trenchFloor: stained(lin(0.3, 0.29, 0.27), 0.9, { scorch, wet, key: 'trench' }),
-    trunk: std(lin(0.38, 0.32, 0.25), 0.9, 0),
+    trunk: trunkMat(K_PALM, 'site-trunk'),
+    trunkPine: trunkMat(K_PINE, 'site-trunk'),
+    trunkBroad: trunkMat(K_BROAD, 'site-trunk'),
     sand: stained(lin(0.78, 0.72, 0.58), 0.95, { key: 'sand', scale: 0.5 }),
     water: new MeshPhysicalMaterial({ color: new Color(0.01, 0.03, 0.04), roughness: 0.08, metalness: 0, clearcoat: 1 }),
     rubber: std([0.03, 0.03, 0.03], 0.85, 0),
     vehiclePaint: new MeshPhysicalMaterial({ color: new Color(...lin(0.85, 0.85, 0.82)), roughness: 0.35, clearcoat: 0.8 }),
     scorch,
     wet,
+    wind,
+    windTime,
   };
 }

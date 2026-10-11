@@ -129,15 +129,17 @@ export class Lightning {
     const dist = aheadF ? 6 + Math.random() * 6 : 3 + Math.pow(Math.random(), 0.7) * 19; // km
     const dir = new Vector3().copy(north).multiplyScalar(Math.cos(az) * dist).addScaledVector(east, Math.sin(az) * dist);
     const groundDir = new Vector3().copy(up).multiplyScalar(6371).add(dir).normalize();
-    const ground = groundDir.clone().multiplyScalar(6371);
+    // the deck stands on the terrain: the bolt's foot is on the ground, the flash inside the cloud
+    const g0 = deck.ground;
+    const ground = groundDir.clone().multiplyScalar(6371 + g0);
     const base = p.base, h = base + (p.top - base) * (0.25 + Math.random() * 0.3);
-    const cloud = groundDir.clone().multiplyScalar(6371 + h);
+    const cloud = groundDir.clone().multiplyScalar(6371 + g0 + h);
     const bolt = Math.random() < 0.55;
     const n = 1 + Math.floor(Math.random() * 3) + (bolt ? 1 : 0);
     const strokes: [number, number][] = [];
     let t = 0;
     for (let i = 0; i < n; i++) { strokes.push([t, 0.03 + Math.random() * 0.05]); t += 0.06 + Math.random() * 0.12; }
-    const distM = Math.hypot(dist * 1000, (camF.length() - 6371 - (bolt ? 0 : h)) * 1000);
+    const distM = Math.hypot(dist * 1000, (camF.length() - 6371 - g0 - (bolt ? 0 : h)) * 1000);
     this.flash = { cloud, ground, t: 0, strokes, dur: t + 0.5, bolt, distM };
     if (bolt) {
       this.buildBolt(base * 1000);

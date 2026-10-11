@@ -147,6 +147,7 @@ export class FlightSession {
     if (startKind === 'pad') {
       // pad + vehicle on the launch mount, held by the clamps
       this.complex = rw.setComplex(this.site, this.def, config.vegetation ?? 1);
+      this.complex?.setWind(this.weather.state.surfaceWind, this.weather.state.windDir, this.weather.state.gustiness);
       const deck = this.complex ? this.complex.deckHeight : 0;
       this.padAlt = this.site.padHeight + deck;
       v = this.world.createVessel(this.def, system.earth);
@@ -893,7 +894,7 @@ export class FlightSession {
     // climbing into the cloud deck: cut to a camera above the tops to watch it burst out
     const deck = this.rw.deck.params;
     if (deck && this.phase === 'ascent' && v.body.id === 'earth' && tm.verticalSpeed > 30 && (this.rw.deck.focusInCloud > 0.25 || deck.cover >= 0.8)
-      && tm.altitude < (deck.base + deck.top) * 500 && (deck.top * 1000 - tm.altitude) / tm.verticalSpeed < 14) this.milestone('clouds', undefined, 'clouds');
+      && tm.altitude < (this.rw.deck.baseKm + this.rw.deck.topKm) * 500 && (this.rw.deck.topKm * 1000 - tm.altitude) / tm.verticalSpeed < 14) this.milestone('clouds', undefined, 'clouds');
     // atmosphere exit / entry
     const inAtm = v.body.atmosphereTop > 0 && tm.altitude < v.body.atmosphereTop;
     if (this.wasInAtmo && !inAtm) this.wasInAtmo = false;
@@ -1004,7 +1005,7 @@ export class FlightSession {
       bodyPos: this.bodyPos,
       site: { quat: siteQuat, origin: siteOrigin, body: earth },
       towerTop: this.complex ? this.complex.towerTop : null,
-      cloudTop: this.rw.deck.params && this.rw.deck.active > 0.5 ? this.rw.deck.params.top * 1000 : null,
+      cloudTop: this.rw.deck.params && this.rw.deck.active > 0.5 ? this.rw.deck.topKm * 1000 : null,
       deckHeight: this.complex ? this.complex.deckHeight : 0,
       siteQuery: this.complex,
       groundHeight: (body, helio) => {

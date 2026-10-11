@@ -762,12 +762,12 @@ export class LaunchComplex {
     }
     if (pines.length) {
       const pg = pineGeometry();
-      this.group.add(instanced(pg.trunk, M.trunk, pines, false));
+      this.group.add(instanced(pg.trunk, M.trunkPine, pines, false));
       this.group.add(instanced(pg.crown, M.pineLeaf, pines, false));
     }
     if (broad.length) {
       const bg = broadleafGeometry();
-      this.group.add(instanced(bg.trunk, M.trunk, broad, false));
+      this.group.add(instanced(bg.trunk, M.trunkBroad, broad, false));
       this.group.add(instanced(bg.crown, M.canopy, broad, false));
     }
     if (tufts.length) this.group.add(instanced(tuftGeometry(), tuftMat, tufts, false));
@@ -826,8 +826,15 @@ export class LaunchComplex {
    * @param night 0 day .. 1 night (floodlights)
    * @param exposureHint lamp intensity scaling for HDR
    */
+  /** Surface wind for the plants: speed (m/s), the direction it blows toward (rad from north), gustiness 0..1. */
+  setWind(speed: number, toward: number, gust: number): void {
+    // site frame: x east, z south
+    this.mats.wind.value.set(Math.sin(toward), -Math.cos(toward), speed, gust);
+  }
+
   update(dt: number, night: number): void {
     this.time += dt;
+    this.mats.windTime.value = this.time;
     for (const a of this.arms) {
       const d = a.target - a.t;
       if (Math.abs(d) > 1e-4) a.t += Math.sign(d) * Math.min(Math.abs(d), a.speed * dt);
