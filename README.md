@@ -13,6 +13,12 @@ Everything you see and hear is generated at runtime, apart from a handful of pub
 CC BY planetary textures and synthesised voice lines (see [CREDITS.md](CREDITS.md)). That
 includes the rockets, the launch complexes, the exhaust, the music and the sound.
 
+## Playing it in the browser
+
+The game is published to GitHub Pages on every push to `main`:
+**https://zdawg12349-cell.github.io/Space-ship/**. It runs on any computer with a WebGL2
+browser, Chromebooks included; nothing to install.
+
 ## Running it
 
 ```bash
