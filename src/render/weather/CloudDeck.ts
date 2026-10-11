@@ -482,6 +482,8 @@ export class CloudDeck {
   kind: DeckWeather | null = null;
   /** ray-march steps of the half-resolution pass (graphics preset) */
   steps = 56;
+  /** 0.5..1: trimmed when frames run long while the deck is in view (see App) */
+  stepScale = 1;
   /** sunlight reaching the lighting focus through the deck (0..1, smoothed) */
   focusSun = 1;
   /** regional cover over the camera, whether the camera is beneath the base, in cloud (0..1) */
@@ -601,7 +603,7 @@ export class CloudDeck {
   update(dt: number, simDt: number, camF: Vector3, focusF: Vector3, sunF: Vector3, sunE: Vector3, skyE: number): void {
     // a deep deck (storm towers) gets proportionally more steps
     const depth = this.params ? this.params.top - this.params.base : 2;
-    this.uniforms.uDeckSteps.value = Math.min(128, Math.round(this.steps * Math.min(2, Math.max(1, depth / 2.5))));
+    this.uniforms.uDeckSteps.value = Math.min(128, Math.round(this.steps * this.stepScale * Math.min(2, Math.max(1, depth / 2.5))));
     const u = this.uniforms;
     const p = this.params;
     const camAlt = camF.length() - R_EARTH_KM;

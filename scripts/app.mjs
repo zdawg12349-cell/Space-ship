@@ -1,5 +1,6 @@
 // Drive the real app headlessly: node scripts/app.mjs outPrefix "<steps json>" [w] [h]
-// steps: [{"menu":true}|{"mission":"leo"}|{"sandbox":{...}}|{"advance":s}|{"shot":"name"}|{"eval":"js"}|{"key":"KeyC"}|{"wait":ms}]
+// steps: [{"menu":true}|{"mission":"leo"}|{"sandbox":{...}}|{"advance":s, "every"?:n}|{"until":"js cond","max":s}|{"shot":"name"}|{"eval":"js"}|{"key":"KeyC"}|{"wait":ms}]
+// (advance renders every 2nd 1/30 s step unless "every" says otherwise; until advances in 5 s chunks, rendering once a second)
 import { chromium } from 'playwright-core';
 const [, , prefix = 'app', stepsJson = '[{"shot":"menu"}]', w = '1280', h = '720', query = ''] = process.argv;
 const steps = JSON.parse(stepsJson);
@@ -37,7 +38,17 @@ let i = 0;
 for (const st of steps) {
   if (st.mission) await page.evaluate((id) => window.__ascent.startMission(id), st.mission);
   if (st.sandbox) await page.evaluate((o) => window.__ascent.startSandbox(o), st.sandbox);
-  if (st.advance) { const r = await page.evaluate((s) => window.__ascent.advance(s), st.advance).catch((e) => String(e)); console.log('advance', st.advance, JSON.stringify(r)); }
+  if (st.advance) { const r = await page.evaluate(([s, n]) => window.__ascent.advance(s, n), [st.advance, st.every ?? 2]).catch((e) => String(e)); console.log('advance', st.advance, JSON.stringify(r)); }
+  if (st.until) {
+    const r = await page.evaluate(([cond, max]) => {
+      const A = window.__ascent;
+      const test = new Function('s', 'v', `return (${cond});`);
+      let t = 0;
+      while (t < max && !test(A.session(), A.session().active)) { A.advance(5, 30); t += 5; }
+      return { t, met: A.session().met, phase: A.session().phase, alt: A.session().active.telemetry.altitude | 0 };
+    }, [st.until, st.max ?? 600]).catch((e) => String(e));
+    console.log('until', st.until, JSON.stringify(r));
+  }
   if (st.eval) { const r = await page.evaluate(st.eval).catch((e) => String(e)); console.log('eval', JSON.stringify(r)?.slice(0, 400)); }
   if (st.key) { await page.keyboard.press(st.key); await page.waitForTimeout(300); }
   if (st.click) { await page.click(st.click).catch((e) => console.log('click fail', String(e).slice(0, 200))); await page.waitForTimeout(800); }

@@ -200,10 +200,26 @@ export class App {
     rw.render(dt);
   }
 
+  private frameAvg = 1 / 60;
+  private adaptTimer = 0;
+  /** Trim the cloud deck's ray-march when frames run long with it in view, restore when fast. */
+  private adaptQuality(rawDt: number): void {
+    if ((navigator as Navigator & { webdriver?: boolean }).webdriver) return; // captures keep full quality
+    this.frameAvg += (Math.min(0.25, rawDt) - this.frameAvg) * 0.05;
+    this.adaptTimer += rawDt;
+    if (this.adaptTimer < 2) return;
+    this.adaptTimer = 0;
+    const deck = this.rw.deck;
+    if (deck.active > 0 && this.frameAvg > 1 / 38) deck.stepScale = Math.max(0.5, deck.stepScale - 0.15);
+    else if (this.frameAvg < 1 / 55) deck.stepScale = Math.min(1, deck.stepScale + 0.1);
+  }
+
   private frame = (): void => {
     const now = performance.now();
-    const dt = Math.min(0.1, (now - this.last) / 1000);
+    const rawDt = (now - this.last) / 1000;
+    const dt = Math.min(0.1, rawDt);
     this.last = now;
+    this.adaptQuality(rawDt);
     try {
       if (this.flight) this.flight.frame(dt);
       else this.renderMenuBackdrop(dt);
