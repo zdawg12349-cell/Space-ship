@@ -181,6 +181,11 @@ export async function runViewer(canvas: HTMLCanvasElement): Promise<void> {
         // pre-run the particle simulation so clouds have developed by the first frame
         const warm = num('fxwarm', 0);
         for (let s = 0; s < warm * 30; s++) rw.updateVehicles(1 / 30, t, [vessel, ...extra], vessel, () => bodyPos);
+        // fxcool=s: then shut the engines down and let the smoke linger that long (after a landing)
+        if (q.has('fxcool')) {
+          for (const a of vessel.assemblies) for (const e of a.engines) { e.running = false; e.thrust = 0; e.spool = 0; e.throttle = 0; }
+          for (let s = 0; s < num('fxcool', 0) * 30; s++) rw.updateVehicles(1 / 30, t, [vessel, ...extra], vessel, () => bodyPos);
+        }
       }
       rw.updateVehicles(dt, t, [vessel, ...extra], vessel, () => bodyPos);
       rw.render(dt);

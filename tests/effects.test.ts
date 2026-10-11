@@ -112,6 +112,38 @@ describe('camera director', () => {
   });
 });
 
+describe('camera ground clamp', () => {
+  it('keeps cameras beside a lander on a lunar mare that lies below the mean radius', () => {
+    const { world } = makeWorld();
+    const moon = world.system.moon;
+    // the Sea of Tranquility lies about 2 km below the Moon's mean radius
+    const floor = -2000;
+    const lander = world.createVessel(getVehicle('lrv'), moon);
+    world.addVessel(lander);
+    world.placeOnSurface(lander, moon, (0.67 * Math.PI) / 180, (23.47 * Math.PI) / 180, floor + 2, 0);
+    const bodyPos = (b: CelestialBody) => b.globalPositionAt(world.t, new Vector3());
+    const ctx: CamContext = {
+      t: world.t, dt: 1 / 30, active: lander, vessels: [lander], boosters: [], bodyPos,
+      site: null, towerTop: null, cloudTop: null, deckHeight: 0, siteQuery: null, groundHeight: () => floor,
+      zones: [], phase: 'landed', plumeMN: 0, plumeSourceHelio: null, aspect: 16 / 9,
+    };
+    const cam = new PerspectiveCamera();
+    const d = new CameraDirector(cam);
+    const at = lander.pos.clone().add(bodyPos(moon));
+    for (const shot of ['splash', 'chase_side']) {
+      d.forceShot(shot);
+      for (let i = 0; i < 60; i++) d.update(ctx);
+      // (the ground clamp used to lift such cameras to the mean radius, kilometres up)
+      expect(d.posHelio.distanceTo(at)).toBeLessThan(250);
+    }
+    // touching down on land away from any recovery zone, the director circles the vehicle close in
+    d.cue('touchdown');
+    for (let i = 0; i < 60; i++) d.update(ctx);
+    expect(d.shotLabel).toBe('orbit_drift');
+    expect(d.posHelio.distanceTo(at)).toBeLessThan(80);
+  });
+});
+
 describe('puff atlas', () => {
   it('has no step at a billow\'s rim (a lit cloud must not read as a heap of bubbles)', () => {
     const tex = createPuffAtlas();

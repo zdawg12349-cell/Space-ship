@@ -143,8 +143,9 @@ materials are generated from that definition.
   - Lit particle systems for steam, smoke, deluge water, cryogenic venting, ground clouds and
     exhaust trails. Each puff is a lumpy billow that blends into its neighbours, lit by the sun
     and by the flame, and old puffs diffuse into haze.
-  - In vacuum the plume's glow fades steeply as it spreads, so a camera on the stage looking
-    down the jet sees the hot gas at the nozzle rather than a fog.
+  - A vacuum plume is a faint glow, and however far a line of sight runs down a jet its glow
+    cannot pile up far past the core's own brightness, so a camera on the stage looking aft is
+    not blinded by its own engine.
 - **Flight effects:** transonic vapour cones, entry plasma sheaths, heat shimmer, stage
   break-ups and booster burn-up. RCS jets fire from the thruster pods themselves: in air, white
   puffs that the air soon stops; in vacuum, a bright cone at the nozzle that flashes out into

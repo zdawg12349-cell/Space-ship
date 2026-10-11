@@ -174,13 +174,10 @@ void main() {
     vec3 cBody = mix(mix(uColCore, uColBody, smoothstep(0.0, 0.35, cool)), uColEdge, smoothstep(0.35, 1.0, cool));
     float bodyLum = body * (0.7 + 0.6 * clamp(turb * mixing + 0.3, 0.0, 1.0));
     // the gas cools as it expands: a vacuum jet's white-hot core fades within a few nozzle radii
-    // (so looking down the jet from beside the nozzle does not add up to a white ball). In air the
-    // bell keeps glowing as it afterburns; in near-vacuum there is no air to burn in and its glow
-    // fades steeply with its spread, so a camera on the stage looking down the jet sees the hot gas
-    // at the exit, not an orange fog filling the whole bell
+    // (so looking down the jet from beside the nozzle does not add up to a white ball), while the
+    // broad bell beyond, seen side-on, keeps most of its glow
     float expand = uRe / R;
-    float bodyCool = uCool * 0.3 + max(0.0, uCool - 1.0) * 2.0;
-    vec3 c = uColCore * core * 2.5 * pow(expand, uCool * 1.4) + cBody * bodyLum * pow(expand, bodyCool) + uColDiamond * dia * 2.5;
+    vec3 c = uColCore * core * 2.5 * pow(expand, uCool * 1.4) + cBody * bodyLum * pow(expand, uCool * 0.3) + uColDiamond * dia * 2.5;
     // ignition transient (TEA-TEB green for kerosene engines)
     c = mix(c, vec3(0.25, 1.0, 0.35) * (core * 2.0 + body), uIgnite);
     float dens = uIntensity / R;
@@ -190,6 +187,16 @@ void main() {
     trans *= exp(-sootD * dt * 1.4);
     if (trans < 0.02) break;
   }
+  // the hot gas absorbs what it emits: however far a line of sight runs down the jet (a camera on
+  // the stage looking aft, or one beneath the engines looking up), the glow cannot pile up far
+  // beyond a few times the core's brightness seen side-on. Side views stay below the knee
+  float lum = dot(emis, vec3(0.2126, 0.7152, 0.0722));
+  float knee = 3.0 * uIntensity * dot(uColCore, vec3(0.2126, 0.7152, 0.0722));
+  if (lum > knee) emis *= (knee + knee * (1.0 - exp(-(lum - knee) / knee))) / lum;
+  // a vacuum jet seen from a camera on its own stage, right beside the nozzle: the camera sits in
+  // the cold fringe of the bell and, as the stage's own cameras show, sees the glowing nozzle with
+  // only a faint plume beyond it (at sea level the jet stays bright from anywhere)
+  emis *= mix(1.0, smoothstep(uRe * 2.0, uRe * 12.0, length(uCamLocal)), smoothstep(1.0, 1.4, uCool));
   emis *= uAtmT;
   gl_FragColor = vec4(emis, 1.0 - trans);
 }`;
@@ -354,7 +361,7 @@ export class PlumeSystem {
       // an expanded jet spreads its light thin and cools as it expands: in near-vacuum the far
       // plume is a faint, translucent bell around a bright core at the nozzle
       const expDim = Math.pow(re / rfar, 0.6) * Math.pow(Math.min(1, (3 * re) / rfar), 0.9);
-      const intensity = st.intensity * re * Math.pow(Math.max(0.05, thrustFrac), 0.7) * spoolLum * expDim * (0.35 + 0.65 * Math.pow(air, 0.15)) * this.quality;
+      const intensity = st.intensity * re * Math.pow(Math.max(0.05, thrustFrac), 0.7) * spoolLum * expDim * (0.1 + 0.9 * Math.pow(air, 0.15)) * this.quality;
       const len = Math.min(lp * 3.2, 4000);
       // jet spreading half-angle ~5 deg in air; the vacuum plume is shaped by expansion alone
       const spread = 0.03 + 0.06 * Math.pow(air, 0.3);

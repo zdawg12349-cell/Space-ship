@@ -310,7 +310,10 @@ export class CameraDirector {
   private clampGround(ctx: CamContext, body: CelestialBody, p: Vector3, minH = 1.6): void {
     const bp = ctx.bodyPos(body);
     const r = p.distanceTo(bp);
-    const g = body.radius + Math.max(0, ctx.groundHeight(body, p)) + minH;
+    // (on Earth the sea stands at zero over the ocean floor; on the Moon the maria lie kilometres
+    // below the mean radius, and treating them as zero put every camera there kilometres up)
+    const h = ctx.groundHeight(body, p);
+    const g = body.radius + (body.id === 'earth' ? Math.max(0, h) : h) + minH;
     if (r < g) p.sub(bp).multiplyScalar(g / r).add(bp);
   }
 
