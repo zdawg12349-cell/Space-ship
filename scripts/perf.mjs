@@ -58,6 +58,8 @@ const cdp = await page.context().newCDPSession(page);
 await cdp.send('Profiler.enable');
 await cdp.send('Profiler.setSamplingInterval', { interval: 500 });
 await cdp.send('Profiler.start');
+// STAGE=1: press the staging key (space) a second in, as a player would
+if (process.env.STAGE) { await page.waitForTimeout(1000); await page.mouse.click(5, 5); await page.keyboard.press('Space'); }
 await page.waitForTimeout(Number(secs) * 1000);
 const { profile } = await cdp.send('Profiler.stop');
 const perf = await page.evaluate(() => ({ ...window.__perf, compiles: window.__compiles - window.__perf.compiles0 }));

@@ -91,8 +91,9 @@ export class Effects {
     this.particles = new ParticleSystem(rw.detailTex, () => rw.post.linearDepth, maxParticles);
     this.rateScale = Math.min(2, maxParticles / 6000);
     this.puffScale = Math.pow(Math.max(0.25, this.rateScale), -0.35);
+    // (always in the scene, dark until an explosion: switching a light on or off rebuilds every
+    // lit material's shader, which froze the game for seconds when staging broke a vehicle up)
     this.flash = new PointLight(0xffaa66, 0, 0, 2);
-    this.flash.visible = false;
     rw.scene.add(this.flash);
   }
 
@@ -240,7 +241,6 @@ export class Effects {
       this.flashLife -= dt;
       const k = Math.max(0, this.flashLife / this.flashMax);
       this.flash.intensity = this.flashI * k * k;
-      this.flash.visible = this.flashLife > 0;
       if (this.flashLife <= 0) this.flashI = 0;
     }
   }
@@ -521,7 +521,6 @@ export class Effects {
     this.flashI = 4e4 * s * s;
     this.flashMax = this.flashLife = 1.2;
     this.flash.intensity = this.flashI;
-    this.flash.visible = true;
   }
 
   /**
@@ -638,7 +637,6 @@ export class Effects {
     this.flashI = 1.5e4 * s * s;
     this.flashMax = this.flashLife = 0.8;
     this.flash.intensity = this.flashI;
-    this.flash.visible = true;
   }
 
   /** Glowing plasma wake behind an entry vehicle (called every frame while heating). */

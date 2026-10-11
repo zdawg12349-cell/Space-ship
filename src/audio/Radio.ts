@@ -40,7 +40,7 @@ export class Radio {
     const comp = ctx.createDynamicsCompressor();
     comp.threshold.value = -22; comp.ratio.value = 6; comp.attack.value = 0.003; comp.release.value = 0.12;
     this.input = ctx.createGain();
-    this.input.gain.value = 0.9;
+    this.input.gain.value = 0.7;
     this.input.connect(hp).connect(peak).connect(lp).connect(shaper).connect(comp).connect(out);
     // carrier hiss while keyed
     const hs = ctx.createBufferSource();

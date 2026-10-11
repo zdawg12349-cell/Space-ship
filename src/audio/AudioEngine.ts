@@ -155,16 +155,20 @@ export class AudioEngine {
     const glue = ctx.createDynamicsCompressor();
     glue.threshold.value = -24; glue.knee.value = 12; glue.ratio.value = 2.5; glue.attack.value = 0.02; glue.release.value = 0.4;
     const limiter = ctx.createDynamicsCompressor();
-    limiter.threshold.value = -4; limiter.knee.value = 2; limiter.ratio.value = 20; limiter.attack.value = 0.002; limiter.release.value = 0.15;
+    limiter.threshold.value = -2; limiter.knee.value = 2; limiter.ratio.value = 20; limiter.attack.value = 0.002; limiter.release.value = 0.15;
+    // (the radio joins after the glue compressor: fed through it, every call ducked the engines
+    // and the music by several dB, and the sound seemed to vanish whenever mission control spoke)
     this.master = ctx.createGain();
-    this.master.connect(hp).connect(glue).connect(limiter).connect(ctx.destination);
+    const mix = ctx.createGain();
+    mix.connect(hp).connect(glue).connect(this.master);
+    this.master.connect(limiter).connect(ctx.destination);
     // a context the system suspends (another tab took the audio device, the lid closed) comes
     // back by itself when the page is shown again, not only on the next click
     const wake = () => { if (ctx.state !== 'running' && ctx.state !== 'closed' && document.visibilityState === 'visible') void ctx.resume().catch(() => undefined); };
     ctx.addEventListener('statechange', wake);
     document.addEventListener('visibilitychange', wake);
-    this.sfx = ctx.createGain(); this.sfx.connect(this.master);
-    this.musicBus = ctx.createGain(); this.musicBus.connect(this.master);
+    this.sfx = ctx.createGain(); this.sfx.connect(mix);
+    this.musicBus = ctx.createGain(); this.musicBus.connect(mix);
     this.voiceBus = ctx.createGain(); this.voiceBus.connect(this.master);
     this.ambBus = ctx.createGain(); this.ambBus.connect(this.sfx);
     this.reverb = ctx.createConvolver();
