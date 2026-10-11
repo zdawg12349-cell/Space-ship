@@ -56,7 +56,7 @@ export class Music {
     this.out.gain.value = 0.9;
     this.out.connect(dest);
     this.reverb = ctx.createConvolver();
-    const n = Math.floor(ctx.sampleRate * 5.5);
+    const n = Math.floor(ctx.sampleRate * 3);
     const ir = ctx.createBuffer(2, n, ctx.sampleRate);
     for (let ch = 0; ch < 2; ch++) {
       const d = ir.getChannelData(ch);
@@ -248,7 +248,8 @@ export class Music {
     if (this.pulseOn > 0.01 && I > 0.05) {
       const step = 60 / this.tempo / 2;
       if (this.nextPulse < t) this.nextPulse = t + 0.05;
-      while (this.nextPulse < t + 0.25) {
+      // (scheduled most of a second ahead, so a stalled frame does not leave a gap in the beat)
+      while (this.nextPulse < t + 0.8) {
         const chord = PROGRESSIONS[this.mood][this.chordIdx % 4];
         const pattern = [0, 2, 1, 3, 2, 4, 1, 3];
         const n = chord[pattern[this.pulseStep % 8] % chord.length] + 12;
