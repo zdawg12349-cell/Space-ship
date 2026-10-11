@@ -1,6 +1,6 @@
 import {
-  AlwaysDepth, DepthFormat, DepthTexture, FloatType, GLSL3, HalfFloatType, LinearFilter, LinearMipmapLinearFilter, Matrix3, Matrix4, NearestFilter, NoBlending, RedFormat,
-  RGBAFormat, ShaderMaterial, Texture, UnsignedIntType, Vector2, Vector3, Vector4, WebGLRenderer, WebGLRenderTarget,
+  AlwaysDepth, CustomBlending, DepthFormat, DepthTexture, FloatType, GLSL3, HalfFloatType, LinearFilter, LinearMipmapLinearFilter, Matrix3, Matrix4, NearestFilter, NoBlending, RedFormat,
+  OneFactor, OneMinusSrcAlphaFactor, RGBAFormat, ShaderMaterial, Texture, UnsignedIntType, Vector2, Vector3, Vector4, WebGLRenderer, WebGLRenderTarget,
 } from 'three';
 import { FullscreenQuad, FULLSCREEN_VERT } from '../util/Fullscreen';
 import { ATMOSPHERE_COMMON, SKYVIEW_COMMON } from '../atmosphere/glsl';
@@ -25,11 +25,13 @@ export interface PostSettings {
   maxEV: number;
   adaptSpeed: number;
   resolutionScale: number;
+  /** resolution the smoke is drawn at, relative to the frame (1 = full) */
+  smokeScale: number;
 }
 
 export const DEFAULT_POST: PostSettings = {
   msaa: 4, bloom: 0.045, exposureComp: 0, autoExposure: true, manualEV: 13, vignette: 0.28, grain: 0.035, chromatic: 0.0015,
-  saturation: 1.04, contrast: 1.05, temperature: 0.0, tint: 0, letterbox: 0, minEV: -4, maxEV: 17, adaptSpeed: 1.6, resolutionScale: 1,
+  saturation: 1.04, contrast: 1.05, temperature: 0.0, tint: 0, letterbox: 0, minEV: -4, maxEV: 17, adaptSpeed: 1.6, resolutionScale: 1, smokeScale: 1,
 };
 
 /**
@@ -58,6 +60,9 @@ export class PostPipeline {
   private lumMat: ShaderMaterial;
   private adaptMat: ShaderMaterial;
   private linDepthMat: ShaderMaterial;
+  /** smoke drawn at reduced resolution (null when it is drawn straight into the frame) */
+  private smokeRT: WebGLRenderTarget | null = null;
+  private smokeMat: ShaderMaterial;
   readonly finalMat: ShaderMaterial;
   private width = 1;
   private height = 1;
@@ -497,6 +502,55 @@ export class PostPipeline {
         }
         gl_FragColor = vec4(dist, 0.0, 0.0, 1.0);
       }`, { tDepth: { value: null }, tDeck0: { value: null }, tDeck1: { value: null }, uDeck: { value: 0 }, uInvProj: { value: new Matrix4() }, uLogFar: { value: 40 } });
+    // reduced-resolution smoke onto the frame (premultiplied, as the particles blend). Where no
+    // smoke was drawn nearby the pixel is left alone; inside a cloud, away from any edge in the
+    // scene, it is plain bilinear; at an edge (the vehicle, the tower against the sky) each of the
+    // four nearest smoke texels is weighted by how close the scene depth it was drawn against is
+    // to this pixel's own, so smoke keeps a crisp edge instead of a blurred fringe. Depth is read
+    // a quarter-texel in, at the same point the particles read it (a texel centre at half
+    // resolution falls on a full-res texel edge)
+    this.smokeMat = new ShaderMaterial({
+      blending: CustomBlending, blendSrc: OneFactor, blendDst: OneMinusSrcAlphaFactor, blendSrcAlpha: OneFactor, blendDstAlpha: OneMinusSrcAlphaFactor,
+      depthTest: false, depthWrite: false, vertexShader: FULLSCREEN_VERT,
+      uniforms: { tSmoke: { value: null }, tDepth: { value: null }, uSmokeSize: { value: new Vector2(1, 1) }, uFullSize: { value: new Vector2(1, 1) } },
+      fragmentShader: /* glsl */ `
+      precision highp float;
+      uniform sampler2D tSmoke;
+      uniform sampler2D tDepth;
+      uniform vec2 uSmokeSize;
+      uniform vec2 uFullSize;
+      void main() {
+        vec2 uv = gl_FragCoord.xy / uFullSize;
+        vec4 lin = texture(tSmoke, uv);
+        if (lin.a < 1e-3 && lin.r + lin.g + lin.b < 1e-4) discard;
+        float dF = texture(tDepth, (gl_FragCoord.xy - 0.25) / uFullSize).r;
+        vec2 p = uv * uSmokeSize - 0.5;
+        vec2 b = floor(p);
+        vec2 f = p - b;
+        vec4 dN;
+        for (int k = 0; k < 4; k++) {
+          vec2 t = clamp(b + vec2(float(k & 1), float(k >> 1)), vec2(0.0), uSmokeSize - 1.0);
+          dN[k] = texture(tDepth, (t + 0.25) / uSmokeSize).r;
+        }
+        vec4 rel = abs(dN - dF) / max(min(dN, vec4(dF)), vec4(1.0));
+        if (max(max(rel.x, rel.y), max(rel.z, rel.w)) < 0.03) { gl_FragColor = lin; return; }
+        vec4 acc = vec4(0.0), best = vec4(0.0);
+        float ws = 0.0, wdMax = 0.0, bestD = 1e30;
+        ivec2 hi = ivec2(uSmokeSize) - 1;
+        for (int k = 0; k < 4; k++) {
+          vec2 o = vec2(float(k & 1), float(k >> 1));
+          vec4 s = texelFetch(tSmoke, clamp(ivec2(b + o), ivec2(0), hi), 0);
+          vec2 wv = mix(1.0 - f, f, o);
+          float wd = 1.0 / (1.0 + rel[k] * rel[k] * 400.0);
+          acc += s * (wv.x * wv.y * wd);
+          ws += wv.x * wv.y * wd;
+          wdMax = max(wdMax, wd);
+          float dd = abs(dN[k] - dF);
+          if (dd < bestD) { bestD = dd; best = s; }
+        }
+        gl_FragColor = wdMax > 0.05 && ws > 1e-4 ? acc / ws : best;
+      }`,
+    });
     this.adaptMat = mk(/* glsl */ `
       precision highp float;
       in vec2 vUv;
@@ -704,6 +758,33 @@ export class PostPipeline {
   }
 
   get linearDepth(): Texture { return this.linDepthRT.texture; }
+
+  /** The reduced-resolution smoke target for this frame, or null when smoke is drawn at full resolution. */
+  smokeTarget(): WebGLRenderTarget | null {
+    const k = this.settings.smokeScale;
+    if (k >= 0.99) {
+      this.smokeRT?.dispose();
+      this.smokeRT = null;
+      return null;
+    }
+    const w = Math.max(1, Math.ceil(this.width * k)), h = Math.max(1, Math.ceil(this.height * k));
+    if (!this.smokeRT || this.smokeRT.width !== w || this.smokeRT.height !== h) {
+      this.smokeRT?.dispose();
+      this.smokeRT = new WebGLRenderTarget(w, h, { type: HalfFloatType, format: RGBAFormat, depthBuffer: false, stencilBuffer: false, minFilter: LinearFilter, magFilter: LinearFilter, generateMipmaps: false });
+    }
+    return this.smokeRT;
+  }
+
+  /** Upsample the smoke target onto the frame (after the particles were drawn into it). */
+  compositeSmoke(): void {
+    if (!this.smokeRT) return;
+    const u = this.smokeMat.uniforms;
+    u.tSmoke.value = this.smokeRT.texture;
+    u.tDepth.value = this.linDepthRT.texture;
+    (u.uSmokeSize.value as Vector2).set(this.smokeRT.width, this.smokeRT.height);
+    (u.uFullSize.value as Vector2).set(this.width, this.height);
+    this.quad.render(this.renderer, this.compRT, this.smokeMat);
+  }
 
   finish(dt: number, resetExposure = false): void {
     const r = this.renderer;

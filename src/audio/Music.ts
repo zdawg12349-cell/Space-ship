@@ -53,7 +53,9 @@ export class Music {
 
   constructor(private readonly ctx: AudioContext, dest: AudioNode) {
     this.out = ctx.createGain();
-    this.out.gain.value = 0.9;
+    // (the score sits under the engines but has to carry the quiet stretches on its own, on
+    // laptop speakers too)
+    this.out.gain.value = 2.2;
     this.out.connect(dest);
     this.reverb = ctx.createConvolver();
     const n = Math.floor(ctx.sampleRate * 3);
@@ -74,10 +76,11 @@ export class Music {
     this.padG = ctx.createGain(); this.padG.gain.value = 0; this.padLp.connect(this.padG).connect(bus);
     this.pulseG = ctx.createGain(); this.pulseG.gain.value = 0; this.pulseG.connect(bus);
     this.shimmerG = ctx.createGain(); this.shimmerG.gain.value = 0; this.shimmerG.connect(bus);
-    // sub drone: root + fifth, slowly beating
+    // sub drone: root + fifth, slowly beating (triangles: their overtones carry the drone on
+    // small speakers that cannot play its fundamental)
     for (const [m, det] of [[38, 0], [45, 3], [38, -4]] as [number, number][]) {
       const o = ctx.createOscillator();
-      o.type = 'sine';
+      o.type = 'triangle';
       o.frequency.value = mtof(m);
       o.detune.value = det;
       const g = ctx.createGain(); g.gain.value = 0.33;
@@ -225,13 +228,16 @@ export class Music {
 
   update(dt: number, hush: number): void {
     this.time += dt;
-    this.hush = hush;
+    // (the hush after orbit insertion thins the score to a whisper rather than cutting it: total
+    // silence in the middle of play reads as the sound having failed)
+    this.hush = hush * 0.7;
+    hush = this.hush;
     const ctx = this.ctx;
     const t = ctx.currentTime;
     this.intensity += (this.target - this.intensity) * Math.min(1, dt * 0.6);
     const I = this.intensity * (1 - hush);
     this.droneG.gain.setTargetAtTime(0.16 * Math.min(1, I * 1.6), t, 0.5);
-    this.padG.gain.setTargetAtTime(0.05 * Math.min(1, 0.25 + I), t, 0.6);
+    this.padG.gain.setTargetAtTime(0.075 * Math.min(1, 0.3 + I), t, 0.6);
     this.padLp.frequency.setTargetAtTime(500 + 2400 * I * I, t, 0.8);
     for (const v of this.padVoices) v.g.gain.setTargetAtTime(0.18, t, 2);
     this.pulseG.gain.setTargetAtTime(this.pulseOn * Math.min(1, I * 1.3), t, 0.4);

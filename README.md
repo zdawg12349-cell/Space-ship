@@ -147,8 +147,11 @@ materials are generated from that definition.
   - Ray-marched exhaust plumes that respond to ambient pressure, with shock diamonds and
     vacuum expansion.
   - Lit particle systems for steam, smoke, deluge water, cryogenic venting, ground clouds and
-    exhaust trails. Each puff is a lumpy billow that blends into its neighbours, lit by the sun
-    and by the flame, and old puffs diffuse into haze.
+    exhaust trails. Each puff is a cauliflower billow whose outline is eroded by slowly boiling
+    noise, lit by the sun and by the flame, with grey shadowed sides. Slow eddies fold the
+    cloud as it spreads, and old puffs loosen into wisps.
+  - Lighter presets draw the smoke at reduced resolution and upsample it against the scene's
+    depth, so the tower and the rocket keep crisp edges in front of it.
   - A vacuum plume is a faint glow, and however far a line of sight runs down a jet its glow
     cannot pile up far past the core's own brightness, so a camera on the stage looking aft is
     not blinded by its own engine.
@@ -175,11 +178,14 @@ materials are generated from that definition.
     and airflow sound follow it. Pressing P there opens photo mode around the booster.
 - **Other camera modes:** chase, orbit, onboard, ground-tracking and free cameras, plus a photo
   mode.
-- **Sound:** layered engine sound with distance delay and air absorption. Rain hisses on the
-  pad, and thunder cracks or rolls in at the speed of sound after each flash. Up close,
-  reaction-control thrusters hiss as they pulse, and landing legs thump out on their actuators
-  and lock. Mission-control radio reacts to flight events, with Quindar tones. The music is an
-  adaptive score, and there is deliberate silence after orbit insertion.
+- **Sound:** layered engine sound with distance delay, Doppler and air absorption, mixed to
+  stay audible on laptop speakers. Rain hisses on the pad, and thunder cracks or rolls in at
+  the speed of sound after each flash. Up close, reaction-control thrusters hiss as they pulse,
+  and landing legs thump out on their actuators and lock. Mission-control radio reacts to
+  flight events, with Quindar tones. The music is an adaptive score that falls to a hush after
+  orbit insertion.
+  - **Engine sound in space** (Settings, on by default) keeps a muffled rumble on outside
+    cameras in vacuum, as films do. Turn it off for a silent vacuum.
 
 ## Controls
 

@@ -7,11 +7,12 @@ import { Radio } from './Radio';
  * Procedural audio. Every sound except the recorded mission-control voices is synthesised
  * with the Web Audio API:
  *
- *  - Rocket noise: sub-bass rumble, a broadband roar and the impulsive "crackle" of shock
- *    waves, mixed by thrust. Heard from the ground it arrives late (distance / 343 m/s, with
- *    Doppler as the delay stretches), loses its highs to air absorption and fades with
- *    distance; onboard it is structure-borne and muffled; in vacuum there is nothing to carry
- *    it, so external cameras fall silent.
+ *  - Rocket noise: sub-bass rumble, a mid-bass growl, a broadband roar and the impulsive
+ *    "crackle" of shock waves, mixed by thrust. Heard from the ground it arrives late (the
+ *    camera hears the engine as it was distance / 343 m/s ago, with Doppler as it recedes),
+ *    loses its highs to air absorption and fades with distance; onboard it is structure-borne
+ *    and muffled. In vacuum there is nothing to carry it: with the "engine sound in space"
+ *    setting off, external cameras fall silent; on (the default) they keep a muffled rumble.
  *  - Aerodynamic wind and transonic buffeting, reentry plasma roar.
  *  - Pad ambience: sea breeze, surf, insects and birds, cryogenic venting hiss, deluge water.
  *  - One-shots: clamp release, pyrotechnic separation, chute deploy, touchdown, splashdown,
@@ -103,9 +104,19 @@ export class AudioEngine {
   private buffers: Record<string, AudioBuffer> = {};
   // rocket layers
   private engine: {
-    rumble: GainNode; roar: GainNode; crackle: GainNode; lp: BiquadFilterNode; delay: DelayNode; out: GainNode; roarBp: BiquadFilterNode;
-    onboard: GainNode; onboardLp: BiquadFilterNode;
+    rumble: GainNode; growl: GainNode; roar: GainNode; crackle: GainNode; lp: BiquadFilterNode; out: GainNode; roarBp: BiquadFilterNode;
+    onboard: GainNode; onboardLp: BiquadFilterNode; sources: AudioBufferSourceNode[];
   } | null = null;
+  /**
+   * What the engine was doing over the last seconds (thrust, air round the jet, solid share),
+   * so a camera far away hears it as it was when the sound left. Ring of samples on `time`.
+   */
+  private hist = { t: new Float64Array(256), thrust: new Float32Array(256), air: new Float32Array(256), solid: new Float32Array(256), n: 0, head: 0 };
+  /** the moment of the engine's history the camera hears now: it never runs backward, so a cut
+   * to a camera farther away holds the sound and lets it catch up rather than replaying silence */
+  private heardT = -Infinity;
+  private lastDist = -1;
+  private doppler = 1;
   private wind: { gain: GainNode; bp: BiquadFilterNode; buffet: GainNode } | null = null;
   private amb: { breeze: GainNode; surf: GainNode; insects: GainNode; vent: GainNode; deluge: GainNode; rain: GainNode; rainLow: GainNode } | null = null;
   /** weather: wind strength multiplier for the breeze, rain falling on the camera 0..1 */
@@ -137,10 +148,21 @@ export class AudioEngine {
     // more latency is inaudible against engine sound that already arrives with its distance delay)
     try { ctx = new AudioContext({ latencyHint: 'playback' }); } catch { try { ctx = new AudioContext(); } catch { return; } }
     this.ctx = ctx;
-    const comp = ctx.createDynamicsCompressor();
-    comp.threshold.value = -10; comp.knee.value = 8; comp.ratio.value = 4; comp.attack.value = 0.005; comp.release.value = 0.25;
+    // master: rumble below hearing taken out (it only eats headroom), a gentle glue compressor
+    // that lifts the whole mix to a level small laptop speakers carry, then a fast limiter so the
+    // loudest moments never clip
+    const hp = ctx.createBiquadFilter(); hp.type = 'highpass'; hp.frequency.value = 28; hp.Q.value = 0.6;
+    const glue = ctx.createDynamicsCompressor();
+    glue.threshold.value = -24; glue.knee.value = 12; glue.ratio.value = 2.5; glue.attack.value = 0.02; glue.release.value = 0.4;
+    const limiter = ctx.createDynamicsCompressor();
+    limiter.threshold.value = -4; limiter.knee.value = 2; limiter.ratio.value = 20; limiter.attack.value = 0.002; limiter.release.value = 0.15;
     this.master = ctx.createGain();
-    this.master.connect(comp).connect(ctx.destination);
+    this.master.connect(hp).connect(glue).connect(limiter).connect(ctx.destination);
+    // a context the system suspends (another tab took the audio device, the lid closed) comes
+    // back by itself when the page is shown again, not only on the next click
+    const wake = () => { if (ctx.state !== 'running' && ctx.state !== 'closed' && document.visibilityState === 'visible') void ctx.resume().catch(() => undefined); };
+    ctx.addEventListener('statechange', wake);
+    document.addEventListener('visibilitychange', wake);
     this.sfx = ctx.createGain(); this.sfx.connect(this.master);
     this.musicBus = ctx.createGain(); this.musicBus.connect(this.master);
     this.voiceBus = ctx.createGain(); this.voiceBus.connect(this.master);
@@ -177,12 +199,17 @@ export class AudioEngine {
 
   private buildEngine(): void {
     const ctx = this.ctx!;
-    // external path: layers -> air absorption -> distance delay (Doppler) -> out
+    // external path: layers -> air absorption -> out (the travel delay is applied to the levels)
     const sum = ctx.createGain();
     const rumbleSrc = this.loop('brown', 1);
     const rumbleLp = ctx.createBiquadFilter(); rumbleLp.type = 'lowpass'; rumbleLp.frequency.value = 140; rumbleLp.Q.value = 0.7;
     const rumble = ctx.createGain(); rumble.gain.value = 0;
     rumbleSrc.connect(rumbleLp).connect(rumble).connect(sum);
+    // the growl: the rumble's upper reach, 150-400 Hz, which is what a laptop or phone speaker
+    // can actually play of a rocket (the sub-bass alone is felt, not heard, on small speakers)
+    const growlBp = ctx.createBiquadFilter(); growlBp.type = 'bandpass'; growlBp.frequency.value = 240; growlBp.Q.value = 0.8;
+    const growl = ctx.createGain(); growl.gain.value = 0;
+    rumbleSrc.connect(growlBp).connect(growl).connect(sum);
     const roarSrc = this.loop('pink', 1);
     const roarBp = ctx.createBiquadFilter(); roarBp.type = 'bandpass'; roarBp.frequency.value = 420; roarBp.Q.value = 0.45;
     const roar = ctx.createGain(); roar.gain.value = 0;
@@ -192,16 +219,14 @@ export class AudioEngine {
     const crackle = ctx.createGain(); crackle.gain.value = 0;
     crSrc.connect(crHp).connect(crackle).connect(sum);
     const lp = ctx.createBiquadFilter(); lp.type = 'lowpass'; lp.frequency.value = 8000; lp.Q.value = 0.5;
-    const delay = ctx.createDelay(90);
-    delay.delayTime.value = 0;
     const out = ctx.createGain(); out.gain.value = 0;
-    sum.connect(lp).connect(delay).connect(out).connect(this.sfx);
+    sum.connect(lp).connect(out).connect(this.sfx);
     out.connect(this.reverbSend);
-    // onboard (structure-borne) path: the same layers, muffled, no delay
+    // onboard (structure-borne) path: the same layers, muffled
     const onboardLp = ctx.createBiquadFilter(); onboardLp.type = 'lowpass'; onboardLp.frequency.value = 900; onboardLp.Q.value = 0.9;
     const onboard = ctx.createGain(); onboard.gain.value = 0;
     sum.connect(onboardLp).connect(onboard).connect(this.sfx);
-    this.engine = { rumble, roar, crackle, lp, delay, out, roarBp, onboard, onboardLp };
+    this.engine = { rumble, growl, roar, crackle, lp, out, roarBp, onboard, onboardLp, sources: [rumbleSrc, roarSrc, crSrc] };
   }
 
   private buildWind(): void {
@@ -260,38 +285,93 @@ export class AudioEngine {
   /** Deliberate silence (orbit insertion): fade engine/wind/music out, radio stays. */
   setHush(on: boolean): void { this.hushTarget = on ? 1 : 0; }
 
+  /** Record the source's state for the travel delay; returns it as the camera hears it now. */
+  private heard(st: EngineSoundState | null, dt: number): { thrust: number; air: number; solid: number } {
+    const H = this.hist, N = H.t.length;
+    const now = this.time;
+    // one sample every 40 ms (256 of them: ten seconds, more than the longest delay)
+    const last = H.n ? (H.head + N - 1) % N : -1;
+    if (last < 0 || now - H.t[last] >= 0.04) {
+      H.t[H.head] = now; H.thrust[H.head] = st ? Math.max(0, st.thrustMN) : 0; H.air[H.head] = st?.airAtVehicle ?? 0; H.solid[H.head] = st?.solid ?? 0;
+      H.head = (H.head + 1) % N; H.n = Math.min(N, H.n + 1);
+    } else if (last >= 0) {
+      H.thrust[last] = st ? Math.max(0, st.thrustMN) : 0; H.air[last] = st?.airAtVehicle ?? 0; H.solid[last] = st?.solid ?? 0;
+    }
+    if (!st || st.onboard) { this.heardT = now; this.lastDist = -1; this.doppler = 1; return { thrust: st ? st.thrustMN : 0, air: st?.airAtVehicle ?? 0, solid: st?.solid ?? 0 }; }
+    // sound from far away arrives late; past a couple of kilometres the wait is capped (6 s), so a
+    // distant camera still hears the launch while it is on screen
+    const delay = Math.min(6, st.distance / 343);
+    // a cut to a farther camera would step back in time: hold the sound and let it catch up at
+    // half speed instead (it never replays the silence before ignition)
+    this.heardT = Math.min(now, Math.max(now - delay, this.heardT + dt * 0.5));
+    // Doppler from the source's motion along the line of sight (a jump in distance is a cut)
+    if (this.lastDist >= 0 && dt > 0) {
+      const vr = (st.distance - this.lastDist) / dt;
+      if (Math.abs(vr) < 2500) this.doppler += (Math.min(1.15, Math.max(0.75, 1 / (1 + vr / 343))) - this.doppler) * Math.min(1, dt * 2);
+    }
+    this.lastDist = st.distance;
+    // look the moment up (linear between samples; before the first sample the engine was quiet)
+    let lo = -1;
+    for (let k = 0; k < H.n; k++) {
+      const i = (H.head + N - 1 - k) % N;
+      if (H.t[i] <= this.heardT) { lo = i; break; }
+    }
+    if (lo < 0) return { thrust: 0, air: 0, solid: 0 };
+    const hi = (lo + 1) % N;
+    if (hi === H.head || H.t[hi] <= H.t[lo]) return { thrust: H.thrust[lo], air: H.air[lo], solid: H.solid[lo] };
+    const f = Math.min(1, (this.heardT - H.t[lo]) / (H.t[hi] - H.t[lo]));
+    return { thrust: H.thrust[lo] + (H.thrust[hi] - H.thrust[lo]) * f, air: H.air[lo] + (H.air[hi] - H.air[lo]) * f, solid: H.solid[lo] + (H.solid[hi] - H.solid[lo]) * f };
+  }
+
+  private engineDt = 0;
+
   setEngine(st: EngineSoundState | null): void {
     if (!this.ctx || !this.engine) return;
     const e = this.engine;
     const t = this.ctx.currentTime;
     const tc = 0.08;
-    if (!st || st.thrustMN <= 0) {
+    const dt = Math.max(0, this.time - this.engineDt);
+    this.engineDt = this.time;
+    const h = this.heard(st, dt);
+    // engine sound in space: films keep a muffled rumble there; off, vacuum is silent
+    const space = this.settings.spaceSound !== false;
+    for (const src of e.sources) src.playbackRate.setTargetAtTime(this.doppler, t, 0.3);
+    if (!st || h.thrust <= 0) {
       e.out.gain.setTargetAtTime(0, t, 0.4);
       e.onboard.gain.setTargetAtTime(0, t, 0.3);
-      for (const g of [e.rumble, e.roar, e.crackle]) g.gain.setTargetAtTime(0, t, 0.5);
+      for (const g of [e.rumble, e.growl, e.roar, e.crackle]) g.gain.setTargetAtTime(0, t, 0.5);
     } else {
-      const P = Math.sqrt(st.thrustMN);
-      const vacVehicle = st.airAtVehicle;
-      // the jet only becomes loud in air: in vacuum the noise sources vanish
-      const sourceAir = Math.min(1, 0.04 + vacVehicle * 1.4);
-      e.rumble.gain.setTargetAtTime(Math.min(1.2, 0.35 * P) * sourceAir, t, tc);
-      e.roar.gain.setTargetAtTime(Math.min(0.9, 0.22 * P) * sourceAir, t, tc);
-      e.crackle.gain.setTargetAtTime(Math.min(1.1, (0.25 + st.solid * 0.25) * P) * sourceAir, t, tc);
-      e.roarBp.frequency.setTargetAtTime(380 + 200 / (1 + st.thrustMN), t, 0.3);
+      // loudness grows slowly with thrust (a heavy lifter is louder than an upper stage, not
+      // drowning it by 20 dB: the ear hears a doubling of power as a small step)
+      const L = Math.pow(h.thrust, 0.3);
+      // the layers follow thrust; how much of it becomes noise outside depends on the air round
+      // the jet (in vacuum the turbulent mixing that makes the roar is gone)
+      e.rumble.gain.setTargetAtTime(Math.min(1.1, 0.48 * L), t, tc);
+      e.growl.gain.setTargetAtTime(Math.min(1.6, 0.75 * L), t, tc);
+      e.roar.gain.setTargetAtTime(Math.min(1.0, 0.39 * L), t, tc);
+      e.crackle.gain.setTargetAtTime(Math.min(1.1, (0.37 + h.solid * 0.37) * L), t, tc);
+      e.roarBp.frequency.setTargetAtTime(380 + 200 / (1 + h.thrust), t, 0.3);
       if (st.onboard) {
+        // through the structure: heard on board in air or in vacuum alike
         e.out.gain.setTargetAtTime(0, t, 0.1);
-        e.onboard.gain.setTargetAtTime(0.55 * Math.min(1, 0.4 + P * 0.15) * (1 - this.hush), t, 0.1);
-        e.onboardLp.frequency.setTargetAtTime(500 + 900 * st.airAtCamera, t, 0.2);
-        e.delay.delayTime.setTargetAtTime(0, t, 0.05);
+        e.onboard.gain.setTargetAtTime(0.6 * (1 - this.hush), t, 0.1);
+        e.onboardLp.frequency.setTargetAtTime(750 + 1100 * st.airAtCamera, t, 0.2);
       } else {
         const d = Math.max(30, st.distance);
-        // spherical spreading (relative to 300 m) and air absorption of the highs
-        const level = Math.min(1.4, 300 / d) * st.airAtCamera * (1 - this.hush);
-        e.out.gain.setTargetAtTime(level, t, 0.15);
+        // the jet makes noise in air; the camera's air carries it. Both are soft-kneed (a chase
+        // camera at 20 km still hears the rocket beside it), and in space the default keeps a floor
+        const jet = Math.min(1, 0.04 + h.air * 1.4);
+        const carry = Math.min(1, Math.sqrt(st.airAtCamera) * 1.3);
+        const medium = Math.max(space ? 0.32 : 0, jet * carry);
+        // distance: a perceptual law (about -4 dB per doubling past a kilometre and a half, where
+        // the physical -6 dB would leave a rocket ten kilometres away almost inaudible)
+        const near = 1.15 / Math.pow(1 + d / 1500, 0.7);
+        e.out.gain.setTargetAtTime(near * medium * (1 - this.hush), t, 0.15);
         e.onboard.gain.setTargetAtTime(0, t, 0.1);
-        e.lp.frequency.setTargetAtTime(Math.max(180, 14000 * Math.exp(-d / 2500)), t, 0.2);
-        // delay follows the distance smoothly: as it grows the pitch drops (Doppler)
-        e.delay.delayTime.setTargetAtTime(Math.min(85, d / 343), t, 0.5);
+        // air absorbs the highs over distance; in thin air or vacuum the sound is muffled. The
+        // floor keeps some growl that small speakers can play
+        const muffle = 900 + 14000 * Math.min(1, st.airAtCamera * 2);
+        e.lp.frequency.setTargetAtTime(Math.max(650, Math.min(muffle, 16000 * Math.exp(-d / 4000))), t, 0.2);
       }
     }
     // wind & buffeting for onboard / close cameras
@@ -393,9 +473,9 @@ export class AudioEngine {
   /** Named sound effects; `distance` delays & muffles external sounds. */
   play(name: string, distance = 0, onboard = false): void {
     if (!this.ctx) return;
-    const delay = onboard ? 0 : Math.min(30, distance / 343);
-    const far = onboard ? 1 : Math.min(1, 400 / Math.max(50, distance));
-    const lp = onboard ? 1500 : Math.max(250, 9000 * Math.exp(-distance / 3000));
+    const delay = onboard ? 0 : Math.min(6, distance / 343);
+    const far = onboard ? 1 : Math.min(1, Math.pow(600 / Math.max(50, distance), 0.75));
+    const lp = onboard ? 1500 : Math.max(600, 9000 * Math.exp(-distance / 4000));
     switch (name) {
       case 'clamps': this.burst({ buf: 'brown', dur: 0.8, gain: 0.9 * far, lp: 400, delay, reverb: 0.6 }); this.burst({ buf: 'white', dur: 0.25, gain: 0.25 * far, hp: 1500, lp, delay }); break;
       case 'pyro': this.burst({ buf: 'white', dur: 0.35, gain: 0.8 * far, lp: Math.min(lp, 5000), delay, reverb: 0.4 }); this.burst({ buf: 'brown', dur: 1.2, gain: 0.6 * far, lp: 220, delay }); break;

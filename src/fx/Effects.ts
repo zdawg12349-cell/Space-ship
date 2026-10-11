@@ -80,10 +80,17 @@ export class Effects {
   private time = 0;
   /** scales emission counts with the particle budget */
   private rateScale: number;
+  /**
+   * scales the pad and ground clouds' puffs the other way: a smaller budget makes fewer, bigger
+   * puffs, so the cloud keeps its body (coverage goes as count x size squared), and a large one
+   * finer puffs with more detail
+   */
+  private puffScale = 1;
 
   constructor(private readonly rw: RenderWorld, maxParticles = 6000) {
-    this.particles = new ParticleSystem(rw.fxScene, rw.detailTex, () => rw.post.linearDepth, maxParticles);
+    this.particles = new ParticleSystem(rw.detailTex, () => rw.post.linearDepth, maxParticles);
     this.rateScale = Math.min(2, maxParticles / 6000);
+    this.puffScale = Math.pow(Math.max(0.25, this.rateScale), -0.35);
     this.flash = new PointLight(0xffaa66, 0, 0, 2);
     this.flash.visible = false;
     rw.scene.add(this.flash);
@@ -152,6 +159,7 @@ export class Effects {
   setBudget(n: number): void {
     this.particles.budget = n;
     this.rateScale = Math.min(2, n / 6000);
+    this.puffScale = Math.pow(Math.max(0.25, this.rateScale), -0.35);
   }
 
   private rate(key: string, perSecond: number, dt: number): number {
@@ -225,7 +233,7 @@ export class Effects {
     let split = 1e9;
     const L0 = this.rw.plumes.lights[0];
     if (L0 && L0.intensity > 0) split = Math.max(0, L0.pos.dot(_c.set(0, 0, -1).applyQuaternion(this.rw.camera.quaternion)));
-    P.update(dt, camL, fwd, split, this.rw.post.size);
+    P.update(dt, camL, fwd, split);
 
     // explosion flash decay
     if (this.flashLife > 0) {
@@ -292,7 +300,7 @@ export class Effects {
         const speed = 25 + Math.sqrt(MN) * 14;
         P.emit({
           kind, pos: _c.copy(ex.pos).addScaledVector(ex.dir, -ex.width * 0.6), vel: _d.copy(ex.dir).multiplyScalar(speed * (0.7 + Math.random() * 0.6)).add(_e.set(0, 4 + Math.random() * 6, 0)),
-          spread: speed * 0.22, jitter: ex.width * 0.35, size: 3 + Math.sqrt(MN) * 1.6, grow: 2.2 + Math.sqrt(MN) * 0.9, life: 26 + Math.random() * 14, heat: 0.45, tint: kind === 'smoke' ? 0.85 : 1,
+          spread: speed * 0.22, jitter: ex.width * 0.35, size: (3 + Math.sqrt(MN) * 1.6) * this.puffScale, grow: (2.2 + Math.sqrt(MN) * 0.9) * this.puffScale, life: 26 + Math.random() * 14, heat: 0.45, tint: kind === 'smoke' ? 0.85 : 1,
         });
       }
       // billowing around the mount itself
@@ -302,7 +310,7 @@ export class Effects {
         const r = complex.deckHeight * 0.6 + Math.random() * 6;
         P.emit({
           kind: solid > 0.4 ? 'srbsmoke' : 'steam', pos: _c.set(Math.cos(ang) * r, complex.deckHeight * 0.4, Math.sin(ang) * r),
-          vel: _d.set(Math.cos(ang) * 8, 6 + Math.random() * 8, Math.sin(ang) * 8), spread: 4, size: 4 + Math.sqrt(MN), grow: 2.5, life: 18, heat: 0.3,
+          vel: _d.set(Math.cos(ang) * 8, 6 + Math.random() * 8, Math.sin(ang) * 8), spread: 4, size: (4 + Math.sqrt(MN)) * this.puffScale, grow: 2.5 * this.puffScale, life: 18, heat: 0.3,
         });
       }
     } else if (airBody && h < reach && dirL.y < -0.2) {
@@ -326,7 +334,7 @@ export class Effects {
         const kind: ParticleKind = solid > 0.4 ? 'srbsmoke' : nearPad || wet ? (Math.random() < kerolox * 0.4 ? 'smoke' : 'steam') : Math.random() < 0.6 ? 'steam' : 'dust';
         P.emit({
           kind, pos: hit, vel: _d.set(Math.cos(ang) * sp, 2 + Math.random() * 5, Math.sin(ang) * sp), spread: sp * 0.2, jitter: 2 + Math.sqrt(MN),
-          size: land ? 2.2 + Math.sqrt(MN) : 3 + Math.sqrt(MN) * 1.4, grow: land ? 1.3 + Math.sqrt(MN) * 0.5 : 2 + Math.sqrt(MN) * 0.7,
+          size: (land ? 2.2 + Math.sqrt(MN) : 3 + Math.sqrt(MN) * 1.4) * this.puffScale, grow: (land ? 1.3 + Math.sqrt(MN) * 0.5 : 2 + Math.sqrt(MN) * 0.7) * this.puffScale,
           life: land ? 9 + Math.random() * 6 : 18 + Math.random() * 10, heat: 0.6 * strength,
         });
       }

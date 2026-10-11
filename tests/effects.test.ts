@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { PerspectiveCamera, Scene, Texture, Vector2, Vector3 } from 'three';
+import { PerspectiveCamera, Texture, Vector3 } from 'three';
 import { createPuffAtlas, ParticleSystem } from '../src/fx/Particles';
 import { CameraDirector, type CamContext } from '../src/camera/CameraDirector';
 import type { CelestialBody } from '../src/physics/bodies';
@@ -14,11 +14,11 @@ describe('particles', () => {
   /** height above the ground sphere through the frame origin */
   const height = (P: Shaded, i: number) => Math.hypot(P.px[i], P.py[i] + R, P.pz[i]) - R;
   const step = (P: ParticleSystem, n = 1) => {
-    for (let k = 0; k < n; k++) P.update(1 / 30, new Vector3(0, 50, 0), new Vector3(1, 0, 0), 1e9, new Vector2(320, 180));
+    for (let k = 0; k < n; k++) P.update(1 / 30, new Vector3(0, 50, 0), new Vector3(1, 0, 0), 1e9);
   };
 
   it('a puff far from the frame anchor is lit like one near it, not by negative light', () => {
-    const P = new ParticleSystem(new Scene(), new Texture(), () => new Texture(), 64);
+    const P = new ParticleSystem(new Texture(), () => new Texture(), 64);
     P.bodyRadius = R;
     // 1500 km downrange the ground lies ~179 km below the anchor's tangent plane, and "up" there
     // is tilted by 13.6 degrees
@@ -38,7 +38,7 @@ describe('particles', () => {
   });
 
   it('smoke settles on the curved ground far from the anchor and spreads along it', () => {
-    const P = new ParticleSystem(new Scene(), new Texture(), () => new Texture(), 64);
+    const P = new ParticleSystem(new Texture(), () => new Texture(), 64);
     P.bodyRadius = R;
     const d = 900_000;
     const ground = Math.sqrt(R * R - d * d) - R;
@@ -53,7 +53,7 @@ describe('particles', () => {
   });
 
   it('cold gas in vacuum is a smooth haze, seen only near the nozzle', () => {
-    const P = new ParticleSystem(new Scene(), new Texture(), () => new Texture(), 64);
+    const P = new ParticleSystem(new Texture(), () => new Texture(), 64);
     const breakup = P.material.uniforms.uBreakup.value as number[];
     // the gas kind follows the original twelve in the per-kind uniform arrays
     expect(breakup.length).toBeGreaterThanOrEqual(13);

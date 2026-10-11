@@ -35,6 +35,7 @@ export class SettingsPanel {
       slider('Music', 'music', 0, 1, 0.01),
       slider('Effects', 'sfx', 0, 1, 0.01),
       slider('Mission control voice', 'voice', 0, 1, 0.01),
+      toggle('Engine sound in space', 'spaceSound'),
       toggle('Subtitles', 'subtitles'),
       toggle('Invert pitch', 'invertPitch'),
     );
