@@ -41,6 +41,9 @@ export interface SiteMaterials {
   gravel: MeshStandardMaterial;
   vabWall: MeshStandardMaterial;
   vabDark: MeshStandardMaterial;
+  /** profiled metal wall cladding (hangars, sheds): white and light grey */
+  cladding: MeshStandardMaterial;
+  claddingGrey: MeshStandardMaterial;
   trenchFloor: MeshStandardMaterial;
   /** trunks of palms, pines and broadleaf trees: each bends as stiffly as its crown */
   trunk: MeshStandardMaterial;
@@ -135,6 +138,57 @@ function stained(base: [number, number, number], rough: number, opts: { scorch?:
   return m;
 }
 
+/**
+ * Profiled steel cladding: box ribs every metre across each wall (normals tilted on their flanks,
+ * a little occlusion in the pans), panel end-laps every few metres up, rain streaks under the
+ * eaves. The ribs fade out once they are smaller than a couple of pixels, so they never shimmer.
+ */
+function cladding(base: [number, number, number], rough: number, key: string): MeshStandardMaterial {
+  const m = new MeshStandardMaterial({ color: new Color(base[0], base[1], base[2]), roughness: rough, metalness: 0.15 });
+  m.customProgramCacheKey = () => `site-${key}`;
+  m.onBeforeCompile = (sh) => {
+    sh.vertexShader = sh.vertexShader
+      .replace('#include <common>', '#include <common>\nvarying vec3 vSitePos;\nvarying vec3 vSiteN;\nvarying vec3 vRibT;')
+      .replace('#include <beginnormal_vertex>', `#include <beginnormal_vertex>
+        vSiteN = objectNormal;
+        {
+          // across the ribs: horizontal along a wall
+          vec3 t = cross(vec3(0.0, 1.0, 0.0), objectNormal);
+          vRibT = normalize((modelViewMatrix * vec4(length(t) > 1e-3 ? normalize(t) : vec3(1.0, 0.0, 0.0), 0.0)).xyz);
+        }`)
+      .replace('#include <begin_vertex>', '#include <begin_vertex>\nvSitePos = position;');
+    sh.fragmentShader = sh.fragmentShader
+      .replace('#include <common>', `#include <common>\nvarying vec3 vSitePos;\nvarying vec3 vSiteN;\nvarying vec3 vRibT;\n${NOISE}`)
+      .replace('#include <color_fragment>', `#include <color_fragment>
+        float wall = 1.0 - smoothstep(0.4, 0.7, abs(vSiteN.y));
+        vec3 ts = cross(vec3(0.0, 1.0, 0.0), vSiteN);
+        float u = dot(vSitePos, length(ts) > 1e-3 ? normalize(ts) : vec3(1.0, 0.0, 0.0));
+        float ph = fract(u);
+        // box ribs 35 mm proud on a 1 m pitch. The flanks are band-limited: never narrower than
+        // about a pixel and a half, their slope falling as they widen so the rib keeps its height;
+        // past a third of a metre per pixel the ribs fade out altogether
+        float fw = max(fwidth(u), 1e-4);
+        float ribVis = wall * (1.0 - smoothstep(0.15, 0.35, fw));
+        float w = max(0.05, fw * 1.5);
+        float t1 = clamp(ph / w, 0.0, 1.0), t2 = clamp((ph - 0.25) / w, 0.0, 1.0);
+        float ribSlope = 0.035 * 6.0 * (t1 * (1.0 - t1) - t2 * (1.0 - t2)) / w;
+        // a little shadow in the pan beside each rib, as wide as the flank allows
+        float occl = smoothstep(0.25, 0.25 + w, ph) * (1.0 - smoothstep(0.25 + w, 0.4 + w, ph));
+        diffuseColor.rgb *= 1.0 - ribVis * occl * 0.15;
+        // end-laps of the sheets: a fine line round the building every 6.1 m up
+        float lap = abs(fract(vSitePos.y / 6.1) - 0.5);
+        diffuseColor.rgb *= 1.0 - wall * (1.0 - smoothstep(0.0, 0.003 + fwidth(vSitePos.y) / 6.1, 0.5 - lap)) * 0.22;
+        // weathering: faint mottling, rain streaks running down from the eaves
+        float n1 = s_fbm(vec2(u, vSitePos.y) * 0.15);
+        float streak = smoothstep(0.55, 0.95, s_noise(vec2(u * 1.7, vSitePos.y * 0.08))) * wall;
+        diffuseColor.rgb *= 1.0 - (n1 - 0.5) * 0.08 - streak * 0.1;`)
+      .replace('#include <normal_fragment_maps>', `#include <normal_fragment_maps>
+        // a rising flank faces back across the ribs
+        normal = normalize(normal - vRibT * ribSlope * ribVis);`);
+  };
+  return m;
+}
+
 export function createSiteMaterials(): SiteMaterials {
   const scorch = { value: 0 };
   const wet = { value: 0 };
@@ -154,6 +208,8 @@ export function createSiteMaterials(): SiteMaterials {
   const grass = foliage([0.085, 0.1, 0.05], 0.85);
   const dryGrass = foliage([0.2, 0.17, 0.09], 0.9);
   const dryShrub = foliage([0.12, 0.11, 0.07], 0.9);
+  // named so tools can find each kind of plant in the scene
+  Object.entries({ leaf, palmLeaf, pineLeaf, canopy, grass, dryGrass, dryShrub }).forEach(([k, m]) => { m.name = k; });
   // foliage: wrap lighting, per-plant tint variation; tree crowns also shade as one soft volume
   // (crown-envelope normals + baked occlusion) and glow when back-lit by the sun
   // how readily each kind of plant gives to the wind (palms most, pines least)
@@ -177,38 +233,85 @@ export function createSiteMaterials(): SiteMaterials {
           #ifdef CROWN
           attribute vec4 aCrown;
           varying float vCrownAO;
+          varying vec3 vLeafP;
+          varying vec3 vBlobN;
           #endif`)
         .replace('#include <beginnormal_vertex>', `#include <beginnormal_vertex>
-          #ifdef CROWN
-          objectNormal = normalize(mix(objectNormal, aCrown.xyz, 0.62));
-          vCrownAO = aCrown.w;
-          #endif
           #ifdef USE_INSTANCING
           vTint = fract(sin(dot(instanceMatrix[3].xz, vec2(12.9898, 78.233))) * 43758.5453);
           #else
           vTint = 0.5;
+          #endif
+          #ifdef CROWN
+          objectNormal = normalize(mix(objectNormal, aCrown.xyz, 0.62));
+          vCrownAO = aCrown.w;
+          // tree-local position (shifted per tree so no two crowns share a pattern) and the
+          // clump's own surface normal, for its silhouette
+          vLeafP = position + vec3(vTint * 37.0, 0.0, vTint * 53.0);
+          #ifdef USE_INSTANCING
+          vBlobN = normalize(normalMatrix * (mat3(instanceMatrix) * normal));
+          #else
+          vBlobN = normalize(normalMatrix * normal);
+          #endif
           #endif`);
       sh.fragmentShader = sh.fragmentShader
         .replace('#include <common>', `#include <common>
           varying float vTint;
           #ifdef CROWN
           varying float vCrownAO;
+          varying vec3 vLeafP;
+          varying vec3 vBlobN;
+          float leafHash(vec3 p) { p = fract(p * 0.3183099 + 0.1); p *= 17.0; return fract(p.x * p.y * p.z * (p.x + p.y + p.z)); }
+          float leafNoise(vec3 x) {
+            vec3 i = floor(x), f = fract(x);
+            f = f * f * (3.0 - 2.0 * f);
+            return mix(mix(mix(leafHash(i), leafHash(i + vec3(1, 0, 0)), f.x), mix(leafHash(i + vec3(0, 1, 0)), leafHash(i + vec3(1, 1, 0)), f.x), f.y),
+                       mix(mix(leafHash(i + vec3(0, 0, 1)), leafHash(i + vec3(1, 0, 1)), f.x), mix(leafHash(i + vec3(0, 1, 1)), leafHash(i + vec3(1, 1, 1)), f.x), f.y), f.z);
+          }
+          #endif`)
+        .replace('#include <normal_fragment_maps>', `#include <normal_fragment_maps>
+          #ifdef CROWN
+          {
+            // a crown is a mass of needle tufts, not a smooth skin. Close up: the gaps between
+            // tufts open at each clump's edge (ragged, see-through outlines), the surface breaks
+            // into tufts that catch the light at their own angles, and the gaps are dark. All of
+            // it fades out by ~30 cm per pixel, before it could shimmer.
+            float near = 1.0 - smoothstep(0.06, 0.3, length(fwidth(vLeafP)));
+            if (near > 0.0) {
+              float n = leafNoise(vLeafP * 1.9) * 0.6 + leafNoise(vLeafP * 6.3 + 11.0) * 0.4;
+              float facing = abs(dot(normalize(vBlobN), normalize(vViewPosition)));
+              if (n < (0.62 - facing * 0.9) * near) discard;
+              leafThin = mix(0.5, clamp((0.75 - n) * 2.0 + (1.0 - facing) * 0.5, 0.0, 1.0), near);
+              vec3 jit = vec3(leafNoise(vLeafP * 4.1 + 3.0), leafNoise(vLeafP * 4.1 + 7.0), leafNoise(vLeafP * 4.1 + 13.0)) - 0.5;
+              normal = normalize(normal + jit * 1.1 * near);
+              diffuseColor.rgb *= mix(1.0, 0.62 + 0.6 * n, near);
+            }
+          }
           #endif`)
         .replace('#include <color_fragment>', `#include <color_fragment>
           diffuseColor.rgb *= mix(vec3(0.82, 0.88, 0.8), vec3(1.18, 1.1, 0.92), vTint);
           #ifdef CROWN
           diffuseColor.rgb *= vCrownAO;
+          // how thin the foliage is here (0 dense .. 1 open tufts), set by the tuft noise below
+          float leafThin = 0.5;
           #endif`)
         .replace('#include <lights_fragment_end>', `#include <lights_fragment_end>
           reflectedLight.directDiffuse *= 1.25;
           reflectedLight.indirectDiffuse *= 1.15;
+          // leaves have only a faint waxy sheen: against the sun a full specular lobe on tufted
+          // normals would frost the tops of the crowns white
+          reflectedLight.directSpecular *= 0.25;
+          reflectedLight.indirectSpecular *= 0.5;
           #if defined(CROWN) && NUM_DIR_LIGHTS > 0
           {
             // light scattered through the leaves toward the viewer when the sun is behind the crown
             vec3 Ls = directionalLights[0].direction;
             float back = pow(clamp(dot(-geometryViewDir, Ls), 0.0, 1.0), 3.0);
             float thin = clamp(0.5 - 0.5 * dot(geometryNormal, Ls), 0.0, 1.0);
-            reflectedLight.directDiffuse += directionalLights[0].color * diffuseColor.rgb * back * thin * 0.45;
+            // leaves pass on nearly as much light as they reflect: the outer needles of the
+            // shaded side glow a little whatever the view, and strongly against the sun
+            // (the open tufts at the clumps' edges most of all; the dense core stays dark)
+            reflectedLight.directDiffuse += directionalLights[0].color * diffuseColor.rgb * thin * (0.05 + back * 0.32) * (0.3 + 1.4 * leafThin) * vec3(0.9, 1.0, 0.55);
           }
           #endif`);
     };
@@ -264,6 +367,8 @@ export function createSiteMaterials(): SiteMaterials {
     gravel: stained(lin(0.5, 0.48, 0.44), 0.95, { key: 'gravel', scale: 3 }),
     vabWall: stained(lin(0.66, 0.66, 0.64), 0.75, { key: 'vab', scale: 0.25 }),
     vabDark: std(lin(0.25, 0.26, 0.27), 0.7, 0.2),
+    cladding: cladding(lin(0.84, 0.85, 0.84), 0.55, 'cladding'),
+    claddingGrey: cladding(lin(0.56, 0.58, 0.59), 0.6, 'cladding-grey'),
     berm: stained(lin(0.3, 0.32, 0.2), 0.95, { key: 'berm', scale: 0.7 }),
     trenchFloor: stained(lin(0.3, 0.29, 0.27), 0.9, { scorch, wet, key: 'trench' }),
     trunk: trunkMat(K_PALM, 'site-trunk'),

@@ -559,10 +559,15 @@ export class FlightController {
     const s = this.session;
     const dt = 1 / 30;
     const n = Math.round(seconds / dt);
+    const label = this.mission ? `Mission ${this.mission.number} · ${this.mission.title}` : 'Sandbox';
     for (let i = 0; i < n; i++) {
       s.update(dt);
       this.director.update(dt);
-      if (i % renderEvery === 0) s.render(dt * renderEvery);
+      if (i % renderEvery === 0) {
+        s.render(dt * renderEvery);
+        // banners and subtitles run on the same clock, so a capture shows what live play would
+        this.hud.update(s, dt * renderEvery, label);
+      }
     }
     return { met: s.met, phase: s.phase };
   }

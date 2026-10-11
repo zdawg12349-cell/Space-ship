@@ -117,9 +117,13 @@ materials are generated from that definition.
   overcast skies a grey stratus sheet, and storms towering cells with rain and lightning.
   - The same atmosphere that lights the sky lights the cloud, so it takes sunset colours,
     the orange of town lights at night, and the glare of the exhaust as a rocket climbs
-    through.
-  - Clouds drift with the wind and cast moving shadows on the ground.
-  - An overcast takes away the direct sun and greys the light.
+    through. Skylight comes from the whole blue dome, so shaded sides and bases stay
+    grey-blue under a low sun rather than turning brown.
+  - Clouds drift with the wind and cast moving shadows on the ground. Broken cloud adds its
+    own bright light to the day, so shadowed ground and vehicles are not lit by blue sky
+    alone.
+  - An overcast takes away the direct sun. The ground and everything beneath it are lit by
+    the grey base the camera sees, and a storm's deep base is darker still.
   - A climbing rocket punches a channel through the deck that slowly spreads.
 - **Moon and planets:** the Moon, and Jupiter with its banded atmosphere and Galilean moons.
 - **Image pipeline:** HDR rendering with auto-exposure, AgX tone mapping, energy-conserving
@@ -132,7 +136,9 @@ materials are generated from that definition.
 - **Flight effects:** transonic vapour cones, entry plasma sheaths, heat shimmer, RCS puffs,
   stage break-ups and booster burn-up.
 - **Launch complexes:** procedural sites with towers, swing arms, flame trenches, lightning
-  masts and floodlights. Each site has climate-specific vegetation that bends in the wind.
+  masts, floodlights and an integration hangar in profiled steel. Each site has
+  climate-specific vegetation that bends in the wind. Tree crowns break up into tufts close
+  to the camera, and their leaves glow when the sun is behind them.
 - **Recovery hardware:** landing-zone pads and the drone ship.
 
 ### Cinematography and sound

@@ -4,7 +4,7 @@ import type { LaunchSite } from '../../world/sites';
 import { box, GeoBuilder, lathe, tube } from '../vehicle/shapes';
 import { createSiteMaterials, SiteMaterials } from './siteMaterials';
 import {
-  Batch, beam, boxTruss, BROAD_CROWN, broadleafGeometry, building, cable, CrownShape, horizontalTank, instanced, latticeTower, lightMast, palmGeometry,
+  Batch, beam, boxTruss, BROAD_CROWN, broadleafGeometry, building, cable, CrownShape, hangar, horizontalTank, instanced, latticeTower, lightMast, palmGeometry,
   PINE_CROWN, pineGeometry, planarTruss, shrubGeometry, sphereTank, tuftGeometry, verticalTank,
 } from './structures';
 
@@ -301,12 +301,14 @@ export class LaunchComplex {
       box(g, 135, 64, 40, new Matrix4().makeTranslation(at.x - 20, at.y + 32, at.z + 99));
       box(B.get(M.concreteDark), 220, 1, 160, new Matrix4().makeTranslation(at.x, at.y + 160.5, at.z));
     } else {
-      // horizontal integration hangar beside the access road
-      const hx = -420, hz = 95;
+      // horizontal integration hangar beside the access road, its doors toward the road
+      const { x: hx, z: hz } = HANGAR;
       const y = this.hAt(hx, -hz);
-      box(B.get(M.steelWhite), 95, 22, 40, new Matrix4().makeTranslation(hx, y + 11, hz));
-      box(B.get(M.vabDark), 70, 18, 0.4, new Matrix4().makeTranslation(hx, y + 9, hz - 20.1));
-      box(B.get(M.concrete), 140, 0.2, 70, new Matrix4().makeTranslation(hx, y + 0.1, hz - 10));
+      box(B.get(M.concrete), 150, 0.2, 76, new Matrix4().makeTranslation(hx, y + 0.1, hz - 12));
+      hangar({
+        wall: B.get(M.cladding), door: B.get(M.claddingGrey), trim: B.get(M.steelWhite), plinth: B.get(M.concrete), dark: B.get(M.vabDark),
+        roof: B.get(M.concreteDark), lamp: B.get(M.lampWarm), glass: B.get(M.glass),
+      }, new Vector3(hx, y + 0.2, hz), 95, 22, 40);
     }
     // a neighbouring pad's lightning towers on the horizon (2.6 km north)
     for (let i = 0; i < 3; i++) {
@@ -708,6 +710,7 @@ export class LaunchComplex {
       || Math.abs(r - 210) < 7 // ring road
       || (x > 120 && x < 270 && z > -210 && z < 185) // tank farm
       || (x < -230 && x > -300 && z > 160 && z < 220) // water tower
+      || (this.pad !== 'mlp' && Math.abs(x - HANGAR.x) < 78 && z > HANGAR.z - 52 && z < HANGAR.z + 28) // hangar and apron
       || (this.pad === 'mlp' && Math.abs(z) < 26 && x < -60); // crawlerway
     const place = (n: number, rMin: number, rMax: number, list: Matrix4[], scale: [number, number], clump: number, clumpR = 14) => {
       const target = Math.round(n * density);
@@ -875,3 +878,5 @@ export class LaunchComplex {
 
 const _up = new Vector3(0, 1, 0);
 const _q = new Quaternion();
+/** the integration hangar beside the access road (pads without a crawlerway), site metres */
+const HANGAR = { x: -420, z: 95 };

@@ -1,4 +1,4 @@
-import { Matrix4, PCFSoftShadowMap, Quaternion, Vector3, WebGLRenderer } from 'three';
+import { type InstancedMesh, type Material, Matrix4, PCFSoftShadowMap, Quaternion, Vector3, WebGLRenderer } from 'three';
 import { PhysicsWorld } from '../physics/world';
 import { EarthAtmosphere } from '../physics/atmosphere';
 import type { Vessel } from '../physics/vessel';
@@ -51,6 +51,16 @@ export async function runViewer(canvas: HTMLCanvasElement): Promise<void> {
   // low cloud deck: ?weather=fair|overcast|storm..&steps=&wind=(deg the wind blows toward)
   if (q.has('weather')) rw.deck.setWeather(q.get('weather') as DeckWeather, (num('wind', 90) * Math.PI) / 180);
   rw.deck.steps = num('steps', 32);
+  if (q.has('skyk')) { rw.deck.skyScale = num('skyk', 1.6); rw.deck.skyBase = num('skyb', 0.5); }
+  rw.deck.uniforms.uDeckDbg.value = num('cdeck', 0);
+  // the exposure in use, for comparing debug views at a fixed EV (?ev=)
+  const evBuf = new Float32Array(4);
+  const readEV = () => {
+    const post = rw.post as unknown as { adaptRTs?: { texture: unknown }[]; adaptIdx: number };
+    if (!post.adaptRTs || w.__state.frames % 8 !== 0) return;
+    renderer.readRenderTargetPixels(post.adaptRTs[post.adaptIdx] as never, 0, 0, 1, 1, evBuf);
+    w.__state.ev = +evBuf[0].toFixed(3);
+  };
   if (q.has('ev')) { rw.post.settings.autoExposure = false; rw.post.settings.manualEV = num('ev', 10); }
   if (q.get('wire') === '1') rw.earthMat.wireframe = true;
   if (q.has('bloom')) rw.post.settings.bloom = num('bloom', 0.05);
@@ -58,6 +68,8 @@ export async function runViewer(canvas: HTMLCanvasElement): Promise<void> {
   (window as any).__rw = rw;
   // optional vehicle on the pad: ?vehicle=id&dist=&az=&el=&ty=
   let vessel: Vessel | null = null;
+  let targetE = num('te', 0), targetN = num('tn', 0), targetUp = 0;
+  const treeAt = new Vector3();
   const extra: Vessel[] = [];
   const vehId = q.get('vehicle') ?? (q.get('lineup') ? LAUNCHERS[0].id : null);
   if (q.get('lineup')) {
@@ -84,6 +96,23 @@ export async function runViewer(canvas: HTMLCanvasElement): Promise<void> {
     if (complex && q.get('arms') === 'retract') for (let i = 0; i < 400; i++) complex.update(0.25, 0);
     (window as any).__complex = complex;
     const deck = complex ? complex.deckHeight : 0;
+    // ?tree=pineLeaf|canopy|palmLeaf&te=&tn=: orbit the plant of that kind nearest the point te m
+    // east and tn m north of the pad, instead of the vehicle
+    if (complex && q.has('tree')) {
+      let best = Infinity;
+      const m = new Matrix4(), p = new Vector3();
+      complex.group.traverse((o) => {
+        const im = o as InstancedMesh;
+        if (!im.isInstancedMesh || (im.material as Material).name !== q.get('tree')) return;
+        for (let i = 0; i < im.count; i++) {
+          im.getMatrixAt(i, m);
+          p.setFromMatrixPosition(m);
+          const d = Math.hypot(p.x - targetE, -p.z - targetN);
+          if (d < best) { best = d; treeAt.set(p.x, p.y - deck, -p.z); }
+        }
+      });
+      if (best < Infinity) { targetE = treeAt.x; targetN = treeAt.z; targetUp = treeAt.y; }
+    }
     world.placeOnSurface(vessel, system.earth, (site.lat * Math.PI) / 180, (site.lon * Math.PI) / 180, site.padHeight + deck + num('lift', 0), (num('roll', 0) * Math.PI) / 180);
     rw.vessels.attach(vessel, def, { flightProven: q.get('proven') === '1' });
     const a0 = vessel.assemblies.find((a) => a.def.features?.landingLegs);
@@ -129,13 +158,13 @@ export async function runViewer(canvas: HTMLCanvasElement): Promise<void> {
       vnorth.addScaledVector(vup, -vnorth.dot(vup)).normalize();
       const veast = new Vector3().crossVectors(vnorth, vup);
       const az = (num('az', 200) * Math.PI) / 180, el = (num('el', 8) * Math.PI) / 180, dist = num('dist', 120);
-      const target = origin.clone().addScaledVector(vup, num('ty', 30));
+      const target = origin.clone().addScaledVector(vup, num('ty', 30) + targetUp).addScaledVector(veast, targetE).addScaledVector(vnorth, targetN);
       const offs = vnorth.clone().multiplyScalar(Math.cos(az) * Math.cos(el)).addScaledVector(veast, Math.sin(az) * Math.cos(el)).addScaledVector(vup, Math.sin(el)).multiplyScalar(dist);
       const camHelio = target.clone().add(offs);
       rw.cameraHelio.copy(camHelio);
       const m = new Matrix4().lookAt(new Vector3(), offs.clone().negate(), vup);
       rw.camera.quaternion.setFromRotationMatrix(m);
-      rw.focusHelio.copy(origin).addScaledVector(vup, num('ty', 30));
+      rw.focusHelio.copy(target);
       rw.focusRadius = Math.max(40, num('shadow', 90));
       rw.update(t, dt);
       if (!fxWarmed) {
@@ -151,6 +180,7 @@ export async function runViewer(canvas: HTMLCanvasElement): Promise<void> {
       rw.updateVehicles(dt, t, [vessel, ...extra], vessel, () => bodyPos);
       rw.render(dt);
       w.__state.particles = rw.effects.particles.stats;
+      readEV();
       w.__state.frames++;
       w.__state.ready = noTerrain || (rw.earth.ready && rw.earth.stats.pending === 0);
       w.__state.stats = { earth: rw.earth.stats };
@@ -188,6 +218,7 @@ export async function runViewer(canvas: HTMLCanvasElement): Promise<void> {
     rw.camera.quaternion.setFromRotationMatrix(m);
     rw.update(t, dt);
     rw.render(dt);
+    readEV();
     w.__state.frames++;
     w.__state.ready = rw.earth.ready && rw.moon.ready && rw.earth.stats.pending === 0 && rw.moon.stats.pending === 0;
     w.__state.stats = { earth: rw.earth.stats, moon: rw.moon.stats };

@@ -96,7 +96,8 @@ export class EnvironmentProbe {
             float muS = dot(n, uSunDir);
             vec3 sunT = getTransmittance(length(p), muS);
             vec3 skyIrr = getMultiScat(length(p), muS) * uSunIlluminance * 4.0 * ATM_PI;
-            vec3 E = uSunIlluminance * sunT * max(muS, 0.0) + skyIrr * 0.5;
+            // (broken cloud: shadows on part of the ground, more diffuse light on all of it)
+            vec3 E = uSunIlluminance * sunT * max(muS, 0.0) * (1.0 - 0.8 * uDeckProbe.z) + skyIrr * 0.5 * (1.0 + uDeckProbe.z);
             E = mix(E, uDeckUnderL * ATM_PI, uDeckProbe.x);
             col += T * uGroundAlbedoAvg * E / ATM_PI;
           } else if (tTop.y <= 0.0 || r > uAtmTop) {
@@ -105,6 +106,9 @@ export class EnvironmentProbe {
           // low cloud deck: under an overcast the sky is its grey base; above the deck its
           // sunlit top fills much of the view down
           float vz = dot(rd, ro / r);
+          // broken cloud fills more of the low sky (perspective), fading into the haze at the horizon
+          float cBroken = 1.0 - pow(1.0 - clamp(uDeckProbe.z, 0.0, 0.98), 1.0 / max(vz, 0.2));
+          col = mix(col, uDeckCloudL, cBroken * smoothstep(-0.02, 0.1, vz));
           col = mix(col, uDeckUnderL, uDeckProbe.x * smoothstep(-0.05, 0.12, vz));
           col = mix(col, uDeckTopL, uDeckProbe.y * smoothstep(-0.02, -0.15, vz));
           gl_FragColor = vec4(col, 1.0);

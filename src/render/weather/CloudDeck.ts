@@ -1,5 +1,5 @@
 import {
-  ClampToEdgeWrapping, LinearFilter, NearestFilter, NoBlending, Quaternion, RepeatWrapping, RGBAFormat, ShaderMaterial, Texture, UnsignedByteType,
+  ClampToEdgeWrapping, FloatType, LinearFilter, NearestFilter, NoBlending, Quaternion, RepeatWrapping, RGBAFormat, ShaderMaterial, Texture, UnsignedByteType,
   Vector2, Vector3, Vector4, WebGL3DRenderTarget, WebGLRenderer, WebGLRenderTarget,
 } from 'three';
 import { FullscreenQuad, FULLSCREEN_VERT } from '../util/Fullscreen';
@@ -80,7 +80,8 @@ uniform vec2 uDeckShift;
 uniform vec3 uDeckOrigin;
 uniform vec3 uDeckUnderL;   // radiance of the grey daylight beneath a full deck
 uniform vec3 uDeckTopL;     // radiance of the sunlit top of the deck
-uniform vec4 uDeckProbe;    // camera: x under a deck (0..1), y above one (its cover)
+uniform vec4 uDeckProbe;    // camera: x under a deck (0..1), y above one (its cover), z under broken cloud (its cover)
+uniform vec3 uDeckCloudL;   // mean radiance of a broken deck seen from below (sunlit sides, grey bases)
 uniform vec3 uDeckFlashIrr; // lightning: irradiance on the ground around the camera
 uniform float uDeckSteps;
 uniform float uDeckMaxDist;
@@ -90,6 +91,9 @@ uniform vec3 uDeckGlowI;
 uniform vec3 uDeckFlashPos;  // lightning inside the cloud
 uniform float uDeckFlashI;
 uniform vec3 uDeckCity;      // night: town light on the cloud bases
+uniform vec3 uDeckGroundL;   // daylight bounced off the ground onto the cloud bases
+uniform vec3 uDeckSkyE;      // clear-sky irradiance at the deck (horizontal surface, whole dome)
+uniform vec2 uDeckSkyK;      // the sky term at a cloud's top, as a multiple of the dome's radiance; the fraction at its base
 uniform vec3 uDeckHoleA;     // the channel a climbing rocket punched through the deck
 uniform vec3 uDeckHoleB;
 uniform vec2 uDeckHoleR;     // its radius (km) at A and at B
@@ -183,6 +187,8 @@ float deckSunShadow(vec3 p, vec3 sunF) {
 
 /** The ray-march itself (atmosphere composite only). Needs ATMOSPHERE_COMMON and DECK_COMMON. */
 export const DECK_MARCH = /* glsl */ `
+// debug view: 1 sun term only, 2 sky, 3 ground bounce, 4 the air in front only, 5 the cloud only
+uniform float uDeckDbg;
 float deckHG(float g, float c) { float g2 = g * g; return (1.0 - g2) / (4.0 * ATM_PI * pow(max(1e-4, 1.0 + g2 - 2.0 * g * c), 1.5)); }
 
 // March the deck along a body-fixed ray. Returns in-scattered radiance (rgb) and transmittance (a).
@@ -208,7 +214,9 @@ vec4 deckMarch(vec3 ro, vec3 rd, vec3 sunF, float tLimit, float jitter, out floa
   float re = length(pe);
   float muS = dot(pe / re, sunF);
   vec3 sunE = uSunIlluminance * getTransmittance(re, muS) * planetShadow(pe, sunF);
-  vec3 skyL = getMultiScat(re, muS) * uSunIlluminance * (4.0 / ATM_PI);
+  // skylight: the whole blue dome (single and multiple scattering), not just its multiply
+  // scattered part, so a cloud's shaded side and base come out grey-blue, not brown
+  vec3 skyL = uDeckSkyE * (uDeckSkyK.x / ATM_PI);
   float sunUp = max(muS, 0.0);
   float c = dot(rd, sunF);
   // scattering orders, each softer and more blurred in angle (after Wrenninge); a thick cloud
@@ -241,13 +249,18 @@ vec4 deckMarch(vec3 ro, vec3 rd, vec3 sunF, float tLimit, float jitter, out floa
     float h1 = (length(p1) - rb) / thick, h2 = (length(p2) - rb) / thick;
     float od = (h1 >= 0.0 && h1 <= 1.0 ? deckDensity(p1, h1, cov, false) * 0.3 : 0.0)
              + (h2 >= 0.0 && h2 <= 1.0 ? deckDensity(p2, h2, cov, false) * 0.6 : 0.0);
-    od += sig * 0.2 * max(0.0, (1.0 - hn) * thick / max(sunUp, 0.15) - 0.75);
+    // (near a base the cloud above is dense even where the soft underside is thin: with the sun
+    // low the taps run along that underside and would let orange light leak into thick bases)
+    float colSig = max(sig, uDeckParams.z * 0.75 * (1.0 - smoothstep(0.0, 0.3, hn)));
+    od += colSig * 0.2 * max(0.0, (1.0 - hn) * thick / max(sunUp, 0.15) - 0.75);
     float ms = ph0 * exp(-od) + 0.75 * ph1 * exp(-od * 0.35) + 0.6 * ph2 * exp(-od * 0.12) + 0.5 * PH_ISO * exp(-od * 0.04);
     float powder = mix(1.0, 1.0 - exp(-sig * 0.3), powderMix);
     // light that has diffused down through the deck: what lights the base of an overcast
     float Td = 1.0 / (1.0 + 0.11 * sig * max(0.0, 1.0 - hn) * thick);
-    vec3 S = (sunE * (ms * powder + sunUp * max(0.0, Td - exp(-od)) * (0.55 / ATM_PI)) + skyL * mix(0.18, 1.0, hn * hn)) * patchy
-           + uDeckCity * (1.0 - hn);
+    vec3 sunS = sunE * (ms * powder + sunUp * max(0.0, Td - exp(-od)) * (0.55 / ATM_PI)) * patchy;
+    vec3 skyS = skyL * mix(uDeckSkyK.y, 1.0, hn * hn) * patchy;
+    vec3 gndS = (uDeckGroundL + uDeckCity) * (1.0 - hn);
+    vec3 S = uDeckDbg < 0.5 || uDeckDbg > 3.5 ? sunS + skyS + gndS : uDeckDbg < 1.5 ? sunS : uDeckDbg < 2.5 ? skyS : gndS;
     if (glow) {
       // exhaust light, spread through the cloud by many scatterings (a soft, wide glow)
       vec3 dg = uDeckGlowPos - p;
@@ -333,6 +346,7 @@ void main() {
     float dimF = clamp(ATM_PI * dkLum(uDeckUnderL) / max(dkLum(uSunIlluminance * getTransmittance(r, dot(ro / r, uSunDir))), 1e-4), 0.02, 1.0);
     Lf = mix(Lf, mix(Lf, vec3(dkLum(Lf)), 0.6) * dimF, under);
   }
+  if (uDeckDbg > 3.5) { if (uDeckDbg < 4.5) dk.rgb = vec3(0.0); else Lf = vec3(0.0); }
   oCloud = vec4(a * Lf + Tf * dk.rgb * uDeckOn, mix(1.0, dk.a, uDeckOn));
   oDepth = vec4(tMean, tFront, 0.0, 0.0);
 }
@@ -444,9 +458,42 @@ void main() {
 }
 `;
 
+/**
+ * Clear-sky irradiance on a horizontal surface at radius uR (km) with the sun at cosine uMuS:
+ * the whole dome, single and multiple scattering, from rays in rings of equal projected solid
+ * angle (so each carries the same cosine weight). One pixel, refreshed as the sun moves.
+ */
+const SKY_FRAG = /* glsl */ `
+precision highp float;
+in vec2 vUv;
+${ATMOSPHERE_COMMON}
+uniform float uR;
+uniform float uMuS;
+void main() {
+  vec3 ro = vec3(0.0, max(uR, uAtmBottom + 0.01), 0.0);
+  float mu = clamp(uMuS, -1.0, 1.0);
+  vec3 sunDir = vec3(sqrt(max(0.0, 1.0 - mu * mu)), mu, 0.0);
+  vec3 E = vec3(0.0);
+  for (int i = 0; i < 6; i++) {
+    float u = (float(i) + 0.5) / 6.0;
+    float sinT = sqrt(u), cosT = sqrt(1.0 - u);
+    for (int j = 0; j < 8; j++) {
+      float ph = (float(j) + 0.5 * mod(float(i), 2.0)) * (2.0 * ATM_PI / 8.0);
+      vec3 rd = vec3(sinT * cos(ph), cosT, sinT * sin(ph));
+      float t1 = raySphereNear(ro, rd, uAtmTop);
+      if (t1 <= 0.0) continue;
+      vec3 T;
+      E += integrateScattering(ro, rd, 0.0, t1, sunDir, 20, T);
+    }
+  }
+  gl_FragColor = vec4(E * (ATM_PI / 48.0), 1.0);
+}
+`;
+
 const smooth = (a: number, b: number, x: number) => { const t = Math.min(1, Math.max(0, (x - a) / (b - a))); return t * t * (3 - 2 * t); };
 const _v = new Vector3();
 const _w = new Vector3();
+const _s = new Vector3();
 
 export class CloudDeck {
   readonly uniforms = {
@@ -473,6 +520,11 @@ export class CloudDeck {
     uDeckFlashPos: { value: new Vector3() },
     uDeckFlashI: { value: 0 },
     uDeckCity: { value: new Vector3() },
+    uDeckGroundL: { value: new Vector3() },
+    uDeckSkyE: { value: new Vector3() },
+    uDeckCloudL: { value: new Vector3() },
+    uDeckSkyK: { value: new Vector2(1.6, 0.5) },
+    uDeckDbg: { value: 0 },
     uDeckHoleA: { value: new Vector3() },
     uDeckHoleB: { value: new Vector3() },
     uDeckHoleR: { value: new Vector2() },
@@ -502,6 +554,15 @@ export class CloudDeck {
   ground = 0;
   private groundInit = false;
 
+  /**
+   * The sky term: its scale at a cloud's top (a multiple of the dome's radiance) and its share at
+   * a base under a deck of ordinary depth (deeper decks pass on less). Tuned by eye against
+   * morning, noon, sunset, overcast and storm decks: grey (not brown) bases under a low sun,
+   * white noon cumulus, pink sunset tops with lilac shadows.
+   */
+  skyScale = 1.6;
+  skyBase = 0.5;
+
   /** cloud base and tops in use (km above sea level) */
   get baseKm(): number { return (this.params?.base ?? 0) + this.ground; }
   get topKm(): number { return (this.params?.top ?? 0) + this.ground; }
@@ -516,6 +577,14 @@ export class CloudDeck {
   private probePending = false;
   private probeTimer = 0;
   private probeFresh = false;
+  /** clear-sky irradiance at the deck (RGB, scene units), read back from the GPU */
+  readonly skyIrr = new Vector3();
+  private skyRT: WebGLRenderTarget;
+  private skyMat: ShaderMaterial;
+  private skyBuf = new Float32Array(4);
+  private skyPending = false;
+  private skyFresh = false;
+  private skyAt = new Vector2(NaN, NaN);
   private focusSunTarget = 1;
   private mapCenter = new Vector3();
   private mapDrift = new Vector3();
@@ -551,6 +620,14 @@ export class CloudDeck {
       blending: NoBlending, depthTest: false, depthWrite: false,
       uniforms: { ...atmosphere.uniforms, ...this.uniforms, uProbe0: { value: new Vector3() }, uProbe1: { value: new Vector3() }, uSunF: { value: new Vector3(1, 0, 0) } },
       vertexShader: FULLSCREEN_VERT, fragmentShader: PROBE_FRAG,
+    });
+    this.skyRT = new WebGLRenderTarget(1, 1, {
+      type: FloatType, format: RGBAFormat, depthBuffer: false, generateMipmaps: false, minFilter: NearestFilter, magFilter: NearestFilter,
+    });
+    this.skyMat = new ShaderMaterial({
+      blending: NoBlending, depthTest: false, depthWrite: false,
+      uniforms: { ...atmosphere.uniforms, uR: { value: R_EARTH_KM + 1.5 }, uMuS: { value: 1 } },
+      vertexShader: FULLSCREEN_VERT, fragmentShader: SKY_FRAG,
     });
   }
 
@@ -654,9 +731,25 @@ export class CloudDeck {
     u.uDeckForm.value.w = this.time;
     // grey daylight under a full deck: sunlight diffusing through the whole column (two-stream)
     const muS = up.dot(sunF);
+    // the clear sky's light at the deck (GPU, read back as the sun moves); a rough bluish
+    // estimate until the first readback arrives
+    const rMid = R_EARTH_KM + this.ground + (p.base + p.top) / 2;
+    if (!this.skyPending && (!(Math.abs(muS - this.skyAt.x) < 0.002) || !(Math.abs(rMid - this.skyAt.y) < 0.2))) this.runSky(rMid, muS);
+    const sky = this.skyFresh ? _s.copy(this.skyIrr) : _s.set(0.78, 0.92, 1.25).multiplyScalar(skyE);
+    u.uDeckSkyE.value.copy(sky);
     const od = p.density * (p.top - p.base) * 0.7;
     const Td = 1 / (1 + 0.11 * od);
-    u.uDeckUnderL.value.copy(sunE).multiplyScalar((Math.max(0, muS) * Td * 0.9) / Math.PI).addScalar((skyE * 0.15) / Math.PI);
+    // the sunlit ground lights the cloud bases from below (albedo ~0.12, a little green), less so
+    // under a full deck that keeps sun and sky off the ground
+    const groundK = 1 - p.cover * p.cover * (1 - Td);
+    u.uDeckGroundL.value.copy(sunE).multiplyScalar(Math.max(0, muS)).add(sky).multiplyScalar(groundK).multiply(_w.set(0.11, 0.125, 0.1)).multiplyScalar(1 / Math.PI);
+    // the grey daylight under a full deck is the radiance of its base as the march renders it
+    // (sunlight diffused down the column, the sky's share at a base, light back from the ground),
+    // so the ground and everything under the deck are lit by the cloud the camera sees
+    // the sky's share at a base falls with the column's diffuse transmission (a storm's base is
+    // dark), relative to the 1.3 km breezy deck the share was tuned on
+    const kSky = u.uDeckSkyK.value.set(this.skyScale, this.skyBase * Math.min(1.2, Math.max(0.15, Td / 0.2)));
+    u.uDeckUnderL.value.copy(sunE).multiplyScalar((Math.max(0, muS) * Td * 0.55) / Math.PI).addScaledVector(sky, (kSky.x * kSky.y) / Math.PI).add(u.uDeckGroundL.value);
     // night: towns light the cloud bases a dull orange
     const night = 1 - smooth(-0.15, 0.05, muS);
     u.uDeckCity.value.set(1, 0.62, 0.34).multiplyScalar(0.0009 * night * (0.5 + 0.5 * p.cover));
@@ -672,7 +765,11 @@ export class CloudDeck {
     // the sunlit top seen from above: bright, slightly warm with the low sun
     u.uDeckTopL.value.copy(sunE).multiplyScalar(((0.3 + 0.7 * Math.max(0, muS)) * 0.8) / Math.PI);
     const above = camF.length() > R_EARTH_KM + this.topKm;
-    u.uDeckProbe.value.set(this.overcast, above ? p.cover * this.active : 0, 0, 0);
+    // broken cloud seen from below: its sunlit sides and grey bases send down far more light
+    // than the patch of blue they hide, and less blue (on the ground a fair-weather sky gives
+    // about twice the diffuse light of a clear one)
+    u.uDeckCloudL.value.copy(sunE).multiplyScalar(Math.max(0, muS) * 0.3).addScaledVector(sky, 0.5).multiplyScalar(1 / Math.PI);
+    u.uDeckProbe.value.set(this.overcast, above ? p.cover * this.active : 0, above ? 0 : p.cover * this.active * (1 - under), 0);
     this.rainAtCamera = this.camBelow ? p.rain * smooth(0.6, 0.9, this.camCover) * this.active : 0;
   }
 
@@ -698,6 +795,22 @@ export class CloudDeck {
     this.quad.render(r, this.weatherRT, this.weatherMat);
     r.setRenderTarget(prev);
     this.mapDirty = false;
+  }
+
+  private runSky(rKm: number, muS: number): void {
+    const su = this.skyMat.uniforms;
+    su.uR.value = rKm;
+    su.uMuS.value = muS;
+    this.skyAt.set(muS, rKm);
+    const r = this.renderer;
+    const prev = r.getRenderTarget();
+    this.quad.render(r, this.skyRT, this.skyMat);
+    r.setRenderTarget(prev);
+    this.skyPending = true;
+    r.readRenderTargetPixelsAsync(this.skyRT, 0, 0, 1, 1, this.skyBuf).then(() => {
+      const b = this.skyBuf;
+      if (Number.isFinite(b[0] + b[1] + b[2])) { this.skyIrr.set(b[0], b[1], b[2]); this.skyFresh = true; }
+    }).catch(() => undefined).finally(() => { this.skyPending = false; });
   }
 
   private runProbe(focusF: Vector3, camF: Vector3, sunF: Vector3): void {
@@ -784,7 +897,9 @@ export class CloudDeck {
     this.noiseRT?.dispose();
     this.weatherRT.dispose();
     this.probeRT.dispose();
+    this.skyRT.dispose();
     this.weatherMat.dispose();
     this.probeMat.dispose();
+    this.skyMat.dispose();
   }
 }
