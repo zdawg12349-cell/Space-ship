@@ -191,12 +191,16 @@ void main() {
     // cauliflower puff from the atlas: lumpy outline + per-pixel normal
     float cellI = floor(seed * 15.99);
     vec2 cell = vec2(mod(cellI, 4.0), floor(cellI / 4.0));
-    vec4 pf = texture(uPuff, (cell + ruv * 0.5 + 0.5) * 0.25);
+    // (an aging puff is read from ever blurrier mips of its cell: its outline and its relief
+    // melt into a soft blob as it diffuses)
+    vec4 pf = texture(uPuff, (cell + ruv * 0.5 + 0.5) * 0.25, age * age * 3.0);
     // dissolve with age: the threshold climbs so puffs thin from the edges inward, and the edge
     // itself softens as the puff diffuses (an old, thinned puff has no outline left: dozens of
     // them hanging over a landing zone read as a haze, not as overlapping translucent discs)
     float thr = mix(0.04, 0.5, age * age) * br;
     dens = smoothstep(thr, thr + 0.35 + 0.55 * age, pf.a * (0.8 + 0.4 * n));
+    // (and never reaches the sprite's round edge, where a blurred old puff would be cut off)
+    dens *= 1.0 - smoothstep(0.55, 1.0, r2);
     vec2 nxy = pf.xy * 2.0 - 1.0;
     // rotate the atlas normal back into screen orientation
     nxy = vec2(nxy.x * vRot.x + nxy.y * vRot.y, -nxy.x * vRot.y + nxy.y * vRot.x);
