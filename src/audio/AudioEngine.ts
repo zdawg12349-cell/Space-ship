@@ -2,6 +2,7 @@ import type { AssetBundle } from '../core/assets';
 import type { Settings } from '../game/Settings';
 import { Music } from './Music';
 import { Radio } from './Radio';
+import { glide } from './glide';
 
 /**
  * Procedural audio. Every sound except the recorded mission-control voices is synthesised
@@ -130,6 +131,10 @@ export class AudioEngine {
   hush = 0;
   private hushTarget = 0;
   private started = false;
+  private tap: AnalyserNode | null = null;
+  private tapBuf = new Float32Array(512);
+  private watchT = 0;
+  private deadFor = 0;
 
   constructor(settings: Settings, readonly assets: AssetBundle) {
     this.settings = settings;
@@ -162,6 +167,10 @@ export class AudioEngine {
     const mix = ctx.createGain();
     mix.connect(hp).connect(glue).connect(this.master);
     this.master.connect(limiter).connect(ctx.destination);
+    // the watchdog listens to the final output (see update)
+    this.tap = ctx.createAnalyser();
+    this.tap.fftSize = 512;
+    limiter.connect(this.tap);
     // a context the system suspends (another tab took the audio device, the lid closed) comes
     // back by itself when the page is shown again, not only on the next click
     const wake = () => { if (ctx.state !== 'running' && ctx.state !== 'closed' && document.visibilityState === 'visible') void ctx.resume().catch(() => undefined); };
@@ -174,7 +183,7 @@ export class AudioEngine {
     this.reverb = ctx.createConvolver();
     // (a long convolution is the costliest node in the graph: 2.2 s keeps the pad's echo but
     // leaves the audio thread headroom on a weak CPU)
-    this.reverb.buffer = impulseResponse(ctx, 2.2, 3.0);
+    this.reverb.buffer = impulseResponse(ctx, 1.6, 3.0);
     this.reverbSend = ctx.createGain();
     this.reverbSend.gain.value = 0.35;
     this.reverbSend.connect(this.reverb).connect(this.sfx);
@@ -274,10 +283,10 @@ export class AudioEngine {
     this.settings = s;
     if (!this.ctx) return;
     const t = this.ctx.currentTime;
-    this.master.gain.setTargetAtTime(s.master, t, 0.1);
-    this.musicBus.gain.setTargetAtTime(s.music * 0.8, t, 0.1);
-    this.sfx.gain.setTargetAtTime(s.sfx, t, 0.1);
-    this.voiceBus.gain.setTargetAtTime(s.voice, t, 0.1);
+    glide(this.master.gain, s.master, t, 0.1);
+    glide(this.musicBus.gain, s.music * 0.8, t, 0.1);
+    glide(this.sfx.gain, s.sfx, t, 0.1);
+    glide(this.voiceBus.gain, s.voice, t, 0.1);
   }
 
   setScene(scene: 'menu' | 'flight'): void {
@@ -339,27 +348,27 @@ export class AudioEngine {
     const h = this.heard(st, dt);
     // engine sound in space: films keep a muffled rumble there; off, vacuum is silent
     const space = this.settings.spaceSound !== false;
-    for (const src of e.sources) src.playbackRate.setTargetAtTime(this.doppler, t, 0.3);
+    for (const src of e.sources) glide(src.playbackRate, this.doppler, t, 0.3);
     if (!st || h.thrust <= 0) {
-      e.out.gain.setTargetAtTime(0, t, 0.4);
-      e.onboard.gain.setTargetAtTime(0, t, 0.3);
-      for (const g of [e.rumble, e.growl, e.roar, e.crackle]) g.gain.setTargetAtTime(0, t, 0.5);
+      glide(e.out.gain, 0, t, 0.4);
+      glide(e.onboard.gain, 0, t, 0.3);
+      for (const g of [e.rumble, e.growl, e.roar, e.crackle]) glide(g.gain, 0, t, 0.5);
     } else {
       // loudness grows slowly with thrust (a heavy lifter is louder than an upper stage, not
       // drowning it by 20 dB: the ear hears a doubling of power as a small step)
       const L = Math.pow(h.thrust, 0.3);
       // the layers follow thrust; how much of it becomes noise outside depends on the air round
       // the jet (in vacuum the turbulent mixing that makes the roar is gone)
-      e.rumble.gain.setTargetAtTime(Math.min(1.1, 0.48 * L), t, tc);
-      e.growl.gain.setTargetAtTime(Math.min(1.6, 0.75 * L), t, tc);
-      e.roar.gain.setTargetAtTime(Math.min(1.0, 0.39 * L), t, tc);
-      e.crackle.gain.setTargetAtTime(Math.min(1.1, (0.37 + h.solid * 0.37) * L), t, tc);
-      e.roarBp.frequency.setTargetAtTime(380 + 200 / (1 + h.thrust), t, 0.3);
+      glide(e.rumble.gain, Math.min(1.1, 0.48 * L), t, tc);
+      glide(e.growl.gain, Math.min(1.6, 0.75 * L), t, tc);
+      glide(e.roar.gain, Math.min(1.0, 0.39 * L), t, tc);
+      glide(e.crackle.gain, Math.min(1.1, (0.37 + h.solid * 0.37) * L), t, tc);
+      glide(e.roarBp.frequency, 380 + 200 / (1 + h.thrust), t, 0.3);
       if (st.onboard) {
         // through the structure: heard on board in air or in vacuum alike
-        e.out.gain.setTargetAtTime(0, t, 0.1);
-        e.onboard.gain.setTargetAtTime(0.6 * (1 - this.hush), t, 0.1);
-        e.onboardLp.frequency.setTargetAtTime(750 + 1100 * st.airAtCamera, t, 0.2);
+        glide(e.out.gain, 0, t, 0.1);
+        glide(e.onboard.gain, 0.6 * (1 - this.hush), t, 0.1);
+        glide(e.onboardLp.frequency, 750 + 1100 * st.airAtCamera, t, 0.2);
       } else {
         const d = Math.max(30, st.distance);
         // the jet makes noise in air; the camera's air carries it. Both are soft-kneed (a chase
@@ -370,26 +379,26 @@ export class AudioEngine {
         // distance: a perceptual law (about -4 dB per doubling past a kilometre and a half, where
         // the physical -6 dB would leave a rocket ten kilometres away almost inaudible)
         const near = 1.15 / Math.pow(1 + d / 1500, 0.7);
-        e.out.gain.setTargetAtTime(near * medium * (1 - this.hush), t, 0.15);
-        e.onboard.gain.setTargetAtTime(0, t, 0.1);
+        glide(e.out.gain, near * medium * (1 - this.hush), t, 0.15);
+        glide(e.onboard.gain, 0, t, 0.1);
         // air absorbs the highs over distance; in thin air or vacuum the sound is muffled. The
         // floor keeps some growl that small speakers can play
         const muffle = 900 + 14000 * Math.min(1, st.airAtCamera * 2);
-        e.lp.frequency.setTargetAtTime(Math.max(650, Math.min(muffle, 16000 * Math.exp(-d / 4000))), t, 0.2);
+        glide(e.lp.frequency, Math.max(650, Math.min(muffle, 16000 * Math.exp(-d / 4000))), t, 0.2);
       }
     }
     // wind & buffeting for onboard / close cameras
     if (this.wind && st) {
       const w = st.onboard || st.nearVehicle ? Math.min(1, st.q / 30000) : 0;
-      this.wind.gain.gain.setTargetAtTime(w * 0.5 * (1 - this.hush), t, 0.2);
-      this.wind.bp.frequency.setTargetAtTime(300 + st.mach * 500, t, 0.3);
+      glide(this.wind.gain.gain, w * 0.5 * (1 - this.hush), t, 0.2);
+      glide(this.wind.bp.frequency, 300 + st.mach * 500, t, 0.3);
       const buffet = st.onboard ? Math.min(1, st.q / 25000) * Math.exp(-Math.pow((st.mach - 1.05) / 0.3, 2)) : 0;
-      this.wind.buffet.gain.setTargetAtTime(buffet * 0.6, t, 0.2);
-      this.plasma!.gain.setTargetAtTime(st.plasma * (st.onboard || st.nearVehicle ? 0.6 : 0.2), t, 0.3);
+      glide(this.wind.buffet.gain, buffet * 0.6, t, 0.2);
+      glide(this.plasma!.gain, st.plasma * (st.onboard || st.nearVehicle ? 0.6 : 0.2), t, 0.3);
     } else if (this.wind) {
-      this.wind.gain.gain.setTargetAtTime(0, t, 0.3);
-      this.wind.buffet.gain.setTargetAtTime(0, t, 0.3);
-      this.plasma?.gain.setTargetAtTime(0, t, 0.3);
+      glide(this.wind.gain.gain, 0, t, 0.3);
+      glide(this.wind.buffet.gain, 0, t, 0.3);
+      if (this.plasma) glide(this.plasma.gain, 0, t, 0.3);
     }
   }
 
@@ -399,11 +408,11 @@ export class AudioEngine {
     const t = this.ctx.currentTime;
     const a = this.amb;
     const k = 1 - this.hush;
-    a.breeze.gain.setTargetAtTime(0.12 * outdoor * k * this.windLevel, t, 0.5);
-    a.surf.gain.setTargetAtTime(0.1 * outdoor * k, t, 0.5);
-    a.insects.gain.setTargetAtTime(0.012 * outdoor * (0.4 + 0.6 * night) * k, t, 0.5);
-    a.vent.gain.setTargetAtTime(0.05 * vent * outdoor, t, 0.3);
-    a.deluge.gain.setTargetAtTime(0.18 * deluge * outdoor, t, 0.3);
+    glide(a.breeze.gain, 0.12 * outdoor * k * this.windLevel, t, 0.5);
+    glide(a.surf.gain, 0.1 * outdoor * k, t, 0.5);
+    glide(a.insects.gain, 0.012 * outdoor * (0.4 + 0.6 * night) * k, t, 0.5);
+    glide(a.vent.gain, 0.05 * vent * outdoor, t, 0.3);
+    glide(a.deluge.gain, 0.18 * deluge * outdoor, t, 0.3);
     this.birdOutdoor = outdoor * (1 - night);
   }
   private birdOutdoor = 0;
@@ -414,8 +423,8 @@ export class AudioEngine {
     if (!this.ctx || !this.amb) return;
     const t = this.ctx.currentTime;
     const k = 1 - this.hush * 0.7;
-    this.amb.rain.gain.setTargetAtTime(0.11 * rain * k, t, 0.6);
-    this.amb.rainLow.gain.setTargetAtTime(0.09 * rain * k, t, 0.6);
+    glide(this.amb.rain.gain, 0.11 * rain * k, t, 0.6);
+    glide(this.amb.rainLow.gain, 0.09 * rain * k, t, 0.6);
   }
 
   /** Thunder from a strike `distance` m away: a crack if it is close, then the long roll. */
@@ -509,9 +518,52 @@ export class AudioEngine {
     }
   }
 
-  /** Per-frame: birds, hush fade, music. */
+  /**
+   * Watchdog, twice a second: a context the system suspended is resumed, and an output that has
+   * gone bad (non-finite samples, or dead silence while the score should be playing) is rebuilt
+   * from scratch with a fresh context, so the sound can never stay gone.
+   */
+  private watch(dt: number): void {
+    const ctx = this.ctx;
+    if (!ctx || !this.tap) return;
+    this.watchT += dt;
+    if (this.watchT < 0.5) return;
+    const step = this.watchT;
+    this.watchT = 0;
+    if (document.visibilityState !== 'visible') { this.deadFor = 0; return; }
+    if (ctx.state !== 'running') { void ctx.resume().catch(() => undefined); return; }
+    this.tap.getFloatTimeDomainData(this.tapBuf);
+    let bad = false, peak = 0;
+    for (const x of this.tapBuf) { if (!Number.isFinite(x)) { bad = true; break; } peak = Math.max(peak, Math.abs(x)); }
+    const shouldPlay = this.settings.master > 0.02 && this.settings.music > 0.02;
+    this.deadFor = bad || (shouldPlay && peak === 0) ? this.deadFor + step : 0;
+    if (bad || this.deadFor > 4) this.rebuild();
+  }
+
+  private rebuild(): void {
+    const old = this.ctx, music = this.music, radio = this.radio;
+    this.ctx = null; this.engine = null; this.wind = null; this.amb = null; this.plasma = null; this.tap = null;
+    this.music = null; this.radio = null;
+    this.started = false;
+    this.deadFor = 0;
+    radio?.clear();
+    void old?.close().catch(() => undefined);
+    this.start();
+    const m = this.music as Music | null, r = this.radio as Radio | null;
+    if (m && music) {
+      m.setMood(music.mood);
+      m.setIntensity(music.intensity);
+      m.pulseOn = music.pulseOn;
+      m.shimmerOn = music.shimmerOn;
+    }
+    if (r && radio) { r.onLine = radio.onLine; r.clock = radio.clock; r.enabled = radio.enabled; }
+  }
+
+  /** Per-frame: birds, hush fade, music, watchdog. */
   update(dt: number): void {
     this.time += dt;
+    if (!this.ctx) return;
+    this.watch(dt);
     if (!this.ctx) return;
     this.hush += (this.hushTarget - this.hush) * Math.min(1, dt * 0.35);
     this.music?.update(dt, this.hush);

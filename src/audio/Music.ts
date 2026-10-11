@@ -1,3 +1,5 @@
+import { glide } from './glide';
+
 /**
  * Adaptive score, synthesised live. Layers fade in and out with an intensity value set by the
  * flight (quiet anticipation on the pad, a pulse that tightens through the final minute, the
@@ -58,7 +60,7 @@ export class Music {
     this.out.gain.value = 2.2;
     this.out.connect(dest);
     this.reverb = ctx.createConvolver();
-    const n = Math.floor(ctx.sampleRate * 3);
+    const n = Math.floor(ctx.sampleRate * 2);
     const ir = ctx.createBuffer(2, n, ctx.sampleRate);
     for (let ch = 0; ch < 2; ch++) {
       const d = ir.getChannelData(ch);
@@ -236,12 +238,12 @@ export class Music {
     const t = ctx.currentTime;
     this.intensity += (this.target - this.intensity) * Math.min(1, dt * 0.6);
     const I = this.intensity * (1 - hush);
-    this.droneG.gain.setTargetAtTime(0.16 * Math.min(1, I * 1.6), t, 0.5);
-    this.padG.gain.setTargetAtTime(0.075 * Math.min(1, 0.3 + I), t, 0.6);
-    this.padLp.frequency.setTargetAtTime(500 + 2400 * I * I, t, 0.8);
-    for (const v of this.padVoices) v.g.gain.setTargetAtTime(0.18, t, 2);
-    this.pulseG.gain.setTargetAtTime(this.pulseOn * Math.min(1, I * 1.3), t, 0.4);
-    this.shimmerG.gain.setTargetAtTime(this.shimmerOn * (1 - hush), t, 0.8);
+    glide(this.droneG.gain, 0.16 * Math.min(1, I * 1.6), t, 0.5);
+    glide(this.padG.gain, 0.075 * Math.min(1, 0.3 + I), t, 0.6);
+    glide(this.padLp.frequency, 500 + 2400 * I * I, t, 0.8);
+    for (const v of this.padVoices) glide(v.g.gain, 0.18, t, 2);
+    glide(this.pulseG.gain, this.pulseOn * Math.min(1, I * 1.3), t, 0.4);
+    glide(this.shimmerG.gain, this.shimmerOn * (1 - hush), t, 0.8);
     // harmony moves slower when calm
     this.chordTimer += dt;
     const chordLen = 14 - 6 * I;
