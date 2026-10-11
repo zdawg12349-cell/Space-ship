@@ -38,7 +38,7 @@ There are eleven missions plus a free sandbox:
 | 3 | Return to Sender | KESTREL 9 | Booster boostback and landing at LZ-1 |
 | 4 | Twin Boosters | KESTREL HEAVY | Side boosters land side by side; the core lands on the drone ship |
 | 5 | Night Flight | MERIDIAN 421 | Solid boosters in the dark |
-| 6 | Crew Rotation | VOSTOK-R | Steppe launch, orbit, a deorbit aimed at the steppe, guided entry, soft landing |
+| 6 | Crew Rotation | VOSTOK-R | Steppe launch through an overcast, orbit, a deorbit aimed at the steppe, guided entry, soft landing |
 | 7 | Catch | LEVIATHAN | The launch tower catches the returning booster |
 | 8 | Free Return | COLOSSUS V | Sunrise launch window, TLI, course correction, lunar flyby |
 | 9 | Tranquility | Lunar lander | Powered descent to the Sea of Tranquility |
@@ -111,7 +111,29 @@ materials are generated from that definition.
 
 - **Planets and sky:** quadtree planet terrain from real elevation data. The atmosphere is
   physically based (after Hillaire 2020), with sunsets that depend on altitude. Clouds, ocean
-  and city lights complete the Earth.
+  and city lights complete the Earth. Seen at a low angle the sea mirrors the sky, and the sun
+  glitters on it only along its own path.
+- **Shadows:** vehicles, towers, masts and buildings cast sun shadows onto the ground around
+  them (grass, sand and pads alike), and a lander's shadow falls black on the lunar regolith.
+- **Weather:** a volumetric cloud deck over the region around the camera, ray-marched at half
+  resolution. Clear and fair skies have fair-weather cumulus, breezy skies broken cloud,
+  overcast skies a grey stratus sheet, and storms towering cells with rain and lightning.
+  - The same atmosphere that lights the sky lights the cloud, so it takes sunset colours,
+    the orange of town lights at night, and the glare of the exhaust as a rocket climbs
+    through. Skylight comes from the whole blue dome, so shaded sides and bases stay
+    grey-blue under a low sun rather than turning brown.
+  - Clouds drift with the wind and cast moving shadows on the ground. Broken cloud adds its
+    own bright light to the day, so shadowed ground and vehicles are not lit by blue sky
+    alone.
+  - An overcast takes away the direct sun. The ground and everything beneath it are lit by
+    the grey base the camera sees, and a storm's deep base is darker still.
+  - A climbing rocket punches a channel through the deck that slowly spreads.
+  - Fair-weather cumulus have flat bases and domed tops, each cell's core standing above its
+    edges, so from altitude a low sun picks out every cloud.
+  - From high up the planet-wide cloud layer takes over, from the horizon inward as the camera
+    climbs, with each cloud drawn by one or the other. Around the launch site the layer keeps the
+    local weather's own cells, with their parallax and their shaded flanks, so the hand-over
+    shows no second layer and a fair day stays fair all the way to orbit.
 - **Moon and planets:** the Moon, and Jupiter with its banded atmosphere and Galilean moons.
 - **Image pipeline:** HDR rendering with auto-exposure, AgX tone mapping, energy-conserving
   bloom and a night colour grade.
@@ -119,23 +141,38 @@ materials are generated from that definition.
   - Ray-marched exhaust plumes that respond to ambient pressure, with shock diamonds and
     vacuum expansion.
   - Lit particle systems for steam, smoke, deluge water, cryogenic venting, ground clouds and
-    exhaust trails.
-- **Flight effects:** transonic vapour cones, entry plasma sheaths, heat shimmer, RCS puffs,
-  stage break-ups and booster burn-up.
+    exhaust trails. Each puff is a lumpy billow that blends into its neighbours, lit by the sun
+    and by the flame, and old puffs diffuse into haze.
+  - In vacuum the plume's glow fades steeply as it spreads, so a camera on the stage looking
+    down the jet sees the hot gas at the nozzle rather than a fog.
+- **Flight effects:** transonic vapour cones, entry plasma sheaths, heat shimmer, stage
+  break-ups and booster burn-up. RCS jets fire from the thruster pods themselves: in air, white
+  puffs that the air soon stops; in vacuum, a bright cone at the nozzle that flashes out into
+  a thin haze.
 - **Launch complexes:** procedural sites with towers, swing arms, flame trenches, lightning
-  masts and floodlights. Each site has climate-specific vegetation.
+  masts, floodlights and an integration hangar in profiled steel. Each site has
+  climate-specific vegetation that bends in the wind. Tree crowns break up into tufts close
+  to the camera, and their leaves glow when the sun is behind them.
+  - After dark, floods over the hangar doors, wall packs and road lamps throw pools of light
+    on the concrete, the roads, the walls and the plants around them. They are lit through
+    each material's own shading, at no cost to the rest of the scene.
 - **Recovery hardware:** landing-zone pads and the drone ship.
 
 ### Cinematography and sound
 
 - **Camera:** an automatic camera director with more than thirty shot types, cued by flight
-  events. Camera shake models sound arriving at the speed of sound, vibration, dynamic
-  pressure and the lens in use. Ground cameras find a clear line of sight through the trees.
+  events, among them a camera hovering above the cloud tops as the rocket bursts out. Camera
+  shake models sound arriving at the speed of sound, vibration, dynamic pressure and the lens in
+  use. Ground cameras find a clear line of sight through the trees.
+  - When the director cuts away to a booster coming home, the lighting, shadows, particles
+    and airflow sound follow it. Pressing P there opens photo mode around the booster.
 - **Other camera modes:** chase, orbit, onboard, ground-tracking and free cameras, plus a photo
   mode.
-- **Sound:** layered engine sound with distance delay and air absorption. Mission-control radio
-  reacts to flight events, with Quindar tones. The music is an adaptive score, and there is
-  deliberate silence after orbit insertion.
+- **Sound:** layered engine sound with distance delay and air absorption. Rain hisses on the
+  pad, and thunder cracks or rolls in at the speed of sound after each flash. Up close,
+  reaction-control thrusters hiss as they pulse, and landing legs thump out on their actuators
+  and lock. Mission-control radio reacts to flight events, with Quindar tones. The music is an
+  adaptive score, and there is deliberate silence after orbit insertion.
 
 ## Controls
 

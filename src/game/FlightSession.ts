@@ -130,6 +130,11 @@ export class FlightSession {
     this.weather = new GameWeather({ kind: config.weather, windDir: ((this.site.coastBearing + 180) * Math.PI) / 180, ...preset });
     rw.cloudCover = preset.clouds;
     rw.aero.humidity = { clear: 0.65, fair: 0.85, breezy: 0.75, overcast: 1, storm: 1 }[config.weather] ?? 0.8;
+    // the sky over the site: a deck of cloud drifting with the wind (veered a little aloft); the
+    // same wind carries the steam and smoke of the launch away
+    rw.deck.setWeather(config.weather, this.weather.state.windDir);
+    rw.effects.setWind(this.weather.state.surfaceWind, this.weather.state.windDir);
+    rw.lightning.reset(rw.deck);
     const t0 = system.epoch;
     this.world = new PhysicsWorld(system, t0, terrain, this.weather);
     const lat = (this.site.lat * Math.PI) / 180, lon = (this.site.lon * Math.PI) / 180;
@@ -142,6 +147,7 @@ export class FlightSession {
     if (startKind === 'pad') {
       // pad + vehicle on the launch mount, held by the clamps
       this.complex = rw.setComplex(this.site, this.def, config.vegetation ?? 1);
+      this.complex?.setWind(this.weather.state.surfaceWind, this.weather.state.windDir, this.weather.state.gustiness);
       const deck = this.complex ? this.complex.deckHeight : 0;
       this.padAlt = this.site.padHeight + deck;
       v = this.world.createVessel(this.def, system.earth);
@@ -367,11 +373,31 @@ export class FlightSession {
   /** Render with the camera as it is (photo mode drives the camera itself). */
   renderStatic(realDt: number): void {
     const rw = this.rw;
-    const v = this.active;
-    rw.focusHelio.copy(v.pos).add(this.bodyPos(v.body));
-    rw.focusRadius = Math.max(40, Math.min(400, this.vesselLength(v) * 1.2));
+    const subject = this.focusLighting();
     rw.update(this.world.t, realDt);
-    rw.updateVehicles(0, this.world.t, this.world.vessels, v, (x) => this.bodyPos(x.body));
+    rw.updateVehicles(0, this.world.t, this.world.vessels, this.active, (x) => this.bodyPos(x.body), subject);
+  }
+
+  /** The vessels the camera is showing: a recovering booster (or two) in its shots, else the active one. */
+  viewedVessels(): Vessel[] {
+    const vs = this.director.viewed.filter((x) => !x.destroyed && this.world.vessels.includes(x));
+    return vs.length ? vs : [this.active];
+  }
+
+  /**
+   * Centre the lighting (sun colour, shadow frustum, cloud shadow, aerial perspective) on what
+   * is in the picture, covering both boosters of a twin landing. Returns the vessel to anchor
+   * the particles at.
+   */
+  private focusLighting(): Vessel {
+    const vs = this.viewedVessels();
+    const c = this.rw.focusHelio.set(0, 0, 0);
+    for (const x of vs) c.add(_a.copy(x.pos).add(this.bodyPos(x.body)));
+    c.multiplyScalar(1 / vs.length);
+    let R = 0;
+    for (const x of vs) R = Math.max(R, _a.copy(x.pos).add(this.bodyPos(x.body)).distanceTo(c) + this.vesselLength(x) * 1.2);
+    this.rw.focusRadius = Math.max(40, Math.min(vs.length > 1 ? 900 : 400, R));
+    return vs[0];
   }
 
   /** Record a milestone without side effects (mission logic bookkeeping). */
@@ -885,6 +911,10 @@ export class FlightSession {
       }
     }
     if (tm.altitude > 100_000 && v.body.id === 'earth') this.milestone('karman', 'karman', undefined, 'Kármán line — 100 km');
+    // climbing into the cloud deck: cut to a camera above the tops to watch it burst out
+    const deck = this.rw.deck.params;
+    if (deck && this.phase === 'ascent' && v.body.id === 'earth' && tm.verticalSpeed > 30 && (this.rw.deck.focusInCloud > 0.25 || deck.cover >= 0.8)
+      && tm.altitude < (this.rw.deck.baseKm + this.rw.deck.topKm) * 500 && (this.rw.deck.topKm * 1000 - tm.altitude) / tm.verticalSpeed < 14) this.milestone('clouds', undefined, 'clouds');
     // atmosphere exit / entry
     const inAtm = v.body.atmosphereTop > 0 && tm.altitude < v.body.atmosphereTop;
     if (this.wasInAtmo && !inAtm) this.wasInAtmo = false;
@@ -936,14 +966,12 @@ export class FlightSession {
     const ctx = this.cameraContext(realDt);
     this.director.update(ctx);
     rw.cameraHelio.copy(this.director.posHelio);
-    // lighting focus on the active vessel
-    v.originInertial(_a).add(this.bodyPos(v.body));
-    rw.focusHelio.copy(v.pos).add(this.bodyPos(v.body));
-    rw.focusRadius = Math.max(40, Math.min(400, this.vesselLength(v) * 1.2));
+    // lighting focus on what the camera shows
+    const subject = this.focusLighting();
     rw.update(t, realDt);
     this.system.earth.orientationAt(t, _q);
     rw.zones.update(realDt, this.bodyPos(this.system.earth), _q, this.system.earth.radius, rw.cameraHelio, rw.siteNight);
-    rw.updateVehicles(realDt, t, world.vessels, v, (x) => this.bodyPos(x.body));
+    rw.updateVehicles(realDt, t, world.vessels, v, (x) => this.bodyPos(x.body), subject);
     // plasma wakes: the spacecraft on entry and any spent stage burning up within view
     for (const vs of world.vessels) {
       if (vs.destroyed || vs.plasmaIntensity <= 0.05) continue;
@@ -995,6 +1023,7 @@ export class FlightSession {
       bodyPos: this.bodyPos,
       site: { quat: siteQuat, origin: siteOrigin, body: earth },
       towerTop: this.complex ? this.complex.towerTop : null,
+      cloudTop: this.rw.deck.params && this.rw.deck.active > 0.5 ? this.rw.deck.topKm * 1000 : null,
       deckHeight: this.complex ? this.complex.deckHeight : 0,
       siteQuery: this.complex,
       groundHeight: (body, helio) => {
@@ -1009,6 +1038,7 @@ export class FlightSession {
       phase: this.phase,
       plumeMN,
       plumeSourceHelio: w > 0 ? plume.multiplyScalar(1 / w) : null,
+      aspect: this.rw.camera.aspect,
     };
   }
 }

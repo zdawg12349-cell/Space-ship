@@ -137,7 +137,9 @@ function plasmaMaterial(): ShaderMaterial {
         float cap = exp(-x * 5.0);
         float shoulder = exp(-pow((x - 0.45) / 0.25, 2.0));
         float wake = exp(-x * 0.75) * smoothstep(0.3, 0.8, x) * (1.0 - smoothstep(3.6, 4.6, x));
-        float glow = uI * (cap * 1.4 + shoulder * 0.8 * (0.5 + fr) + wake * (0.35 + 0.9 * fr) * (0.5 + 0.9 * n2)) * (0.65 + 0.7 * n);
+        // (seen end-on from behind, the wake is a thin glowing skin looked straight through: its
+        // light comes from where the line of sight grazes it, not as a filled pale disc)
+        float glow = uI * (cap * 1.4 + shoulder * 0.8 * (0.5 + fr) + wake * (0.1 + 1.15 * fr) * (0.5 + 0.9 * n2)) * (0.65 + 0.7 * n);
         vec3 hot = vec3(1.0, 0.86, 0.62), mid = vec3(1.0, 0.46, 0.16), edge = vec3(0.9, 0.3, 0.62);
         vec3 col = mix(hot, mid, smoothstep(0.03, 0.4, x));
         col = mix(col, edge, smoothstep(0.6, 2.6, x) * 0.8 + fr * 0.15);

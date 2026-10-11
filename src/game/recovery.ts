@@ -408,7 +408,10 @@ export class BoosterGuidance {
         ctl.engineMask = new Set(landEngines);
         const vz = tm.verticalSpeed;
         const g = body.gm / v.pos.lengthSq();
-        const h = Math.max(0.5, alt - this.footClearance(v) - 0.6);
+        // height of the lowest point above the target (the deck, or the catch point); hTrue may
+        // go negative if a catch approach sinks below the arms
+        const hTrue = alt - this.footClearance(v) - 0.6;
+        const h = Math.max(0.5, hTrue);
         let thrustMax = 0;
         for (const e of landEngines) thrustMax += e.mount.spec.thrustSL + (e.mount.spec.thrustVac - e.mount.spec.thrustSL) * (1 - Math.min(1, tm.pressure / 101325));
         // A tower catch has no legs to land on and a booster that can throttle down to hover: it
@@ -424,13 +427,31 @@ export class BoosterGuidance {
         let latCmd: Vector3;
         if (terminal) {
           const centred = distH < 8;
-          const vzCmd = centred ? (h > 10 ? -2.5 : -1.2) : h > 12 ? -1 : 0;
+          // Off to one side (the glide may leave it a couple of hundred metres out) it flies across
+          // well above the arms; close in it sinks toward them, and only over them does it settle
+          // into them. (Sunk below the arms: climb back up to them.)
+          const far = distH > 20;
+          const vzCmd = hTrue < -1.5 ? Math.min(2, -hTrue * 0.3)
+            : centred ? (h > 10 ? -2.5 : -1.2)
+              : far ? (h > 25 ? -1.5 : h < 20 ? 0.5 : 0)
+                : h > 12 ? -2 : 0;
           aReq = Math.max(0, g + (vzCmd - vz) * 1.5);
-          // a gentle, speed-limited position loop with bandwidth well inside the booster's attitude
-          // response (a faster loop swings it to and fro across the arms)
+          // a speed-limited position loop with bandwidth well inside the booster's attitude response
+          // (a faster loop swings it to and fro across the arms): brisk while far off, gentle
+          // over the last tens of metres
           const pe = posErr.length();
-          const vDes = pe > 0.01 ? posErr.clone().multiplyScalar(Math.min(pe * 0.15, 4) / pe) : new Vector3();
-          latCmd = vDes.sub(vh).multiplyScalar(0.5);
+          const vMax = Math.min(8, 2.5 + Math.max(0, pe - 20) * 0.05);
+          const vDes = pe > 0.01 ? posErr.clone().multiplyScalar(Math.min(pe * 0.08, vMax) / pe) : new Vector3();
+          const vErr = vDes.sub(vh);
+          // the integral learns the steady push of the wind (a proportional loop alone hangs
+          // downwind of the arms), held within what the tilt limit can deliver; it learns only
+          // close in (not while crossing), and once the booster has crossed over and the stored
+          // push points away from the arms it bleeds off over a few seconds, so it doesn't carry
+          // the booster on past them
+          if (pe < 40) this.latInt.addScaledVector(vErr, 0.04 * dt);
+          if (this.latInt.dot(posErr) < 0) this.latInt.multiplyScalar(1 - Math.min(1, dt / 4));
+          if (this.latInt.length() > 3) this.latInt.setLength(3);
+          latCmd = vErr.multiplyScalar(0.3).add(this.latInt);
         } else {
           // required vertical deceleration to stop at the deck (or reach the gate), drag still helping
           const hg = Math.max(0.5, h - gateH);
@@ -464,7 +485,7 @@ export class BoosterGuidance {
         if (tower) {
           // a 70 m booster turns slowly: smooth the lateral command to its attitude bandwidth so the
           // thrust direction never runs away from the vehicle
-          this.latFilt.lerp(latCmd, Math.min(1, dt / 1.2));
+          this.latFilt.lerp(latCmd, Math.min(1, dt / 0.5));
           latCmd.copy(this.latFilt);
         }
         const thrustDir = _u.clone().multiplyScalar(aReq).add(latCmd);
@@ -492,7 +513,11 @@ export class BoosterGuidance {
         const prevN = Math.min(this.landCount || landEngines.length, landEngines.length);
         let n = prevN;
         if (t - this.landSwitchT > 5) {
-          while (n > nMin && need < n * per * minT * 1.15 && need < (n - 1) * per * 0.8) n--;
+          // (never shed an engine while still falling fast: a relight takes seconds to spool up,
+          // and a booster that needs it back arrives too fast; a catch sheds one only once it
+          // hovers in the terminal approach)
+          const steady = tower ? terminal && Math.abs(vz) < 2.5 : vz > -6;
+          while (n > nMin && steady && need < n * per * minT * 1.15 && need < (n - 1) * per * 0.8) n--;
           while (n < landEngines.length && need > n * per * 0.97) n++;
         } else if (n < landEngines.length && need > n * per * 1.25) n++;
         if (n !== prevN) this.landSwitchT = t;
@@ -516,7 +541,9 @@ export class BoosterGuidance {
           this.say('legs_deploy');
         }
         this.landingInfo = `h ${h.toFixed(1)} distH ${distH.toFixed(1)} vz ${vz.toFixed(1)} vh ${vh.length().toFixed(1)}${terminal ? ' terminal' : ''} engines ${n} thr ${ctl.throttle.toFixed(2)}`;
-        if (tower && h < 6 && Math.abs(vz) < 3 && distH < 25) this.catchAtTower(v, t);
+        // the arms close only round a booster that is over them (off-centre it holds its height
+        // and edges back in)
+        if (tower && h < 6 && hTrue > -3 && Math.abs(vz) < 3 && distH < 8) this.catchAtTower(v, t);
         break;
       }
     }
@@ -596,6 +623,7 @@ export class BoosterGuidance {
   /** landing-burn state for the HUD and diagnostics */
   landingInfo = '';
   private latFilt = new Vector3();
+  private latInt = new Vector3();
   private landSwitchT = -Infinity;
   /** landing-burn engines in use (0 = not chosen yet) */
   private landCount = 0;

@@ -58,12 +58,23 @@ const VERT = /* glsl */ `
 uniform float uLen;
 uniform float uRmax;
 uniform float uR0;
+uniform float uRe;
+uniform float uRfar;
+uniform float uSexp;
+uniform float uSpread;
+uniform float uLcore;
 out vec3 vLocal;
 void main() {
   vec3 p = position;
-  p.y = (p.y - 0.5) * uLen; // unit cylinder y in [-0.5, 0.5] -> [-L, 0]
-  // rasterise a cone frustum hugging the jet (the march itself is bounded by a cylinder)
-  p.xz *= mix(uR0, uRmax, clamp(-p.y / uLen, 0.0, 1.0));
+  // unit cylinder y in [-0.5, 0.5] -> s in [0, L] downstream, rings packed near the exit where
+  // the jet balloons fastest
+  float u = 0.5 - p.y;
+  float s = uLen * u * u;
+  p.y = -s;
+  // rasterise a hull hugging the jet's own radius profile (the march draws out to ~1.7 radii;
+  // the march itself is bounded by a cylinder)
+  float R = uRe + (uRfar - uRe) * (1.0 - exp(-s / max(uSexp, 1e-3))) + uSpread * pow(max(0.0, s - uLcore * 0.4), 0.92);
+  p.xz *= max(uR0, R * 1.85);
   vLocal = p;
   gl_Position = projectionMatrix * modelViewMatrix * vec4(p, 1.0);
 }`;
@@ -88,6 +99,8 @@ uniform float uLambda;
 uniform float uDiamond;
 uniform float uSoot;
 uniform float uIntensity;
+// how fast the glow fades as an under-expanded jet balloons and cools (0 in dense air)
+uniform float uCool;
 uniform float uFlow;
 uniform float uIgnite;
 uniform float uSpread;
@@ -160,7 +173,14 @@ void main() {
     float cool = clamp(rho * 0.9 + mixing * 0.3 + s / uLp * 0.35 - turb * 0.25, 0.0, 1.0);
     vec3 cBody = mix(mix(uColCore, uColBody, smoothstep(0.0, 0.35, cool)), uColEdge, smoothstep(0.35, 1.0, cool));
     float bodyLum = body * (0.7 + 0.6 * clamp(turb * mixing + 0.3, 0.0, 1.0));
-    vec3 c = uColCore * core * 2.5 + cBody * bodyLum + uColDiamond * dia * 2.5;
+    // the gas cools as it expands: a vacuum jet's white-hot core fades within a few nozzle radii
+    // (so looking down the jet from beside the nozzle does not add up to a white ball). In air the
+    // bell keeps glowing as it afterburns; in near-vacuum there is no air to burn in and its glow
+    // fades steeply with its spread, so a camera on the stage looking down the jet sees the hot gas
+    // at the exit, not an orange fog filling the whole bell
+    float expand = uRe / R;
+    float bodyCool = uCool * 0.3 + max(0.0, uCool - 1.0) * 2.0;
+    vec3 c = uColCore * core * 2.5 * pow(expand, uCool * 1.4) + cBody * bodyLum * pow(expand, bodyCool) + uColDiamond * dia * 2.5;
     // ignition transient (TEA-TEB green for kerosene engines)
     c = mix(c, vec3(0.25, 1.0, 0.35) * (core * 2.0 + body), uIgnite);
     float dens = uIntensity / R;
@@ -210,7 +230,7 @@ export class PlumeSystem {
   readonly lights: PlumeLight[] = [];
   private volumes: PlumeVolume[] = [];
   private known = new Set<EngineRuntime>();
-  private geom = new CylinderGeometry(1, 1, 1, 20, 1, false);
+  private geom = new CylinderGeometry(1, 1, 1, 20, 24, false);
   private time = 0;
   private resolution = new Vector2(1, 1);
   quality = 1;
@@ -266,7 +286,7 @@ export class PlumeSystem {
       uniforms: {
         uCamLocal: { value: new Vector3() }, uNoise: { value: this.noise }, uLinDepth: { value: null }, uResolution: { value: this.resolution },
         uTime: { value: 0 }, uSeed: { value: Math.random() }, uLen: { value: 10 }, uRmax: { value: 1 }, uRe: { value: 0.5 }, uRfar: { value: 0.6 },
-        uSexp: { value: 2 }, uLp: { value: 8 }, uLcore: { value: 2 }, uLambda: { value: 1 }, uDiamond: { value: 0 }, uSoot: { value: 0 }, uIntensity: { value: 0 },
+        uSexp: { value: 2 }, uLp: { value: 8 }, uLcore: { value: 2 }, uLambda: { value: 1 }, uDiamond: { value: 0 }, uSoot: { value: 0 }, uIntensity: { value: 0 }, uCool: { value: 0 },
         uFlow: { value: 60 }, uIgnite: { value: 0 }, uSpread: { value: 0.08 }, uR0: { value: 1 },
         uColCore: { value: new Vector3(...st.core) }, uColBody: { value: new Vector3(...st.body) }, uColEdge: { value: new Vector3(...st.edge) },
         uColDiamond: { value: new Vector3(...st.diamond) }, uAtmT: { value: new Vector3(1, 1, 1) },
@@ -331,7 +351,9 @@ export class PlumeSystem {
       const diamonds = st.diamonds * Math.max(0, 1 - Math.max(0, Math.log10(k) - 0.1) / 0.9) * Math.min(1, e.throttle * 1.5);
       // brightness: thrust fraction, spool, expansion dimming
       const spoolLum = e.spool * e.spool;
-      const expDim = Math.pow(re / rfar, 0.6);
+      // an expanded jet spreads its light thin and cools as it expands: in near-vacuum the far
+      // plume is a faint, translucent bell around a bright core at the nozzle
+      const expDim = Math.pow(re / rfar, 0.6) * Math.pow(Math.min(1, (3 * re) / rfar), 0.9);
       const intensity = st.intensity * re * Math.pow(Math.max(0.05, thrustFrac), 0.7) * spoolLum * expDim * (0.35 + 0.65 * Math.pow(air, 0.15)) * this.quality;
       const len = Math.min(lp * 3.2, 4000);
       // jet spreading half-angle ~5 deg in air; the vacuum plume is shaped by expansion alone
@@ -350,6 +372,7 @@ export class PlumeSystem {
       u.uDiamond.value = diamonds;
       u.uSoot.value = st.soot * air * Math.min(1, thrustFrac * 1.5);
       u.uIntensity.value = intensity;
+      u.uCool.value = Math.min(1.5, Math.max(0, Math.log10(k) * 0.5));
       u.uFlow.value = Math.min(300, 40 + re * 30);
       u.uTime.value = this.time;
       u.uLinDepth.value = linDepth;

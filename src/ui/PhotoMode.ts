@@ -2,11 +2,13 @@ import { Matrix4, Quaternion, Vector3 } from 'three';
 import type { App } from '../core/App';
 import type { FlightSession } from '../game/FlightSession';
 import type { Input } from '../game/Input';
+import type { Vessel } from '../physics/vessel';
 import { h } from './dom';
 
 /**
- * Photo mode: the simulation freezes, the camera floats free around the vehicle (orbit with
- * the mouse, WASD/QE to move the pivot, wheel to zoom), and the lens and grade are adjustable:
+ * Photo mode: the simulation freezes, the camera floats free around the vehicle on screen (the
+ * active one, or the booster a landing shot was following; orbit with the mouse, WASD/QE to move
+ * the pivot, wheel to zoom), and the lens and grade are adjustable:
  * field of view, roll, exposure, letterbox, vignette, grain, saturation, contrast, colour
  * temperature. Capture saves a PNG without the interface.
  */
@@ -22,11 +24,13 @@ export class PhotoMode {
   private saved: Record<string, number>;
   private flash: HTMLElement;
   private keys = new Set<string>();
+  /** the vessel the camera floats around */
+  private readonly subject: Vessel;
 
   constructor(readonly app: App, readonly s: FlightSession) {
     const post = app.rw.post.settings;
     this.saved = { vignette: post.vignette, grain: post.grain, saturation: post.saturation, contrast: post.contrast, temperature: post.temperature, exposureComp: post.exposureComp };
-    const v = s.active;
+    const v = (this.subject = s.viewedVessels()[0]);
     let lo = Infinity, hi = -Infinity;
     for (const a of v.assemblies) { lo = Math.min(lo, a.bottomY); hi = Math.max(hi, a.topY); }
     this.dist = Math.max(20, (hi - lo) * 1.8);
@@ -70,7 +74,7 @@ export class PhotoMode {
     this.el = Math.max(-1.5, Math.min(1.5, this.el + m.dy * 0.004));
     if (m.wheel) this.dist = Math.max(3, this.dist * Math.pow(1.12, m.wheel));
     const s = this.s;
-    const v = s.active;
+    const v = this.subject;
     const com = v.pos.clone().add(s.bodyPos(v.body));
     const up = com.clone().sub(s.bodyPos(v.body)).normalize();
     const rot = new Quaternion();

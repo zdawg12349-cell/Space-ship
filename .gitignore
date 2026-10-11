@@ -4,3 +4,5 @@ dist/
 *.log
 test-output/
 .vite/
+__pycache__/
+*.pyc

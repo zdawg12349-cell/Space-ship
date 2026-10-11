@@ -2,6 +2,7 @@ import { Vector3 } from 'three';
 import type { App } from '../core/App';
 import { dateToJ2000Seconds } from '../physics/constants';
 import { EarthAtmosphere } from '../physics/atmosphere';
+import type { Vessel } from '../physics/vessel';
 import { WARP_LEVELS } from '../physics/world';
 import { CAMERA_MODES } from '../camera/CameraDirector';
 import { HUD } from '../ui/HUD';
@@ -63,6 +64,10 @@ export class FlightController {
   readonly director: MissionDirector;
   private map: MapView | null = null;
   private photo: PhotoMode | null = null;
+  /** time to the next RCS hiss (s) */
+  private rcsPulse = 0;
+  /** how far each vessel's landing legs were out when last heard (for the deployment sound) */
+  private legsHeard = new WeakMap<Vessel, number>();
   private pauseEl: HTMLElement | null = null;
   private overlay: HTMLElement | null = null;
   private summaryShown = false;
@@ -116,14 +121,19 @@ export class FlightController {
     const radio = app.audio.radio;
     if (radio) {
       radio.onLine = (who, text, dur) => this.hud.subtitle(who, text, dur);
+      radio.clock = () => this.session.world.t;
       radio.clear();
       radio.prefetch(s.seq.events.filter((e) => e.voice).map((e) => e.voice!));
     }
     // music mood
-    app.audio.music?.setMood(mission?.mood ?? (app.rw.siteNight > 0.5 ? 'night' : 'hope'));
+    // the score opens in the key of the day: the mission's mood, or the night, or the weather
+    const wx = s.config.weather;
+    app.audio.music?.setMood(mission?.mood ?? (wx === 'storm' ? 'tension' : app.rw.siteNight > 0.5 || wx === 'overcast' ? 'night' : 'hope'));
     app.audio.music?.setIntensity(0.3);
     if (app.audio.music) { app.audio.music.pulseOn = 0; app.audio.music.shimmerOn = 0.25; }
     app.audio.setHush(false);
+    // thunder rolls in at the speed of sound after each flash
+    app.rw.lightning.onStrike = (d, k) => app.audio.thunder(d, k);
     if (mission?.tutorial) this.tutorial = new Tutorial(app.ui, s);
     app.progress.flights++;
     saveProgress(app.progress);
@@ -147,7 +157,8 @@ export class FlightController {
     const audio = this.app.audio;
     if (this.photo && a !== 'photo' && a !== 'pause' && a !== 'screenshot') return;
     switch (a) {
-      case 'pause': if (this.photo) this.togglePhoto(); else if (this.map) this.toggleMap(); else this.togglePause(); return;
+      // Escape backs out of whatever is on top: photo mode, the map, a panel, then pause
+      case 'pause': if (this.photo) this.togglePhoto(); else if (this.map) this.toggleMap(); else if (this.overlay) this.toggleOverlay(null); else this.togglePause(); return;
     }
     if (this.paused) return;
     switch (a) {
@@ -188,7 +199,7 @@ export class FlightController {
       case 'hold': s.holdCountdown(!s.seq.held); break;
       case 'skip': s.skipCountdown(-10); break;
       case 'screenshot': this.screenshot(); break;
-      case 'help': this.toggleOverlay(HUD.helpPanel(() => this.toggleOverlay(null))); break;
+      case 'help': this.toggleOverlay(this.overlay ? null : HUD.helpPanel(() => this.toggleOverlay(null))); break;
       case 'quicksave': this.quicksave(); break;
       case 'abort': {
         const why = s.abort();
@@ -477,6 +488,12 @@ export class FlightController {
   frame(dt: number): void {
     const s = this.session;
     const app = this.app;
+    // headless capture: hold the simulation and the camera still while a frame is grabbed
+    if ((window as unknown as { __freezeSim?: boolean }).__freezeSim) {
+      if (this.photo) { this.photo.update(0, this.input); s.renderStatic(0); } else s.render(0);
+      app.rw.render(dt);
+      return;
+    }
     if (!this.paused && !this.photo) {
       this.applyManualControls(dt);
       s.update(dt);
@@ -512,7 +529,8 @@ export class FlightController {
   private updateAudio(dt: number): void {
     const s = this.session;
     const audio = this.app.audio;
-    const v = s.active;
+    // the vehicle on screen (a booster in its landing shots) is the one the air rushes past
+    const v = s.viewedVessels()[0];
     const camPos = s.director.posHelio;
     // loudest burning vessel as the source
     let best: { thrust: number; d: number; v: typeof v; solid: number } | null = null;
@@ -530,6 +548,24 @@ export class FlightController {
     const camAir = v.body.id === 'earth' || best?.v.body.id === 'earth' ? EarthAtmosphere.sample(Math.max(0, camAlt), { pressure: 0, density: 0, temperature: 0, speedOfSound: 0 }).pressure / 101325 : 0;
     const comDist = v.pos.clone().add(s.bodyPos(v.body)).distanceTo(camPos);
     const onboard = s.director.mount === 'vehicle' && comDist < 120;
+    // reaction-control thrusters: short hisses as they pulse, faster the harder they work, heard
+    // close by in air (or through the structure on an onboard camera)
+    const c = v.controls;
+    const cmd = Math.abs(c.pitch) + Math.abs(c.yaw) + Math.abs(c.roll) + Math.abs(c.tx) + Math.abs(c.ty) + Math.abs(c.tz);
+    const live = !this.paused && !this.photo;
+    // landing legs swinging out
+    let legs = 0;
+    for (const a of v.assemblies) if (a.def.features?.landingLegs) legs = Math.max(legs, a.legsDeployed);
+    const legsBefore = this.legsHeard.get(v) ?? legs;
+    if (live && legsBefore <= 0.001 && legs > 0.001) audio.play('legs', comDist, onboard);
+    this.legsHeard.set(v, legs);
+    if (live && c.rcs && cmd > 0.06 && (onboard || (comDist < 250 && v.atm.pressure > 2000)) && v.assemblies.some((a) => a.def.features?.rcs && a.rcsFuel > 0 && !a.destroyed)) {
+      this.rcsPulse -= dt;
+      if (this.rcsPulse <= 0) {
+        audio.play('rcs', comDist, onboard);
+        this.rcsPulse = 0.08 + 0.26 * (1 - Math.min(1, cmd)) + Math.random() * 0.05;
+      }
+    }
     audio.setEngine(best ? {
       thrustMN: best.thrust / 1e6, distance: best.d, onboard: onboard && best.v === v, airAtCamera: Math.min(1, camAir), airAtVehicle: Math.min(1, best.v.atm.pressure / 101325),
       solid: best.solid, q: v.telemetry.dynamicPressure, mach: v.telemetry.mach, plasma: v.plasmaIntensity, nearVehicle: comDist < 400,
@@ -537,6 +573,9 @@ export class FlightController {
     // pad ambience while the camera is near the ground at the site
     const nearSite = s.complex && camAlt < 3000 && s.phase !== 'orbit';
     audio.setAmbience(nearSite ? 1 : 0, s.phase === 'countdown' ? this.app.rw.effects.flags.venting : 0, this.app.rw.effects.flags.deluge, this.app.rw.siteNight);
+    // rain on the camera while it is low (the deck reports it), and how hard the wind blows
+    const wind = { clear: 0.7, fair: 1, breezy: 1.6, overcast: 1.2, storm: 2.2 }[s.config.weather] ?? 1;
+    audio.setWeather(camAlt < 4000 ? this.app.rw.deck.rainAtCamera : 0, wind);
     void dt;
     this.stageSoundT += dt;
   }
@@ -550,10 +589,15 @@ export class FlightController {
     const s = this.session;
     const dt = 1 / 30;
     const n = Math.round(seconds / dt);
+    const label = this.mission ? `Mission ${this.mission.number} · ${this.mission.title}` : 'Sandbox';
     for (let i = 0; i < n; i++) {
       s.update(dt);
       this.director.update(dt);
-      if (i % renderEvery === 0) s.render(dt * renderEvery);
+      if (i % renderEvery === 0) {
+        s.render(dt * renderEvery);
+        // banners and subtitles run on the same clock, so a capture shows what live play would
+        this.hud.update(s, dt * renderEvery, label);
+      }
     }
     return { met: s.met, phase: s.phase };
   }
@@ -563,6 +607,7 @@ export class FlightController {
   private toggleOverlay(el: HTMLElement | null): void {
     if (this.overlay) { this.overlay.remove(); this.overlay = null; }
     if (el) { this.overlay = el; this.app.ui.appendChild(el); }
+    this.hud.setDimmed(!!this.overlay || !!this.pauseEl);
   }
 
   private toggleCinematic(): void {
@@ -613,6 +658,7 @@ export class FlightController {
     this.pauseEl = h('div', { class: 'screen overlay pause' }, box);
     this.app.ui.appendChild(this.pauseEl);
     show(this.pauseEl);
+    this.hud.setDimmed(true);
   }
 
   private quicksave(): void {
@@ -716,8 +762,11 @@ export class FlightController {
     this.overlay?.remove();
     this.tutorial?.dispose();
     this.app.audio.radio?.clear();
+    if (this.app.audio.radio) this.app.audio.radio.clock = null;
     this.app.audio.setEngine(null);
     this.app.audio.setAmbience(0, 0, 0, 0);
+    this.app.audio.setWeather(0, 1);
+    this.app.rw.lightning.onStrike = null;
     this.app.audio.setHush(false);
     for (const el of Array.from(this.app.ui.querySelectorAll('.summary'))) el.remove();
     void WARP_LEVELS;

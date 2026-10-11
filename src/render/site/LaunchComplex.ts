@@ -1,11 +1,12 @@
-import { Group, Matrix4, Mesh, Object3D, PointLight, Quaternion, SpotLight, Vector3 } from 'three';
+import { type Camera, Group, Matrix4, Mesh, Object3D, PointLight, Quaternion, SpotLight, Vector3 } from 'three';
 import type { VehicleDef } from '../../vehicles/types';
 import type { LaunchSite } from '../../world/sites';
+import { CATCH_BASE_HEIGHT } from '../../world/zones';
 import { box, GeoBuilder, lathe, tube } from '../vehicle/shapes';
-import { createSiteMaterials, SiteMaterials } from './siteMaterials';
+import { createSiteMaterials, SITE_LAMPS, SiteMaterials } from './siteMaterials';
 import {
-  Batch, beam, boxTruss, BROAD_CROWN, broadleafGeometry, building, cable, CrownShape, horizontalTank, instanced, latticeTower, lightMast, palmGeometry,
-  PINE_CROWN, pineGeometry, planarTruss, shrubGeometry, sphereTank, tuftGeometry, verticalTank,
+  Batch, beam, boxTruss, BROAD_CROWN, broadleafGeometry, building, cable, CrownShape, hangar, horizontalTank, instanced, latticeTower, lightMast, palmGeometry,
+  PINE_CROWN, pineGeometry, planarTruss, shrubGeometry, type SiteLamp, sphereTank, tuftGeometry, verticalTank,
 } from './structures';
 
 /**
@@ -81,6 +82,8 @@ export class LaunchComplex {
   readonly beacons: PointLight[] = [];
   /** lamp positions for lens glows */
   readonly lampPositions: Vector3[] = [];
+  /** small lamps that light the site's own surfaces after dark (wall packs, door floods, road lamps) */
+  readonly siteLamps: SiteLamp[] = [];
   readonly towerTop = new Vector3();
   private time = 0;
   private night = 0;
@@ -223,42 +226,45 @@ export class LaunchComplex {
       for (const z of [-11, 11]) this.roadStrip(B.get(M.gravel), new Vector3(-apronR, 0, z), new Vector3(-5000, 0, z - 1100 * (z > 0 ? 1 : 1)), 12, 0.12);
     }
     // flame trench: concrete-lined channel guiding the exhaust east and west under the mount,
-    // walls buttressed by earth berms, scorched floor
-    const w = Math.max(6, fp * 2.2);
-    const wallH = Math.max(3, this.deckHeight * 0.45);
-    const trenchL = apronR * 1.25;
-    for (const s of [-1, 1]) {
-      box(B.get(M.concreteDark), trenchL, wallH, 1.4, new Matrix4().makeTranslation(0, wallH / 2, s * (w / 2 + 0.7)));
-      // berm: sloped wedge outside each wall
-      const g = B.get(M.berm);
-      const z0 = s * (w / 2 + 1.4), z1 = s * (w / 2 + 1.4 + wallH * 2.2);
-      const n = new Vector3(0, wallH * 2.2, s * wallH).normalize();
-      const v = (x: number, y: number, z: number) => g.vertex(new Vector3(x, y, z), n, 0, 0, [0, y, 0], {}, [0, 0]);
-      const hl = trenchL / 2;
-      const a0 = v(-hl, wallH, z0), a1 = v(hl, wallH, z0), b0 = v(-hl, 0.02, z1), b1 = v(hl, 0.02, z1);
-      if (s > 0) { g.tri(a0, b0, a1); g.tri(a1, b0, b1); } else { g.tri(a0, a1, b0); g.tri(a1, b1, b0); }
-      // end slopes of the berm
-      for (const ex of [-1, 1]) {
-        const ne = new Vector3(ex, 0.6, 0).normalize();
-        const ve = (x: number, y: number, z: number) => g.vertex(new Vector3(x, y, z), ne, 0, 0, [0, y, 0], {}, [0, 0]);
-        const c0 = ve(ex * hl, wallH, z0), c1 = ve(ex * hl, 0.02, z1), c2 = ve(ex * (hl + wallH * 1.5), 0.02, z0);
-        if (ex * s > 0) g.tri(c0, c1, c2); else g.tri(c0, c2, c1);
+    // walls buttressed by earth berms, scorched floor (a raised orbital launch mount has none:
+    // its jet spreads under the table over a flat deflector, built with the mount)
+    if (this.pad !== 'olm') {
+      const w = Math.max(6, fp * 2.2);
+      const wallH = Math.max(3, this.deckHeight * 0.45);
+      const trenchL = apronR * 1.25;
+      for (const s of [-1, 1]) {
+        box(B.get(M.concreteDark), trenchL, wallH, 1.4, new Matrix4().makeTranslation(0, wallH / 2, s * (w / 2 + 0.7)));
+        // berm: sloped wedge outside each wall
+        const g = B.get(M.berm);
+        const z0 = s * (w / 2 + 1.4), z1 = s * (w / 2 + 1.4 + wallH * 2.2);
+        const n = new Vector3(0, wallH * 2.2, s * wallH).normalize();
+        const v = (x: number, y: number, z: number) => g.vertex(new Vector3(x, y, z), n, 0, 0, [0, y, 0], {}, [0, 0]);
+        const hl = trenchL / 2;
+        const a0 = v(-hl, wallH, z0), a1 = v(hl, wallH, z0), b0 = v(-hl, 0.02, z1), b1 = v(hl, 0.02, z1);
+        if (s > 0) { g.tri(a0, b0, a1); g.tri(a1, b0, b1); } else { g.tri(a0, a1, b0); g.tri(a1, b1, b0); }
+        // end slopes of the berm
+        for (const ex of [-1, 1]) {
+          const ne = new Vector3(ex, 0.6, 0).normalize();
+          const ve = (x: number, y: number, z: number) => g.vertex(new Vector3(x, y, z), ne, 0, 0, [0, y, 0], {}, [0, 0]);
+          const c0 = ve(ex * hl, wallH, z0), c1 = ve(ex * hl, 0.02, z1), c2 = ve(ex * (hl + wallH * 1.5), 0.02, z0);
+          if (ex * s > 0) g.tri(c0, c1, c2); else g.tri(c0, c2, c1);
+        }
       }
+      box(B.get(M.trenchFloor), trenchL, 0.1, w, new Matrix4().makeTranslation(0, 0.1, 0));
+      // deflector: double wedge with steel facing, ridge along z
+      const dh = Math.max(2.5, this.deckHeight * 0.55), dl = Math.max(6, fp * 3);
+      const g = B.get(M.steelDark);
+      for (const sx of [-1, 1]) {
+        // one sloped face per side, normal tilted toward its exit
+        const n = new Vector3(sx * dh, dl, 0).normalize();
+        const v = (x: number, y: number, z: number) => g.vertex(new Vector3(x, y, z), n, 0, 0, [0, y, 0], {}, [0, 0]);
+        const p0 = v(0, dh, -w / 2), p1 = v(0, dh, w / 2), p2 = v(sx * dl, 0.05, w / 2), p3 = v(sx * dl, 0.05, -w / 2);
+        if (sx > 0) { g.tri(p0, p1, p2); g.tri(p0, p2, p3); } else { g.tri(p0, p2, p1); g.tri(p0, p3, p2); }
+      }
+      // exits for the exhaust FX (both ends of the trench)
+      this.exits.push({ pos: new Vector3(trenchL / 2, 1.5, 0), dir: new Vector3(1, 0.18, 0).normalize(), width: w });
+      this.exits.push({ pos: new Vector3(-trenchL / 2, 1.5, 0), dir: new Vector3(-1, 0.18, 0).normalize(), width: w });
     }
-    box(B.get(M.trenchFloor), trenchL, 0.1, w, new Matrix4().makeTranslation(0, 0.1, 0));
-    // deflector: double wedge with steel facing, ridge along z
-    const dh = Math.max(2.5, this.deckHeight * 0.55), dl = Math.max(6, fp * 3);
-    const g = B.get(M.steelDark);
-    for (const sx of [-1, 1]) {
-      // one sloped face per side, normal tilted toward its exit
-      const n = new Vector3(sx * dh, dl, 0).normalize();
-      const v = (x: number, y: number, z: number) => g.vertex(new Vector3(x, y, z), n, 0, 0, [0, y, 0], {}, [0, 0]);
-      const p0 = v(0, dh, -w / 2), p1 = v(0, dh, w / 2), p2 = v(sx * dl, 0.05, w / 2), p3 = v(sx * dl, 0.05, -w / 2);
-      if (sx > 0) { g.tri(p0, p1, p2); g.tri(p0, p2, p3); } else { g.tri(p0, p2, p1); g.tri(p0, p3, p2); }
-    }
-    // exits for the exhaust FX (both ends of the trench)
-    this.exits.push({ pos: new Vector3(trenchL / 2, 1.5, 0), dir: new Vector3(1, 0.18, 0).normalize(), width: w });
-    this.exits.push({ pos: new Vector3(-trenchL / 2, 1.5, 0), dir: new Vector3(-1, 0.18, 0).normalize(), width: w });
   }
 
   /** Flat strip (road / crawlerway) following the terrain in ~25 m segments. */
@@ -301,12 +307,14 @@ export class LaunchComplex {
       box(g, 135, 64, 40, new Matrix4().makeTranslation(at.x - 20, at.y + 32, at.z + 99));
       box(B.get(M.concreteDark), 220, 1, 160, new Matrix4().makeTranslation(at.x, at.y + 160.5, at.z));
     } else {
-      // horizontal integration hangar beside the access road
-      const hx = -420, hz = 95;
+      // horizontal integration hangar beside the access road, its doors toward the road
+      const { x: hx, z: hz } = HANGAR;
       const y = this.hAt(hx, -hz);
-      box(B.get(M.steelWhite), 95, 22, 40, new Matrix4().makeTranslation(hx, y + 11, hz));
-      box(B.get(M.vabDark), 70, 18, 0.4, new Matrix4().makeTranslation(hx, y + 9, hz - 20.1));
-      box(B.get(M.concrete), 140, 0.2, 70, new Matrix4().makeTranslation(hx, y + 0.1, hz - 10));
+      box(B.get(M.concrete), 150, 0.2, 76, new Matrix4().makeTranslation(hx, y + 0.1, hz - 12));
+      this.siteLamps.push(...hangar({
+        wall: B.get(M.cladding), door: B.get(M.claddingGrey), trim: B.get(M.steelWhite), plinth: B.get(M.concrete), dark: B.get(M.vabDark),
+        roof: B.get(M.concreteDark), lamp: B.get(M.lampWarm), glass: B.get(M.glass),
+      }, new Vector3(hx, y + 0.2, hz), 95, 22, 40));
     }
     // a neighbouring pad's lightning towers on the horizon (2.6 km north)
     for (let i = 0; i < 3; i++) {
@@ -520,8 +528,11 @@ export class LaunchComplex {
       latticeTower(B.get(M.steelGrey), B.get(M.grating), at, { width: tw, height, bay: 9, column: 0.9, brace: 0.4, floors: 4 });
       box(B.get(M.steelDark), 6, height, 6, new Matrix4().makeTranslation(at.x, height / 2, at.z));
       this.towerTop.set(0, height, -dist);
-      // chopsticks: two long arms on a carriage near the booster/ship interface
-      const carriageY = D + 70;
+      // chopsticks: two long arms on a carriage at the booster's catch hardpoints, just below its
+      // grid fins, at the height they reach as it settles over the mount (the arms close as it
+      // sinks within ~7 m of the catch point)
+      const fins = this.vehicle.assemblies.find((a) => a.features?.gridFins)?.features?.gridFins;
+      const carriageY = CATCH_BASE_HEIGHT + 7 + (fins ? fins.y - fins.size - 0.5 : 65);
       box(B.get(M.steelDark), tw + 3, 8, tw + 3, new Matrix4().makeTranslation(at.x, carriageY, at.z));
       for (const s of [-1, 1]) {
         const pivot = new Group();
@@ -620,9 +631,11 @@ export class LaunchComplex {
       tube(B.get(M.steelGrey), new Vector3(x * 0.15, 0.6, z * 0.15), new Vector3(0, 0.6, -fp - 4), 0.45, 8);
     }
     // pad buildings
-    building(B.get(M.concrete), B.get(M.concreteDark), B.get(M.glass), new Vector3(70, 0, 95), 22, 6, 12, 0.2);
-    building(B.get(M.steelWhite), B.get(M.steelGrey), B.get(M.glass), new Vector3(-95, 0, -110), 16, 8, 10, -0.4);
-    building(B.get(M.concrete), B.get(M.concreteDark), B.get(M.glass), new Vector3(-180, 0, 60), 30, 5, 14, 0);
+    this.siteLamps.push(
+      ...building(B.get(M.concrete), B.get(M.concreteDark), B.get(M.glass), new Vector3(70, 0, 95), 22, 6, 12, 0.2, B.get(M.lampWarm)),
+      ...building(B.get(M.steelWhite), B.get(M.steelGrey), B.get(M.glass), new Vector3(-95, 0, -110), 16, 8, 10, -0.4, B.get(M.lampWarm)),
+      ...building(B.get(M.concrete), B.get(M.concreteDark), B.get(M.glass), new Vector3(-180, 0, 60), 30, 5, 14, 0, B.get(M.lampWarm)),
+    );
     // fence posts on a ring
     for (let i = 0; i < 160; i++) {
       const a = (i / 160) * Math.PI * 2;
@@ -680,6 +693,8 @@ export class LaunchComplex {
       tube(B.get(M.galvanized), new Vector3(x, y, z), new Vector3(x, y + 9, z), 0.12, 6);
       tube(B.get(M.galvanized), new Vector3(x, y + 9, z), new Vector3(x, y + 9.3, z - Math.sign(z) * 1.6), 0.06, 4);
       box(B.get(M.lampWarm), 0.5, 0.15, 0.3, new Matrix4().makeTranslation(x, y + 9.2, z - Math.sign(z) * 1.6));
+      // a warm sodium-like pool on the road beneath
+      this.siteLamps.push({ pos: new Vector3(x, y + 9.05, z - Math.sign(z) * 1.6), dir: new Vector3(0, -1, 0), kcd: 3.5, cone: [0.22, 0.62], color: [1, 0.74, 0.46] });
     }
   }
 
@@ -708,6 +723,7 @@ export class LaunchComplex {
       || Math.abs(r - 210) < 7 // ring road
       || (x > 120 && x < 270 && z > -210 && z < 185) // tank farm
       || (x < -230 && x > -300 && z > 160 && z < 220) // water tower
+      || (this.pad !== 'mlp' && Math.abs(x - HANGAR.x) < 78 && z > HANGAR.z - 52 && z < HANGAR.z + 28) // hangar and apron
       || (this.pad === 'mlp' && Math.abs(z) < 26 && x < -60); // crawlerway
     const place = (n: number, rMin: number, rMax: number, list: Matrix4[], scale: [number, number], clump: number, clumpR = 14) => {
       const target = Math.round(n * density);
@@ -762,12 +778,12 @@ export class LaunchComplex {
     }
     if (pines.length) {
       const pg = pineGeometry();
-      this.group.add(instanced(pg.trunk, M.trunk, pines, false));
+      this.group.add(instanced(pg.trunk, M.trunkPine, pines, false));
       this.group.add(instanced(pg.crown, M.pineLeaf, pines, false));
     }
     if (broad.length) {
       const bg = broadleafGeometry();
-      this.group.add(instanced(bg.trunk, M.trunk, broad, false));
+      this.group.add(instanced(bg.trunk, M.trunkBroad, broad, false));
       this.group.add(instanced(bg.crown, M.canopy, broad, false));
     }
     if (tufts.length) this.group.add(instanced(tuftGeometry(), tuftMat, tufts, false));
@@ -826,8 +842,15 @@ export class LaunchComplex {
    * @param night 0 day .. 1 night (floodlights)
    * @param exposureHint lamp intensity scaling for HDR
    */
+  /** Surface wind for the plants: speed (m/s), the direction it blows toward (rad from north), gustiness 0..1. */
+  setWind(speed: number, toward: number, gust: number): void {
+    // site frame: x east, z south
+    this.mats.wind.value.set(Math.sin(toward), -Math.cos(toward), speed, gust);
+  }
+
   update(dt: number, night: number): void {
     this.time += dt;
+    this.mats.windTime.value = this.time;
     for (const a of this.arms) {
       const d = a.target - a.t;
       if (Math.abs(d) > 1e-4) a.t += Math.sign(d) * Math.min(Math.abs(d), a.speed * dt);
@@ -853,6 +876,40 @@ export class LaunchComplex {
 
   get nightFactor(): number { return this.night; }
 
+  private lampDist = new Float32Array(0);
+  private lampOrder: number[] = [];
+  /**
+   * Hand the lamps nearest the camera to the site materials, in view space. Call just before
+   * rendering, once the camera and the complex are placed. The last few before the cut fade out,
+   * so no pool of light pops on or off as the camera moves.
+   */
+  updateLamps(camera: Camera): void {
+    const L = this.mats.lamps;
+    const lamps = this.siteLamps;
+    if (this.night <= 0.001 || !lamps.length || !this.group.visible) { L.count.value = 0; return; }
+    this.group.updateMatrixWorld();
+    camera.updateMatrixWorld();
+    const mw = this.group.matrixWorld, vm = camera.matrixWorldInverse;
+    const cam = _lv.setFromMatrixPosition(camera.matrixWorld).applyMatrix4(_lm.copy(mw).invert());
+    if (this.lampDist.length !== lamps.length) { this.lampDist = new Float32Array(lamps.length); this.lampOrder = lamps.map((_, i) => i); }
+    const dist = this.lampDist;
+    for (let i = 0; i < lamps.length; i++) dist[i] = lamps[i].pos.distanceTo(cam);
+    this.lampOrder.sort((a, b) => dist[a] - dist[b]);
+    const n = Math.min(SITE_LAMPS, lamps.length);
+    const cut = lamps.length > SITE_LAMPS ? dist[this.lampOrder[SITE_LAMPS]] : Infinity;
+    for (let k = 0; k < n; k++) {
+      const l = lamps[this.lampOrder[k]];
+      const fade = Number.isFinite(cut) ? Math.min(1, Math.max(0, (cut - dist[this.lampOrder[k]]) / (0.2 * cut))) : 1;
+      const I = l.kcd * this.night * fade;
+      L.pos.value[k].copy(l.pos).applyMatrix4(mw).applyMatrix4(vm);
+      L.dir.value[k].copy(l.dir).transformDirection(mw).transformDirection(vm);
+      // reach: where the light has fallen to a lux or two
+      L.col.value[k].set(l.color[0] * I, l.color[1] * I, l.color[2] * I, l.kcd / 0.0015);
+      L.cone.value[k].set(l.cone[0], l.cone[1]);
+    }
+    L.count.value = n;
+  }
+
   /** Free GPU resources (geometry + materials). */
   dispose(): void {
     const mats = new Set<{ dispose(): void }>();
@@ -868,3 +925,7 @@ export class LaunchComplex {
 
 const _up = new Vector3(0, 1, 0);
 const _q = new Quaternion();
+const _lv = new Vector3();
+const _lm = new Matrix4();
+/** the integration hangar beside the access road (pads without a crawlerway), site metres */
+const HANGAR = { x: -420, z: 95 };

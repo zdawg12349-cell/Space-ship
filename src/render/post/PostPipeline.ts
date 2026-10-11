@@ -1,10 +1,11 @@
 import {
-  AlwaysDepth, DepthFormat, DepthTexture, FloatType, HalfFloatType, LinearFilter, LinearMipmapLinearFilter, Matrix3, Matrix4, NearestFilter, NoBlending, RedFormat,
+  AlwaysDepth, DepthFormat, DepthTexture, FloatType, GLSL3, HalfFloatType, LinearFilter, LinearMipmapLinearFilter, Matrix3, Matrix4, NearestFilter, NoBlending, RedFormat,
   RGBAFormat, ShaderMaterial, Texture, UnsignedIntType, Vector2, Vector3, Vector4, WebGLRenderer, WebGLRenderTarget,
 } from 'three';
 import { FullscreenQuad, FULLSCREEN_VERT } from '../util/Fullscreen';
 import { ATMOSPHERE_COMMON, SKYVIEW_COMMON } from '../atmosphere/glsl';
 import type { Atmosphere } from '../atmosphere/Atmosphere';
+import { DECK_COMMON, DECK_PASS_FRAG } from '../weather/CloudDeck';
 
 export interface PostSettings {
   msaa: number;
@@ -40,6 +41,10 @@ export class PostPipeline {
   settings: PostSettings = { ...DEFAULT_POST };
   sceneRT!: WebGLRenderTarget;
   compRT!: WebGLRenderTarget;
+  /** the cloud deck at half resolution: [radiance + opacity, cloud distances] */
+  deckRT!: WebGLRenderTarget;
+  private deckMat: ShaderMaterial;
+  private deckOn: { value: unknown };
   linDepthRT!: WebGLRenderTarget;
   depthTex!: DepthTexture;
   private bloomRTs: WebGLRenderTarget[] = [];
@@ -57,9 +62,11 @@ export class PostPipeline {
   private width = 1;
   private height = 1;
   private frame = 0;
+  /** exposure bias from the weather (EV, negative darkens): a storm should look dark */
+  weatherEV = 0;
   private time = 0;
 
-  constructor(renderer: WebGLRenderer, atmosphere: Atmosphere) {
+  constructor(renderer: WebGLRenderer, atmosphere: Atmosphere, deckUniforms: Record<string, { value: unknown }>) {
     this.renderer = renderer;
     // The composite also copies scene depth into compRT's own depth buffer (gl_FragDepth) so
     // transparent FX can depth-test against the scene without a framebuffer feedback loop.
@@ -67,6 +74,7 @@ export class PostPipeline {
       blending: NoBlending, depthTest: true, depthWrite: true, depthFunc: AlwaysDepth,
       uniforms: {
         ...atmosphere.uniforms,
+        ...deckUniforms,
         tColor: { value: null },
         tDepth: { value: null },
         uInvProj: { value: new Matrix4() },
@@ -86,6 +94,13 @@ export class PostPipeline {
         uHazeA: { value: [new Vector4(), new Vector4(), new Vector4()] },
         uHazeB: { value: [new Vector4(), new Vector4(), new Vector4()] },
         uAspect: { value: 1 },
+        // rain on the camera: intensity, time, camera climb rate (m/s), angle of a pixel (rad)
+        uRain: { value: new Vector4() },
+        uRainUp: { value: new Vector3(0, 1, 0) },
+        uRainE: { value: new Vector3(1, 0, 0) },
+        tDeck0: { value: null },
+        tDeck1: { value: null },
+        uDeckSize: { value: new Vector2(1, 1) },
       },
       vertexShader: FULLSCREEN_VERT,
       fragmentShader: /* glsl */ `
@@ -113,7 +128,14 @@ export class PostPipeline {
         uniform vec4 uHazeA[3];
         uniform vec4 uHazeB[3];
         uniform float uAspect;
+        uniform vec4 uRain;
+        uniform vec3 uRainUp;
+        uniform vec3 uRainE;
+        uniform sampler2D tDeck0;
+        uniform sampler2D tDeck1;
+        uniform vec2 uDeckSize;
         ${ATMOSPHERE_COMMON}
+        ${DECK_COMMON}
         float hz_hash(vec2 p) { vec3 p3 = fract(vec3(p.xyx) * 0.1031); p3 += dot(p3, p3.yzx + 33.33); return fract((p3.x + p3.y) * p3.z); }
         float hz_noise(vec2 p) { vec2 i = floor(p); vec2 f = fract(p); vec2 u = f * f * (3.0 - 2.0 * f);
           return mix(mix(hz_hash(i), hz_hash(i + vec2(1, 0)), u.x), mix(hz_hash(i + vec2(0, 1)), hz_hash(i + vec2(1, 1)), u.x), u.y); }
@@ -152,24 +174,140 @@ export class PostPipeline {
           vec2 tt = raySphere2(ro, rd, rc);
           float t = tt.x > 0.0 ? tt.x : tt.y;
           if (t <= 0.0 || t > tMaxKm) return vec4(0.0);
+          // within its reach the low cloud deck stands in for the planet-wide map. Across the
+          // hand-over band the deck's cells shrink away inside this layer's, which comes in early
+          // (opaque a third of the way in) and fills in around them (and low down the layer is
+          // faded out altogether)
+          // (measured, as the deck measures its own, at the deck's height: a downward ray meets
+          // this layer well before it, and by this layer's distance the deck's cells were gone
+          // before it came in, leaving a ring of open sea between the two)
+          vec2 tm = raySphere2(ro, rd, uAtmBottom + 0.5 * (uDeckParams.x + uDeckParams.y));
+          float tD = tm.x > 0.0 ? tm.x : (tm.y > 0.0 ? tm.y : t);
+          float shown = uCloudOpacity * uCloudShellFade * (1.0 - step(1e-4, uDeckOn) * (1.0 - smoothstep(uDeckFadeStart, mix(uDeckFadeStart, uDeckMaxDist, 0.3), tD)));
+          if (shown <= 0.001) return vec4(0.0);
           vec3 p = ro + rd * t;
           vec3 n = normalize(p);
           vec3 nf = uPlanetRotInv * n;
           vec2 uv = dirToUV(rotZ(nf, -uCloudRot));
           float c = texture(uClouds, uv).r;
-          float a = smoothstep(0.08, 0.75, c) * uCloudOpacity * uCloudShellFade;
+          float a = smoothstep(0.08, 0.75, c);
+          float wLocal = 0.0;
+          float relief = 1.0;
+          // around the launch site the layer is the local weather: the deck's own cells, so a fair
+          // day stays fair as the camera climbs out of the deck's reach; the world's cloud map
+          // returns over a few hundred kilometres. The cells are taken where the ray crosses the
+          // deck at several heights: seen obliquely a cloud covers the union of its slices,
+          // shifted by parallax, and only that footprint lines up with the volumetric deck it
+          // takes over from (one mid-height slice showed beside it as a second, flat layer)
+          if (uDeckRegion > 0.0) {
+            float off = acos(clamp(dot(nf, uDeckCenter), -1.0, 1.0)) * uAtmBottom;
+            // (its edge a ragged front a hundred-odd kilometres across, not a circle, and inside
+            // the weather map)
+            off += (texture(uDeckNoise, nf * 23.0).a - 0.5) * uDeckSpan * 0.14;
+            float w = uDeckRegion * (1.0 - smoothstep(uDeckSpan * 0.2, uDeckSpan * 0.42, off));
+            if (w > 0.0) {
+              float thickKm = uDeckParams.y - uDeckParams.x;
+              float clear = 1.0;
+              // (in the order the ray meets them: the first slice in cloud is the surface it
+              // shows, and how much cloud the ray crosses tells a thick core from a thin margin)
+              bool fromAbove = length(ro) > uAtmBottom + uDeckParams.y;
+              vec3 pS = vec3(0.0);
+              float hS = -1.0, mass = 0.0;
+              for (int k = 0; k < 4; k++) {
+                float hn = fromAbove ? 0.87 - 0.25 * float(k) : 0.12 + 0.25 * float(k);
+                vec2 tk = raySphere2(ro, rd, uAtmBottom + uDeckParams.x + hn * thickKm);
+                float tq = tk.x > 0.0 ? tk.x : tk.y;
+                if (tq <= 0.0 || tq > tMaxKm) continue;
+                vec3 pk = uPlanetRotInv * (ro + rd * tq);
+                // (seen edge-on even a cloud's thin margin is opaque in the deck's march, so
+                // the slices count from low in the shape too, or the hand-over shows gaps)
+                float s = deckShape(pk, hn, deckCoverage(pk));
+                float m = smoothstep(0.0, 0.1, s);
+                if (hS < 0.0 && m > 0.5) { hS = hn; pS = pk; }
+                mass += s;
+                clear *= 1.0 - m;
+              }
+              a = mix(a, 1.0 - clear, w);
+              wLocal = w;
+              // relief, as the deck's own march shades it: a dome's flank turned away from the sun
+              // lies in the shadow of its crown (with the sun high only steep towers cast any),
+              // and a thin margin sends back less light than a thick core
+              if (hS >= 0.0) {
+                vec3 sunF = uPlanetRotInv * uSunDir;
+                float muF = max(dot(normalize(pS), sunF), 0.12);
+                float occl = 0.0;
+                for (int j = 1; j <= 2; j++) {
+                  float hq = hS + 0.25 * float(j);
+                  if (hq > 1.0) break;
+                  vec3 q = pS + sunF * (0.25 * float(j) * thickKm / muF);
+                  occl = max(occl, smoothstep(0.0, 0.25, deckShape(q, hq, deckCoverage(q))));
+                }
+                relief = mix(1.0, (1.0 - 0.6 * occl) * mix(0.8, 1.0, smoothstep(0.1, 0.9, mass)), w);
+              }
+            }
+          }
+          a *= shown;
           if (a <= 0.001) return vec4(0.0);
           float muS = dot(n, uSunDir);
           vec3 sunT = getTransmittance(length(p), muS) * planetShadow(p, uSunDir);
           // thickness-dependent self-shadowing: thick clouds darker on the side away from the sun
           vec3 nfs = uPlanetRotInv * normalize(p + uSunDir * 4.0);
           float c2 = texture(uClouds, dirToUV(rotZ(nfs, -uCloudRot))).r;
-          float self = mix(1.0, 0.55, smoothstep(0.3, 1.0, c2) * smoothstep(0.2, 0.9, c));
+          float self = mix(1.0, 0.55, smoothstep(0.3, 1.0, c2) * smoothstep(0.2, 0.9, c) * (1.0 - wLocal)) * relief;
           float cosTheta = dot(rd, uSunDir);
           float phase = 0.75 * miePhaseCS(0.6, cosTheta) * 4.0 * ATM_PI * 0.08 + 0.75;
           vec3 amb = getMultiScat(length(p), muS) * 6.0;
           vec3 L = uSunIlluminance * (sunT * max(0.0, muS * 0.6 + 0.4) * self * phase + amb) * 0.9 / ATM_PI;
           return vec4(L * a, a);
+        }
+
+        float lum(vec3 c) { return dot(c, vec3(0.2126, 0.7152, 0.0722)); }
+
+        // the half-resolution cloud deck (added radiance, transmittance), upsampled with a small
+        // Gaussian that also averages away the march's jitter; a texel whose cloud lies behind
+        // this pixel's surface (a vehicle against a cloudy sky) does not cover it
+        vec4 deckUpsample(vec2 uv, float distFull, out float tFr) {
+          vec2 st = uv * uDeckSize - 0.5;
+          vec2 c0 = floor(st + 0.5);
+          vec4 cl = vec4(0.0);
+          float wsum = 0.0;
+          tFr = -1.0;
+          for (int j = -1; j <= 1; j++) for (int i = -1; i <= 1; i++) {
+            vec2 tp = c0 + vec2(float(i), float(j));
+            vec2 dv = tp - st;
+            float w = exp(-dot(dv, dv) * 1.3);
+            wsum += w;
+            ivec2 ip = ivec2(clamp(tp, vec2(0.0), uDeckSize - 1.0));
+            vec4 c = texelFetch(tDeck0, ip, 0);
+            vec4 dd = c.a < 1.0 ? texelFetch(tDeck1, ip, 0) : vec4(-1.0);
+            if (c.a >= 1.0 || dd.x > distFull * 1.02 + 0.02) { cl.a += w; continue; }
+            cl += c * w;
+            if (dd.y >= 0.0) tFr = tFr < 0.0 ? dd.y : min(tFr, dd.y);
+          }
+          return cl / wsum;
+        }
+
+        // rain: streaks on cylinders of radius R (m) around the camera, fixed in the world so they
+        // stay put as the camera turns; each drop is a short vertical stroke about a pixel wide
+        float rainLayer(vec3 rd, float R, float seed, float sceneDistM) {
+          if (sceneDistM < R) return 0.0;
+          float el = dot(rd, uRainUp);
+          vec3 h = rd - uRainUp * el;
+          float hl = length(h);
+          if (hl < 0.25) return 0.0;
+          vec3 n2 = cross(uRainUp, uRainE);
+          float az = atan(dot(h, n2), dot(h, uRainE));
+          vec2 c = vec2(az * R, el / hl * R + uRain.y * (8.5 + uRain.z) + seed * 13.0);
+          vec2 g = c / vec2(0.32, 2.6);
+          vec2 cell = floor(g), f = fract(g);
+          float hs = hz_hash(cell + seed * 7.7);
+          if (hs > uRain.x * 0.55) return 0.0;
+          float x0 = 0.15 + 0.7 * fract(hs * 17.31);
+          float y0 = 0.1 + 0.6 * fract(hs * 41.73);
+          float w = max(uRain.w * R / 0.32, 0.002);
+          float m = 1.0 - smoothstep(w * 0.5, w * 1.5, abs(f.x - x0));
+          float dy = f.y - y0;
+          return m * smoothstep(0.0, 0.01, dy) * (1.0 - smoothstep(0.035, 0.055, dy));
         }
 
         void main() {
@@ -221,12 +359,57 @@ export class PostPipeline {
           if (uDebug == 1) { gl_FragColor = vec4(vec3(fract(log2(max(distKm, 1e-3)))) * 30.0, 1.0); return; }
           if (uDebug == 2) { gl_FragColor = vec4(vec3(cloud.a) * 30.0, 1.0); return; }
           if (uDebug == 3) { gl_FragColor = vec4(L, 1.0); return; }
+          // beneath an overcast the air is lit only by the grey light soaking through the deck
+          vec3 roF = uPlanetRotInv * ro;
+          bool underDeck = uDeckOn > 0.0 && r < uAtmBottom + uDeckParams.x;
+          float under = 0.0, dimF = 1.0;
+          if (underDeck) {
+            under = smoothstep(0.55, 0.9, deckCoverage(roF)) * uDeckOn;
+            float muC = dot(ro / r, uSunDir);
+            dimF = clamp(ATM_PI * lum(uDeckUnderL) / max(lum(uSunIlluminance * getTransmittance(r, muC)), 1e-4), 0.02, 1.0);
+            if (!isSky) L = mix(L, mix(L, vec3(lum(L)), 0.6) * dimF, under);
+          }
           vec3 col = scene * T + L;
           // cloud shell composited in front (aerial perspective toward the cloud approximated by T)
           col = col * (1.0 - cloud.a) + cloud.rgb * mix(vec3(1.0), T, 0.5);
+          // the low cloud deck (marched at half resolution)
+          if (uDeckOn > 0.0) {
+            float tFr;
+            vec4 cl = deckUpsample(vUv, isSky ? 1e9 : distKm, tFr);
+            if (uDebug == 5) { gl_FragColor = vec4(vec3(1.0 - cl.a) * 30.0, 1.0); return; }
+            col = col * cl.a + cl.rgb;
+            // an opaque cloud hides the exhaust and smoke drawn after this pass
+            if (cl.a < 0.5 && tFr >= 0.0) gl_FragDepth = min(d, log2(tFr * 1000.0 * max(1e-6, -rdv.z) + 1.0) / uLogFar);
+          }
+          // rain beneath the deck: a grey veil with distance, and streaks close to the lens
+          if (uRain.x > 0.0 && underDeck) {
+            vec2 hbR = raySphere2(ro, rd, uAtmBottom + uDeckParams.x);
+            float tUnder = min(isSky ? 1e9 : distKm, hbR.y > 0.0 ? hbR.y : 1e9);
+            float Tr = exp(-uRain.x * 0.3 * min(tUnder, 20.0));
+            col = col * Tr + uDeckUnderL * 1.1 * (1.0 - Tr);
+            vec3 dg = uDeckGlowPos - roF;
+            vec3 rainL = uDeckUnderL * 1.4 + uDeckGlowI * (0.06 / (dot(dg, dg) + 0.0004)) + uDeckCity * 4.0;
+            float m = rainLayer(rd, 1.6, 0.0, distM) * 0.9 + rainLayer(rd, 3.5, 1.0, distM) * 0.7 + rainLayer(rd, 8.0, 2.0, distM) * 0.5;
+            col += rainL * m * 0.22 * uRain.x;
+          }
           if (any(isnan(col))) col = vec3(0.0);
           gl_FragColor = vec4(max(col, vec3(0.0)), 1.0);
         }`,
+    });
+
+    const cu = this.compositeMat.uniforms;
+    this.deckOn = deckUniforms.uDeckOn;
+    this.deckMat = new ShaderMaterial({
+      glslVersion: GLSL3, blending: NoBlending, depthTest: false, depthWrite: false,
+      uniforms: {
+        ...atmosphere.uniforms,
+        ...deckUniforms,
+        tDepth: { value: null },
+        uFullSize: { value: new Vector2(1, 1) },
+        uInvProj: cu.uInvProj, uCamRot: cu.uCamRot, uPlanetRotInv: cu.uPlanetRotInv, uCamPosKm: cu.uCamPosKm, uSunDir: cu.uSunDir, uLogFar: cu.uLogFar, uTime: cu.uTime,
+      },
+      vertexShader: FULLSCREEN_VERT,
+      fragmentShader: DECK_PASS_FRAG,
     });
 
     const mk = (frag: string, uniforms: Record<string, { value: unknown }>) => new ShaderMaterial({
@@ -282,17 +465,24 @@ export class PostPipeline {
       uniform sampler2D tSrc;
       void main() {
         // centre-weighted log luminance; near-black pixels (deep space) get little weight so a
-        // sunlit planet in frame is exposed for, rather than the void around it
+        // sunlit planet in frame is exposed for, rather than the void around it, and extreme
+        // highlights (an exhaust plume at night, the sun's disc) are capped like a photographer
+        // metering past them: the lit cloud around a night launch stays visible
         vec3 c = texture(tSrc, vUv).rgb;
-        float l = dot(c, vec3(0.2126, 0.7152, 0.0722));
+        float l = min(dot(c, vec3(0.2126, 0.7152, 0.0722)), 250.0);
         vec2 d = vUv - 0.5;
         float w = exp(-dot(d, d) * 4.0) * (0.003 + smoothstep(0.002, 0.05, l));
         gl_FragColor = vec4(log2(max(l, 1e-7)) * w, w, 0.0, 1.0);
       }`, { tSrc: { value: null } });
+    // distance to the first opaque thing along each pixel's ray (m): the scene, or the cloud deck
+    // where it is opaque. Plumes and particles occlude themselves against it.
     this.linDepthMat = mk(/* glsl */ `
       precision highp float;
       in vec2 vUv;
       uniform sampler2D tDepth;
+      uniform sampler2D tDeck0;
+      uniform sampler2D tDeck1;
+      uniform float uDeck;
       uniform mat4 uInvProj;
       uniform float uLogFar;
       void main() {
@@ -300,8 +490,13 @@ export class PostPipeline {
         vec4 vp = uInvProj * vec4(vUv * 2.0 - 1.0, -1.0, 1.0);
         vec3 rdv = normalize(vp.xyz / vp.w);
         float viewZ = d >= 0.999999 ? 1e20 : exp2(d * uLogFar) - 1.0;
-        gl_FragColor = vec4(viewZ / max(1e-6, -rdv.z), 0.0, 0.0, 1.0);
-      }`, { tDepth: { value: null }, uInvProj: { value: new Matrix4() }, uLogFar: { value: 40 } });
+        float dist = viewZ / max(1e-6, -rdv.z);
+        if (uDeck > 0.0 && texture(tDeck0, vUv).a < 0.5) {
+          float tFront = texture(tDeck1, vUv).y;
+          if (tFront >= 0.0) dist = min(dist, tFront * 1000.0);
+        }
+        gl_FragColor = vec4(dist, 0.0, 0.0, 1.0);
+      }`, { tDepth: { value: null }, tDeck0: { value: null }, tDeck1: { value: null }, uDeck: { value: 0 }, uInvProj: { value: new Matrix4() }, uLogFar: { value: 40 } });
     this.adaptMat = mk(/* glsl */ `
       precision highp float;
       in vec2 vUv;
@@ -325,6 +520,8 @@ export class PostPipeline {
         // dark scenes stay dark (the eye / a film camera never lifts a night landscape to grey):
         // below EV 7 only part of the shortfall is compensated (higher EV = less exposure)
         ev += max(0.0, 7.0 - ev) * 0.55;
+        // and very bright ones stay bright (a sea of sunlit cloud tops is white, not grey)
+        ev -= max(0.0, ev - 14.5) * 0.45;
         float target = uAuto > 0.5 ? ev - uComp : uManualEV - uComp;
         float prev = texture(tPrev, vec2(0.5)).r;
         float k = uReset > 0.5 ? 1.0 : 1.0 - exp(-uDt * uSpeed * (target > prev ? 1.0 : 1.6));
@@ -454,6 +651,11 @@ export class PostPipeline {
     this.compRT = new WebGLRenderTarget(w, h, { type: HalfFloatType, format: RGBAFormat, depthBuffer: true, stencilBuffer: false, generateMipmaps: false });
     this.linDepthRT?.dispose();
     this.linDepthRT = new WebGLRenderTarget(w, h, { type: FloatType, format: RedFormat, depthBuffer: false, minFilter: NearestFilter, magFilter: NearestFilter, generateMipmaps: false });
+    this.deckRT?.dispose();
+    const dw = Math.ceil(w / 2), dh = Math.ceil(h / 2);
+    this.deckRT = new WebGLRenderTarget(dw, dh, { count: 2, type: HalfFloatType, format: RGBAFormat, depthBuffer: false, minFilter: NearestFilter, magFilter: NearestFilter, generateMipmaps: false });
+    (this.compositeMat.uniforms.uDeckSize.value as Vector2).set(dw, dh);
+    (this.deckMat.uniforms.uFullSize.value as Vector2).set(w, h);
     for (const rt of this.bloomRTs) rt.dispose();
     this.bloomRTs = [];
     let bw = w, bh = h;
@@ -482,11 +684,20 @@ export class PostPipeline {
 
   /** Atmosphere composite; afterwards transparent FX may be drawn into compRT with depth test. */
   composite(): void {
+    if ((this.deckOn.value as number) > 0) {
+      this.deckMat.uniforms.tDepth.value = this.depthTex;
+      this.quad.render(this.renderer, this.deckRT, this.deckMat);
+    }
+    this.compositeMat.uniforms.tDeck0.value = this.deckRT.textures[0];
+    this.compositeMat.uniforms.tDeck1.value = this.deckRT.textures[1];
     this.compositeMat.uniforms.tColor.value = this.sceneRT.texture;
     this.compositeMat.uniforms.tDepth.value = this.depthTex;
     this.quad.render(this.renderer, this.compRT, this.compositeMat);
     const lu = this.linDepthMat.uniforms;
     lu.tDepth.value = this.depthTex;
+    lu.tDeck0.value = this.deckRT.textures[0];
+    lu.tDeck1.value = this.deckRT.textures[1];
+    lu.uDeck.value = this.deckOn.value;
     lu.uInvProj.value = this.compositeMat.uniforms.uInvProj.value;
     lu.uLogFar.value = this.compositeMat.uniforms.uLogFar.value;
     this.quad.render(this.renderer, this.linDepthRT, this.linDepthMat);
@@ -538,7 +749,7 @@ export class PostPipeline {
     am.uSpeed.value = s.adaptSpeed;
     am.uMinEV.value = s.minEV;
     am.uMaxEV.value = s.maxEV;
-    am.uComp.value = s.exposureComp;
+    am.uComp.value = s.exposureComp + this.weatherEV;
     am.uAuto.value = s.autoExposure ? 1 : 0;
     am.uManualEV.value = s.manualEV;
     am.uReset.value = resetExposure || this.frame < 3 ? 1 : 0;

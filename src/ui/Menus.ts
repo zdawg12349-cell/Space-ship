@@ -14,6 +14,11 @@ import { SettingsPanel } from './SettingsPanel';
 export class MainMenu {
   private root: HTMLElement;
   private sub: HTMLElement | null = null;
+  /** where Back (or Escape) leads from the open screen: a parent screen, or the menu itself */
+  private back: (() => void) | null = null;
+  private readonly onKey = (e: KeyboardEvent) => {
+    if (e.code === 'Escape' && this.sub) { e.preventDefault(); this.goBack(); }
+  };
 
   constructor(readonly app: App) {
     const items = h('div', { class: 'items' });
@@ -39,28 +44,41 @@ export class MainMenu {
     );
     app.ui.appendChild(this.root);
     show(this.root);
+    window.addEventListener('keydown', this.onKey);
   }
 
   dispose(): void {
+    window.removeEventListener('keydown', this.onKey);
     this.sub?.remove();
     void hide(this.root);
   }
 
-  private openSub(el: HTMLElement): void {
+  /** Open a screen over the menu (the menu's own items step aside); `back` is where Back leads. */
+  private openSub(el: HTMLElement, back: (() => void) | null = null): void {
     this.closeSub();
     this.sub = el;
+    this.back = back;
     el.classList.add('screen');
+    this.root.classList.add('sub-open');
     this.app.ui.appendChild(el);
     show(el);
   }
 
   private closeSub(): void {
     if (this.sub) { void hide(this.sub); this.sub = null; }
+    this.back = null;
+    this.root.classList.remove('sub-open');
+  }
+
+  private goBack(): void {
+    this.app.audio.play('ui');
+    const back = this.back;
+    if (back) back(); else this.closeSub();
   }
 
   private closeButton(): HTMLElement {
     const b = h('button', { class: 'btn close' }, 'Back');
-    b.addEventListener('click', () => { this.app.audio.play('ui'); this.closeSub(); });
+    b.addEventListener('click', () => this.goBack());
     return b;
   }
 
@@ -77,13 +95,13 @@ export class MainMenu {
         h('div', { class: 'meta' }, ...m.tags.map((t) => h('span', { class: 'chip' }, t))),
         done ? h('div', { class: 'done' }, `✓ ${done.score}`) : null,
       );
-      card.addEventListener('click', () => { this.app.audio.play('ui_select'); this.openBriefing(m); });
+      card.addEventListener('click', () => { this.app.audio.play('ui_select'); this.openBriefing(m, true); });
       grid.appendChild(card);
     }
     this.openSub(h('div', { class: 'overlay' }, h('h1', {}, 'Missions'), h('div', { class: 'crumb' }, 'From a first hop to the edge of space to Jupiter'), grid, this.closeButton()));
   }
 
-  private openBriefing(m: MissionDef): void {
+  private openBriefing(m: MissionDef, fromList = false): void {
     const v = ALL_VEHICLES.find((x) => x.id === m.vehicle)!;
     const site = LAUNCH_SITES.find((x) => x.id === m.site)!;
     const st = vehicleStats(v);
@@ -105,11 +123,11 @@ export class MainMenu {
           row('Class', v.vehicleClass), row('Height', `${st.height.toFixed(1)} m`), row('Liftoff mass', `${(st.mass / 1000).toFixed(0)} t`),
           row('Liftoff thrust', `${(st.thrustSL / 1e6).toFixed(1)} MN`), row('Stages', String(st.stages)),
           h('div', { class: 'label', style: 'margin-top:18px' }, 'Where & when'),
-          row('Location', where), row('Date', new Date(m.date).toUTCString().replace(' GMT', ' UTC')), row('Weather', m.weather),
+          row('Location', where), row('Date', new Date(m.date).toUTCString().replace(' GMT', ' UTC')), row('Weather', m.weather[0].toUpperCase() + m.weather.slice(1)),
         ),
       ),
       this.closeButton(),
-    ));
+    ), fromList ? () => this.openMissions() : null);
   }
 
   // ------------------------------------------------------------------------------ sandbox
@@ -156,6 +174,10 @@ export class MainMenu {
       });
       list.appendChild(r);
     }
+    // more vehicles below the fold: fade the list's lower edge until it is scrolled to the end
+    const moreBelow = () => list.classList.toggle('more', list.scrollTop + list.clientHeight < list.scrollHeight - 4);
+    list.addEventListener('scroll', moreBelow);
+    requestAnimationFrame(moreBelow);
     const makeSiteSeg = () => segmented(LAUNCH_SITES.map((s) => ({ value: s.id, label: s.name })), cfg.site, (x) => { cfg.site = x; });
     let siteSeg = makeSiteSeg();
     const hourVal = h('span', { class: 'value', style: 'font-size:13px' });

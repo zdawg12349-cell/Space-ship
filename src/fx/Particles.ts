@@ -14,7 +14,7 @@ import {
  * so a cloud can sit both behind and in front of the flame.
  */
 
-export type ParticleKind = 'steam' | 'smoke' | 'soot' | 'srbsmoke' | 'dust' | 'water' | 'vapor' | 'spark' | 'fire' | 'trail' | 'plasma' | 'regolith';
+export type ParticleKind = 'steam' | 'smoke' | 'soot' | 'srbsmoke' | 'dust' | 'water' | 'vapor' | 'spark' | 'fire' | 'trail' | 'plasma' | 'regolith' | 'gas';
 
 interface KindDef {
   albedo: [number, number, number];
@@ -51,7 +51,12 @@ const KINDS: Record<ParticleKind, KindDef> = {
   trail: { albedo: [0.8, 0.8, 0.81], emissive: [1.0, 0.6, 0.3], opacity: 0.6, drag: 0.05, buoyancy: 0, gravity: 0, cool: 2.0, breakup: 0.5, thin: 0.7, streak: 0, glow: 0 },
   plasma: { albedo: [0, 0, 0], emissive: [1.0, 0.45, 0.6], opacity: 0.8, drag: 0.5, buoyancy: 0, gravity: 0, cool: 3.0, breakup: 0.4, thin: 0.5, streak: 0.8, glow: 1 },
   regolith: { albedo: [0.32, 0.31, 0.3], emissive: [0, 0, 0], opacity: 0.8, drag: 0, buoyancy: 0, gravity: 1.62, cool: 1, breakup: 0.5, thin: 0.6, streak: 0.4, glow: 0 },
+  // gas flashing into vacuum (cold-gas thrusters, vents): a smooth haze with no billows. Its
+  // column density falls about as fast as its area grows, so it is only seen near the nozzle
+  gas: { albedo: [0.93, 0.94, 0.95], emissive: [0, 0, 0], opacity: 1, drag: 0, buoyancy: 0, gravity: 0, cool: 1, breakup: 0, thin: 1.1, streak: 0, glow: 0 },
 };
+/** size of the per-kind uniform arrays in the shaders */
+const MAX_KINDS = 16;
 const KIND_LIST = Object.keys(KINDS) as ParticleKind[];
 const KIND_INDEX = new Map(KIND_LIST.map((k, i) => [k, i] as const));
 
@@ -88,12 +93,14 @@ uniform vec3 uSunIrr;      // klux-ish RGB
 uniform vec3 uAmbient;
 uniform vec3 uLightPos[3]; // view space
 uniform vec3 uLightCol[3]; // colour * intensity
-uniform vec3 uEmissive[12];
+uniform vec3 uEmissive[${MAX_KINDS}];
 uniform float uExposureHint;
 varying vec2 vUv;
 varying vec4 vParams;
 varying vec4 vExtra;
 varying vec3 vLight;
+varying vec3 vLightP;
+varying vec3 vLightDir;
 varying vec3 vEmis;
 varying vec3 vAlbedo;
 varying float vDepth;
@@ -129,10 +136,14 @@ void main() {
   // lighting at the particle centre
   vec3 centre = (modelViewMatrix * vec4(aPos, 1.0)).xyz;
   vec3 L = uAmbient * aVel.w;
+  vLightP = vec3(0.0);
+  vLightDir = vec3(0.0, 1.0, 0.0);
   for (int i = 0; i < 3; i++) {
     vec3 d = uLightPos[i] - centre;
     float d2 = max(dot(d, d), size * size * 0.5 + 4.0);
-    L += uLightCol[i] / d2;
+    // the brightest (the active vehicle's flame) also keeps its direction, for shading
+    if (i == 0) { vLightP = uLightCol[i] / d2; vLightDir = d * inversesqrt(max(dot(d, d), 1e-6)); }
+    else L += uLightCol[i] / d2;
   }
   vLight = L;
   int k = int(aParams.w + 0.5);
@@ -148,11 +159,13 @@ uniform vec2 uResolution;
 uniform vec3 uSunDirV;
 uniform vec3 uSunIrr;
 uniform vec3 uAtmT;
-uniform float uBreakup[12];
+uniform float uBreakup[${MAX_KINDS}];
 varying vec2 vUv;
 varying vec4 vParams;
 varying vec4 vExtra;
 varying vec3 vLight;
+varying vec3 vLightP;
+varying vec3 vLightDir;
 varying vec3 vEmis;
 varying vec3 vAlbedo;
 varying float vDepth;
@@ -179,13 +192,18 @@ void main() {
     float cellI = floor(seed * 15.99);
     vec2 cell = vec2(mod(cellI, 4.0), floor(cellI / 4.0));
     vec4 pf = texture(uPuff, (cell + ruv * 0.5 + 0.5) * 0.25);
-    // dissolve with age: the threshold climbs so puffs thin from the edges inward
+    // dissolve with age: the threshold climbs so puffs thin from the edges inward, and the edge
+    // itself softens as the puff diffuses (an old, thinned puff has no outline left: dozens of
+    // them hanging over a landing zone read as a haze, not as overlapping translucent discs)
     float thr = mix(0.04, 0.5, age * age) * br;
-    dens = smoothstep(thr, thr + 0.35, pf.a * (0.8 + 0.4 * n));
+    dens = smoothstep(thr, thr + 0.35 + 0.55 * age, pf.a * (0.8 + 0.4 * n));
     vec2 nxy = pf.xy * 2.0 - 1.0;
     // rotate the atlas normal back into screen orientation
     nxy = vec2(nxy.x * vRot.x + nxy.y * vRot.y, -nxy.x * vRot.y + nxy.y * vRot.x);
-    N = normalize(vec3(nxy, pf.z * 1.2 + 0.25));
+    // big puffs, and puffs buried deep in a dense cloud, read as one volume: their own relief
+    // fades (those on the outside keep it, for the cloud's lumpy outline)
+    float relief = mix(1.0, 0.45, smoothstep(6.0, 30.0, vParams.x)) * mix(0.5, 1.0, smoothstep(0.2, 0.75, vShade.y));
+    N = normalize(vec3(nxy * relief, pf.z * 1.2 + 0.25));
   }
   float alpha = dens * vParams.y;
   // soft intersection with opaque geometry
@@ -196,12 +214,15 @@ void main() {
   float wrap = clamp((ndl + 0.45) / 1.45, 0.0, 1.0);
   // sun visibility through the rest of the cloud (density grid march) + per-pixel shading
   float vis = vShade.x;
-  float selfShadow = mix(0.22, 1.0, wrap) * vis;
+  float selfShadow = mix(0.32, 1.0, wrap) * vis;
   // forward scattering when looking toward the sun (silver lining on thin edges)
   float fwd = pow(clamp(-uSunDirV.z, 0.0, 1.0), 6.0) * (1.0 - dens) * 1.5 * vis;
   // multiple scattering keeps shadowed parts from going black; sky light from above
   float skyN = 0.55 + 0.45 * N.y;
-  vec3 lit = vAlbedo * (uSunIrr * (selfShadow + fwd + 0.3 * (1.0 - vis) * vShade.y) + vLight * skyN) / 3.14159;
+  // the flame's light falls from one side: billows turned toward it lit, the far side shaded
+  // (at night this is all the relief a cloud has)
+  float wrapP = clamp((dot(N, vLightDir) + 0.5) / 1.5, 0.0, 1.0);
+  vec3 lit = vAlbedo * (uSunIrr * (selfShadow + fwd + 0.3 * (1.0 - vis) * vShade.y) + vLight * skyN + vLightP * (0.35 + 1.3 * wrapP)) / 3.14159;
   vec3 col = lit + vEmis * (0.6 + 0.8 * n);
   col *= uAtmT;
   if (vExtra.w > 0.5) { gl_FragColor = vec4(col * alpha, 0.0); return; }
@@ -216,7 +237,7 @@ const _q = new Quaternion();
  * upper envelope gives a lumpy outline and a height field; we store the envelope normal (xy),
  * its height (z) and a soft coverage (a).
  */
-function createPuffAtlas(): DataTexture {
+export function createPuffAtlas(): DataTexture {
   const C = 128, S = C * 4;
   const data = new Uint8Array(S * S * 4);
   let seed = 4242;
@@ -237,13 +258,24 @@ function createPuffAtlas(): DataTexture {
     }
     for (let y = 0; y < C; y++) for (let x = 0; x < C; x++) {
       const u = ((x + 0.5) / C) * 2 - 1, v = ((y + 0.5) / C) * 2 - 1;
-      let h = 0;
+      // a core of big domes joined by a smooth maximum, with the billows added on as rounded
+      // bumps (lumps on its top, lobes round its edge). Every piece meets the rest without a
+      // step, ring or crease: a step at each billow's rim drew it as a hard-edged disc with a
+      // bright ring, so a lit cloud read as a heap of bubbles
+      const K = 10;
+      let acc = 1, bumps = 0;
       for (const [sx, sy, sr] of spheres) {
         const d2 = (u - sx) * (u - sx) + (v - sy) * (v - sy);
-        if (d2 < sr * sr) h = Math.max(h, Math.sqrt(sr * sr - d2) + (sr > 0.3 ? 0 : 0.18));
+        if (d2 >= sr * sr) continue;
+        const q = 1 - d2 / (sr * sr);
+        const foot = Math.min(1, q / 0.3);
+        if (sr > 0.3) acc += Math.exp(K * sr * Math.sqrt(q) * foot * foot * (3 - 2 * foot)) - 1;
+        else bumps += (sr * 0.8 + 0.04) * q * Math.sqrt(q);
       }
-      // keep the puff inside the sprite
-      h *= Math.max(0, Math.min(1, (1 - Math.hypot(u, v)) * 6));
+      let h = Math.log(acc) / K + bumps;
+      // keep the puff inside the sprite (smoothly, or the cut-off rings it too)
+      const e = Math.max(0, Math.min(1, (1 - Math.hypot(u, v)) * 5));
+      h *= e * e * (3 - 2 * e);
       hf[y * C + x] = h;
     }
     const cx = (cell % 4) * C, cy = Math.floor(cell / 4) * C;
@@ -294,7 +326,7 @@ export class ParticleSystem {
   readonly framePos = new Vector3();
   /** ground height in the local frame (smoke stops at the ground) */
   groundY = 0;
-  /** radius of the anchor body (ground curvature in the tangent frame) */
+  /** distance from the body's centre to the frame origin: the ground is the sphere through the origin (lifted by groundY) */
   bodyRadius = 6_371_000;
   /** wind in the local frame (m/s) */
   readonly wind = new Vector3();
@@ -322,7 +354,7 @@ export class ParticleSystem {
     this.depth = new Float32Array(max);
     const emissive: Vector3[] = [];
     const breakup: number[] = [];
-    for (let i = 0; i < 12; i++) {
+    for (let i = 0; i < MAX_KINDS; i++) {
       const k = KINDS[KIND_LIST[i]] ?? KINDS.steam;
       emissive.push(new Vector3(...k.emissive).multiplyScalar(i < KIND_LIST.length ? (k.glow > 0 ? 60 : 25) : 0));
       breakup.push(k.breakup);
@@ -438,20 +470,24 @@ export class ParticleSystem {
       this.px[i] += this.vx[i] * dt;
       this.py[i] += this.vy[i] * dt;
       this.pz[i] += this.vz[i] * dt;
-      // the ground: clouds roll along it, water splashes and dies
+      // the ground: clouds roll along it, water splashes and dies. The local frame is a tangent
+      // plane, so the ground falls away with distance; far from the origin "down" tilts with it.
       const r = this.size[i] * 0.35;
-      // the local frame is a tangent plane: the ground falls away with distance (curvature)
-      const h2 = this.px[i] * this.px[i] + this.pz[i] * this.pz[i];
-      const gy = this.groundY - h2 / (2 * this.bodyRadius);
-      if (h2 < 4e10 && this.py[i] < gy + r) {
+      const Rb = this.bodyRadius;
+      const dx = this.px[i], dy = this.py[i] + Rb, dz = this.pz[i];
+      const rr = Math.sqrt(dx * dx + dy * dy + dz * dz);
+      const hgt = rr - Rb - this.groundY;
+      if (hgt < r) {
         if (kd.gravity > 5) { this.kill(i); i--; continue; }
-        this.py[i] = gy + r;
-        if (this.vy[i] < 0) {
-          // convert downward momentum into radial spread
-          const sp = -this.vy[i] * 0.6;
-          const h = Math.hypot(this.vx[i], this.vz[i]) || 1;
-          this.vx[i] += (this.vx[i] / h) * sp; this.vz[i] += (this.vz[i] / h) * sp;
-          this.vy[i] = 0;
+        const nx = dx / rr, ny = dy / rr, nz = dz / rr;
+        this.px[i] += nx * (r - hgt); this.py[i] += ny * (r - hgt); this.pz[i] += nz * (r - hgt);
+        const vn = this.vx[i] * nx + this.vy[i] * ny + this.vz[i] * nz;
+        if (vn < 0) {
+          // convert the downward momentum into spreading along the ground
+          this.vx[i] -= nx * vn; this.vy[i] -= ny * vn; this.vz[i] -= nz * vn;
+          const sp = -vn * 0.6;
+          const h = Math.hypot(this.vx[i], this.vy[i], this.vz[i]) || 1;
+          this.vx[i] += (this.vx[i] / h) * sp; this.vy[i] += (this.vy[i] / h) * sp; this.vz[i] += (this.vz[i] / h) * sp;
         }
       }
       this.size[i] += this.grow[i] * dt * (1 - 0.5 * this.age[i] / this.life[i]);
@@ -542,14 +578,17 @@ export class ParticleSystem {
       return ((c00 * (1 - tz) + c01 * tz) * (1 - ty) + (c10 * (1 - tz) + c11 * tz) * ty);
     };
     const sx = this.sunLocal.x * CELL, sy = this.sunLocal.y * CELL, sz = this.sunLocal.z * CELL;
+    const Rb = this.bodyRadius;
     for (let i = 0; i < n; i++) {
       const px = this.px[i], py = this.py[i], pz = this.pz[i];
+      // height above the curved ground (a particle far from the origin sits well below y = 0)
+      const hgt = Math.sqrt(px * px + (py + Rb) * (py + Rb) + pz * pz) - Rb - this.groundY;
       let tau = 0;
       for (let k = 1; k <= 8; k++) tau += sample(px + sx * k, py + sy * k, pz + sz * k);
       tau *= CELL;
       // the sun below the horizon is blocked by the ground for low clouds anyway
       this.vis[i] = Math.exp(-tau * 0.5);
-      this.ao[i] = Math.exp(-sample(px, py, pz) * 14) * 0.7 + 0.3 * Math.min(1, (py - this.groundY) / 60 + 0.4);
+      this.ao[i] = Math.exp(-sample(px, py, pz) * 14) * 0.7 + 0.3 * Math.min(1, Math.max(0, hgt / 60 + 0.4));
     }
   }
 

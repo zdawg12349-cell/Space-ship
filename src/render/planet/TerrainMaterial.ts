@@ -1,5 +1,7 @@
-import { GLSL3, Matrix3, ShaderMaterial, Texture, Vector3 } from 'three';
+import { GLSL3, Matrix3, Matrix4, ShaderMaterial, Texture, Vector2, Vector3, Vector4 } from 'three';
 import { ATMOSPHERE_COMMON } from '../atmosphere/glsl';
+import { DECK_COMMON } from '../weather/CloudDeck';
+import { SITE_LAMPS, type SiteLampUniforms } from '../site/siteMaterials';
 
 /**
  * Earth & Moon terrain shaders. Lighting is done in the body-fixed frame (km) so the atmosphere
@@ -42,6 +44,42 @@ float vnoise(vec2 p) {
 }
 `;
 
+/**
+ * The sun's shadow map on the ground: vehicles, the tower and buildings around the lighting
+ * focus darken the terrain beneath them. (The terrain casts none itself, so no acne.)
+ */
+const SHADOW_GLSL = /* glsl */ `
+uniform sampler2DShadow uSunShadow;
+uniform mat4 uShadowFromView;  // view space -> shadow map (uv, depth)
+uniform vec4 uShadowParams;    // map size (texels), depth bias, filter radius (texels), on
+float sh_ign(vec2 p) { return fract(52.9829189 * fract(dot(p, vec2(0.06711056, 0.00583715)))); }
+float terrainShadow(vec3 viewPos) {
+  if (uShadowParams.w <= 0.0) return 1.0;
+  vec4 sc = uShadowFromView * vec4(viewPos, 1.0);
+  sc.xyz /= sc.w;
+  if (sc.x <= 0.0 || sc.x >= 1.0 || sc.y <= 0.0 || sc.y >= 1.0 || sc.z >= 1.0) return 1.0;
+  float z = sc.z + uShadowParams.y;
+  float rad = uShadowParams.z / uShadowParams.x;
+  // hardware 2x2 compares on a rotated Vogel disc (as the scene's own shadows are filtered)
+  float phi = sh_ign(gl_FragCoord.xy) * 6.2831853;
+  float s = 0.0;
+  for (int i = 0; i < 5; i++) {
+    float r = sqrt((float(i) + 0.5) / 5.0);
+    float th = float(i) * 2.3999632 + phi;
+    s += texture(uSunShadow, vec3(sc.xy + vec2(cos(th), sin(th)) * r * rad, z));
+  }
+  s *= 0.2;
+  // (the shadowed area around the focus ends without a seam)
+  float edge = min(min(sc.x, 1.0 - sc.x), min(sc.y, 1.0 - sc.y));
+  return mix(1.0, s, smoothstep(0.0, 0.06, edge));
+}
+`;
+
+/** Uniforms for SHADOW_GLSL (off until RenderWorld hands over the sun's shadow map). */
+export function shadowUniforms(): Record<string, { value: unknown }> {
+  return { uSunShadow: { value: null }, uShadowFromView: { value: new Matrix4() }, uShadowParams: { value: new Vector4(2048, 0, 1, 0) } };
+}
+
 export const EARTH_FRAG = /* glsl */ `
 precision highp float;
 in vec3 vDir;
@@ -67,8 +105,16 @@ uniform float uCloudShadow;
 uniform float uDetailStrength;
 uniform vec3 uPalScrub, uPalGrass, uPalForest, uPalWet, uPalDry, uPalSoil, uPalSand;
 uniform int uDebug;
+// the launch site's lamps after dark, in view space (shared with the site's own materials)
+uniform int uLampCount;
+uniform vec3 uLampPos[${SITE_LAMPS}];
+uniform vec3 uLampDir[${SITE_LAMPS}];
+uniform vec4 uLampCol[${SITE_LAMPS}];
+uniform vec2 uLampCone[${SITE_LAMPS}];
 ${ATMOSPHERE_COMMON}
+${DECK_COMMON}
 ${NOISE_GLSL}
+${SHADOW_GLSL}
 
 vec2 dirToUV(vec3 d) {
   float lon = atan(d.y, d.x);
@@ -153,11 +199,17 @@ void main() {
   vec3 shadowDir = normalize(dir + L * (8.0 / 6371.0) / max(0.08, muS));
   float cl = texture(uClouds, dirToUV(rotateZ(shadowDir, -uCloudRot))).r;
   float cloudShade = 1.0 - uCloudShadow * smoothstep(0.15, 0.8, cl) * 0.85;
+  // near the camera the low cloud deck casts the shadows instead of the planet-wide map
+  cloudShade = mix(cloudShade, 1.0, uDeckOn * (1.0 - smoothstep(90000.0, 150000.0, viewDist)));
+  float deckSun = deckSunShadow(pKm, L);
+  // under an overcast the light is the grey glow of the cloud base, from every direction
+  float deckUnder = uDeckOn > 0.0 ? smoothstep(0.55, 0.9, deckCoverage(pKm)) * uDeckOn * (1.0 - smoothstep(90000.0, 150000.0, viewDist)) : 0.0;
 
   vec3 V = normalize(uViewToFixed * (-vViewPos));
-  vec3 sunIrr = uSunIlluminance * sunT * cloudShade;
+  vec3 sunIrr = uSunIlluminance * sunT * cloudShade * deckSun * terrainShadow(vViewPos);
   // sky ambient approximated from the multiple-scattering LUT
   vec3 skyAmb = getMultiScat(r, muS) * uSunIlluminance * 4.0;
+  skyAmb = mix(skyAmb, uDeckUnderL * ATM_PI, deckUnder) + uDeckFlashIrr;
   vec3 color;
   if (water > 0.5) {
     // ocean: deep colour + shallow tint + Fresnel sky reflection + GGX sun glint
@@ -177,8 +229,12 @@ void main() {
     float rough = mix(0.08, 0.32, smoothstep(5000.0, 400000.0, viewDist));
     float spec = ggx(max(0.0, dot(Nw, H)), rough) * 0.25 / max(0.15, NdotV);
     float fres = 0.02 + 0.98 * pow(1.0 - NdotV, 5.0);
+    // (the sun's reflection takes the Fresnel factor of the wave facets that send it to the eye:
+    // seen at a grazing angle the sea mirrors the sky, but away from the sun's own glitter path
+    // the facets that catch the sun face the viewer and reflect little of it)
+    float fresSun = 0.02 + 0.98 * pow(1.0 - clamp(dot(V, H), 0.0, 1.0), 5.0);
     vec3 skyRefl = skyAmb * 0.9 + vec3(0.02, 0.04, 0.08) * uSunIlluminance * max(0.0, muS) * 0.05;
-    color = baseW * (sunIrr * NdotL + skyAmb) / ATM_PI + fres * skyRefl / ATM_PI + spec * fres * sunIrr * NdotL * 4.0;
+    color = baseW * (sunIrr * NdotL + skyAmb) / ATM_PI + fres * skyRefl / ATM_PI + spec * fresSun * sunIrr * NdotL * 4.0;
     // surf line near the coast
     float surf = smoothstep(0.5, 0.56, water) * (1.0 - smoothstep(0.56, 0.75, water)) * near;
     color += vec3(0.6) * surf * (sunIrr * max(0.0, muS) + skyAmb) / ATM_PI * (0.4 + 0.6 * det2.r);
@@ -187,6 +243,18 @@ void main() {
     // soft wrap so the terminator isn't a hard line on rough terrain
     float wrap = max(0.0, (dot(N, L) + 0.08) / 1.08);
     color = albedo / ATM_PI * (sunIrr * mix(NdotL, wrap, 0.25) + skyAmb * (0.6 + 0.4 * dot(N, up)));
+    // pools of lamplight around the site after dark, carrying on past the roads and aprons
+    for (int i = 0; i < ${SITE_LAMPS}; i++) {
+      if (i >= uLampCount) break;
+      vec3 Lv = uLampPos[i] - vViewPos;
+      float d2 = dot(Lv, Lv);
+      if (d2 >= uLampCol[i].w) continue;
+      vec3 l = Lv * inversesqrt(max(d2, 1e-6));
+      float q = d2 / uLampCol[i].w;
+      float beam = smoothstep(uLampCone[i].x, uLampCone[i].y, dot(-l, uLampDir[i]));
+      float ndl = max(0.0, dot(N, uViewToFixed * l));
+      color += albedo / ATM_PI * uLampCol[i].rgb * (beam * (1.0 - q * q) * (1.0 - q * q) * ndl / max(d2, 0.25));
+    }
   }
   // city lights on the night side (hidden under clouds)
   float night = 1.0 - smoothstep(-0.12, 0.02, muS);
@@ -223,6 +291,7 @@ uniform vec3 uSunIrradiance;
 uniform vec3 uEarthshine;
 uniform vec3 uEarthDirF;
 ${NOISE_GLSL}
+${SHADOW_GLSL}
 #define PI 3.14159265358979
 vec2 dirToUV(vec3 d) {
   float lon = atan(d.y, d.x);
@@ -259,7 +328,8 @@ void main() {
   float mu0 = max(0.0, dot(N, L));
   float mu = max(0.0, dot(N, V));
   float g = acos(clamp(dot(L, V), -1.0, 1.0));
-  vec3 color = lunarBRDF(albedo, mu0, mu, g) * uSunIrradiance / PI;
+  // (a lander's shadow on the regolith: black, with no air to fill it in)
+  vec3 color = lunarBRDF(albedo, mu0, mu, g) * uSunIrradiance * terrainShadow(vViewPos) / PI;
   // earthshine on the night side
   color += albedo * max(0.0, dot(N, normalize(uEarthDirF))) * uEarthshine / PI;
   gl_FragColor = vec4(color, 1.0);
@@ -287,11 +357,15 @@ export function setGroundPalette(mat: ShaderMaterial, c: GroundClimate): void {
   PALETTES[c].forEach((v, i) => (mat.uniforms[PAL_NAMES[i]].value as Vector3).set(v[0], v[1], v[2]));
 }
 
-export function createEarthMaterial(tex: { albedo: Texture; night: Texture; data: Texture; clouds: Texture; detail: Texture }, atmUniforms: Record<string, { value: unknown }>): ShaderMaterial {
+export function createEarthMaterial(
+  tex: { albedo: Texture; night: Texture; data: Texture; clouds: Texture; detail: Texture },
+  atmUniforms: Record<string, { value: unknown }>,
+  deckUniforms: Record<string, { value: unknown }>,
+): ShaderMaterial {
   return new ShaderMaterial({
-    
     uniforms: {
       ...atmUniforms,
+      ...deckUniforms,
       uAlbedo: { value: tex.albedo },
       uNight: { value: tex.night },
       uData: { value: tex.data },
@@ -307,10 +381,25 @@ export function createEarthMaterial(tex: { albedo: Texture; night: Texture; data
       uDetailStrength: { value: 1 },
       ...groundPaletteUniforms('subtropical'),
       uDebug: { value: 0 },
+      ...lampUniforms(null),
+      ...shadowUniforms(),
     },
     vertexShader: COMMON_VERT,
     fragmentShader: EARTH_FRAG,
   });
+}
+
+/** The terrain's view of the launch site's lamps: the site's own uniforms, or none. */
+export function lampUniforms(L: SiteLampUniforms | null): Record<string, { value: unknown }> {
+  if (L) return { uLampCount: L.count, uLampPos: L.pos, uLampDir: L.dir, uLampCol: L.col, uLampCone: L.cone };
+  const n = SITE_LAMPS;
+  return {
+    uLampCount: { value: 0 },
+    uLampPos: { value: Array.from({ length: n }, () => new Vector3()) },
+    uLampDir: { value: Array.from({ length: n }, () => new Vector3(0, -1, 0)) },
+    uLampCol: { value: Array.from({ length: n }, () => new Vector4()) },
+    uLampCone: { value: Array.from({ length: n }, () => new Vector2(0, 1)) },
+  };
 }
 
 export function createMoonMaterial(tex: { albedo: Texture; detail: Texture }): ShaderMaterial {
@@ -324,6 +413,7 @@ export function createMoonMaterial(tex: { albedo: Texture; detail: Texture }): S
       uSunIrradiance: { value: new Vector3(110, 108, 103) },
       uEarthshine: { value: new Vector3(0.02, 0.025, 0.035) },
       uEarthDirF: { value: new Vector3(1, 0, 0) },
+      ...shadowUniforms(),
     },
     vertexShader: COMMON_VERT,
     fragmentShader: MOON_FRAG,

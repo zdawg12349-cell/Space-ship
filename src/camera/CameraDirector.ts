@@ -31,6 +31,8 @@ export interface CamContext {
   site: { quat: Quaternion; origin: Vector3; body: CelestialBody } | null;
   /** tower top, deck height (site local) */
   towerTop: Vector3 | null;
+  /** tops of the low cloud deck (m above sea level), if there is one */
+  cloudTop: number | null;
   deckHeight: number;
   /** site-local terrain and vegetation queries for placing ground cameras with a clear view */
   siteQuery: SiteQuery | null;
@@ -42,6 +44,8 @@ export interface CamContext {
   /** total plume thrust of all vessels (MN), for acoustic shake */
   plumeMN: number;
   plumeSourceHelio: Vector3 | null;
+  /** the picture's width over its height (fields of view are vertical) */
+  aspect: number;
 }
 
 export interface SiteQuery {
@@ -65,6 +69,8 @@ interface ShotState {
   subject: Vessel | null;
   a: number; b: number; c: number;
   adj: SpotAdj | null;
+  /** shot clock (tau) at which a held shot may end, once what it waits for has happened */
+  holdUntil?: number;
 }
 
 interface CamOut {
@@ -84,6 +90,9 @@ const _c = new Vector3();
 const _d = new Vector3();
 const _e = new Vector3();
 const _q = new Quaternion();
+const _qs = new Quaternion();
+const _qs2 = new Quaternion();
+const _vs = new Vector3();
 const _m = new Matrix4();
 
 const ONBOARD_MOUNTS = ['down', 'up', 'engines', 'side'] as const;
@@ -113,14 +122,24 @@ export class CameraDirector {
   private queue: string[] = [];
   private lastIds: string[] = [];
   private cutCooldown = 0;
+  /** an operator's lagging look point, kept in the body's rotating frame (see smoothLookAt) */
   private smoothLook = new Vector3();
   private smoothLookInit = false;
+  private smoothBody: CelestialBody | null = null;
   private smoothFov = 50;
   /** text shown briefly when the shot changes (HUD) */
   shotLabel = '';
   private rngSeed = 1;
   /** last computed camera mount, for shake */
   private lastMount: CamOut['mount'] = 'free';
+  /** cloud_break: where the vehicle will come out of the deck (body-fixed) */
+  private cloudExit = new Vector3();
+  /**
+   * What the picture is about when that isn't the active vessel: the recovering booster (or the
+   * pair of them) in their chase and landing shots. Lighting, shadows, particles and photo mode
+   * centre on these; empty means the active vessel.
+   */
+  viewed: Vessel[] = [];
 
   constructor(readonly camera: PerspectiveCamera) {}
 
@@ -151,6 +170,7 @@ export class CameraDirector {
       tower_clear: ['tracking_long'], maxq: ['chase_side'], separation: ['interstage', 'chase_upper'], fairing: ['payload_cam'],
       meco: ['onboard_down'], orbit: ['orbit_beauty'], boostback: ['booster_chase'], entryburn: ['booster_chase'], landing: ['lz_ground'],
       entry: ['entry_front'], chutes: ['chute_below'], splashdown: ['splash'], explosion: ['tracking_long'], moon: ['orbit_beauty'], touchdown: ['lz_ground'],
+      clouds: ['cloud_break'],
     };
     const list = map[name];
     if (!list || this.mode !== 'cinematic') return;
@@ -262,6 +282,20 @@ export class CameraDirector {
     return out.add(_d.set(x, y, z).applyQuaternion(v.rot)).add(ctx.bodyPos(v.body));
   }
 
+  /**
+   * Ease the look point toward `target` (helio) like a camera operator, at `rate` 1/s. The
+   * smoothing runs in the body's rotating frame: heliocentric coordinates race along with the
+   * planet at ~30 km/s, and lagging there would aim the camera kilometres off.
+   */
+  private smoothLookAt(ctx: CamContext, body: CelestialBody, target: Vector3, rate: number, out: Vector3): Vector3 {
+    const rot = body.orientationAt(ctx.t, _qs);
+    const bp = ctx.bodyPos(body);
+    const tf = _vs.copy(target).sub(bp).applyQuaternion(_qs2.copy(rot).invert());
+    if (!this.smoothLookInit || this.smoothBody !== body) { this.smoothLook.copy(tf); this.smoothLookInit = true; this.smoothBody = body; }
+    this.smoothLook.lerp(tf, Math.min(1, ctx.dt * rate));
+    return out.copy(this.smoothLook).applyQuaternion(rot).add(bp);
+  }
+
   private upAt(ctx: CamContext, body: CelestialBody, helio: Vector3, out: Vector3): Vector3 {
     return out.copy(helio).sub(ctx.bodyPos(body)).normalize();
   }
@@ -287,6 +321,7 @@ export class CameraDirector {
     const v = ctx.active;
     if (!v) return;
     if (!this.orbitTargetDist) this.orbitTargetDist = Math.max(30, this.vesselLength(v) * 2.2);
+    this.viewed = [];
     switch (this.mode) {
       case 'cinematic': this.cinematic(ctx, out); break;
       case 'chase': this.chase(ctx, v, out); break;
@@ -491,11 +526,14 @@ export class CameraDirector {
     const frame = v.telemetry.thrust > 0 && v.telemetry.altitude < 40_000 ? L * 3.2 : L * 2.2;
     const fovT = MathUtils.clamp(MathUtils.radToDeg(2 * Math.atan(frame / 2 / Math.max(1, d))), 0.35, 45);
     // the operator is already framed when the shot cuts in, a little loose, and eases in tighter
-    if (!this.smoothLookInit) { this.smoothLook.copy(target); this.smoothLookInit = true; this.smoothFov = Math.min(30, fovT * 1.8); }
-    this.smoothLook.lerp(target, Math.min(1, ctx.dt * 3.2));
+    if (!this.smoothLookInit) this.smoothFov = Math.min(30, fovT * 1.8);
+    this.smoothLookAt(ctx, v.body, target, 3.2, out.look);
     // keep up with fast targets
-    if (this.smoothLook.distanceTo(target) > d * 0.08) this.smoothLook.copy(target).lerp(this.smoothLook, 0.5);
-    out.look.copy(this.smoothLook);
+    if (out.look.distanceTo(target) > d * 0.08) {
+      out.look.copy(target);
+      this.smoothLookInit = false;
+      this.smoothLookAt(ctx, v.body, target, 3.2, out.look);
+    }
     this.smoothFov += (fovT - this.smoothFov) * Math.min(1, ctx.dt * 1.5);
     out.fov = this.smoothFov;
     out.up.copy(this.upAt(ctx, st?.anchorBody ?? v.body, out.pos, _a));
@@ -760,6 +798,49 @@ export class CameraDirector {
         out.mount = 'ground';
         return true;
       }
+      case 'cloud_break': {
+        // a camera hovering just above the cloud tops, beside the point where the rocket will
+        // burst out: the deck fills the lower half, sky the upper, the exit low in the frame
+        const top = ctx.cloudTop;
+        if (top === null || !v.body.def.hasSurface) return false;
+        const rot = new Quaternion();
+        v.body.orientationAt(ctx.t, rot);
+        const bp = ctx.bodyPos(v.body);
+        if (!st.anchorBody) {
+          const com = this.com(ctx, v, _b);
+          const vel = new Vector3();
+          v.surfaceVelocity(vel);
+          const up = this.upAt(ctx, v.body, com, _a).clone();
+          const vz = vel.dot(up);
+          if (vz < 30) return false;
+          const tExit = Math.max(0, top - v.telemetry.altitude) / vz;
+          st.dur = MathUtils.clamp(tExit + 6, 8, 16);
+          const exit = com.clone().addScaledVector(vel, tExit);
+          const horiz = vel.clone().addScaledVector(up, -vz);
+          if (horiz.lengthSq() < 1) horiz.set(1, 0, 0).applyQuaternion(v.rot).addScaledVector(up, -up.dot(_d.set(1, 0, 0).applyQuaternion(v.rot)));
+          horiz.normalize();
+          const side = new Vector3().crossVectors(horiz, up).normalize().multiplyScalar(st.a < 0.5 ? 1 : -1);
+          st.anchor.copy(exit).addScaledVector(side, 1400 + st.b * 500).addScaledVector(horiz, -300).addScaledVector(up, 180 + st.c * 140);
+          st.anchorBody = v.body;
+          const inv = rot.clone().invert();
+          st.anchorFixed = st.anchor.clone().sub(bp).applyQuaternion(inv);
+          // the point it will emerge from, body-fixed, held in subject-less shots' second anchor
+          this.cloudExit.copy(exit).sub(bp).applyQuaternion(inv);
+        }
+        out.pos.copy(st.anchorFixed!).applyQuaternion(rot).add(bp);
+        const exitW = _b.copy(this.cloudExit).applyQuaternion(rot).add(bp);
+        // watch the cloud top where it will appear (aimed a little above it, so the horizon sits
+        // mid-frame), then follow it out
+        const com = this.com(ctx, v, _a);
+        const w = MathUtils.smoothstep(v.telemetry.altitude, top - 150, top + 400);
+        const upX = this.upAt(ctx, v.body, exitW, _d);
+        out.look.copy(exitW).addScaledVector(upX, 260).lerp(com, w);
+        out.up.copy(this.upAt(ctx, v.body, out.pos, _d));
+        out.fov = 36 - 8 * w;
+        out.handheld = 0.45;
+        out.mount = 'ground';
+        return true;
+      }
       case 'onboard_down': st.dur = 8; this.onboard(ctx, v, 'down', out); return true;
       case 'onboard_engines': st.dur = 6; this.onboard(ctx, v, 'engines', out); return true;
       case 'interstage': {
@@ -824,6 +905,7 @@ export class CameraDirector {
         out.mount = 'free';
         out.handheld = 0.2;
         if (b.body.def.hasSurface) this.clampGround(ctx, b.body, out.pos, 3);
+        this.viewed = [b];
         return true;
       }
       case 'lz_ground': {
@@ -859,15 +941,24 @@ export class CameraDirector {
         this.clampGround(ctx, st.anchorBody!, out.pos, 1.8);
         // look at the booster, or at the middle of the pair
         const pair = twin ? ctx.boosters.filter((x) => !x.destroyed).slice(0, 2) : [];
+        // stay on the landing until the boosters are down (a tower catch outlasts one shot), then
+        // hold the moment a few seconds
+        const coming = (pair.length === 2 ? pair : [target]).some((x) => !x.landed && !x.destroyed && x.telemetry.radarAltitude < 2500);
+        if (coming) { st.dur = Math.max(14, st.tau + 1); st.holdUntil = undefined; }
+        else if (st.tau > 2) st.dur = st.holdUntil ??= Math.max(14, st.tau + 4);
         const com = pair.length === 2 ? this.com(ctx, pair[0], _c).add(this.com(ctx, pair[1], _d)).multiplyScalar(0.5) : this.com(ctx, target, _c);
-        if (!this.smoothLookInit) { this.smoothLook.copy(com); this.smoothLookInit = true; }
-        this.smoothLook.lerp(com, Math.min(1, ctx.dt * 4));
-        out.look.copy(this.smoothLook);
+        this.smoothLookAt(ctx, st.anchorBody!, com, 4, out.look);
         const d = out.pos.distanceTo(com);
-        const extent = pair.length === 2 ? Math.max(this.vesselLength(target) * 3, this.com(ctx, pair[0], _a).distanceTo(this.com(ctx, pair[1], _b)) * 1.5 + this.vesselLength(target) * 1.5) : this.vesselLength(target) * 3;
-        out.fov = MathUtils.clamp(MathUtils.radToDeg(2 * Math.atan(extent / 2 / d)), 1, 55);
+        // the booster's height with room around it; a pair side by side must also fit the width
+        const tall = this.vesselLength(target) * 3;
+        const wide = pair.length === 2 ? this.com(ctx, pair[0], _a).distanceTo(this.com(ctx, pair[1], _b)) * 1.3 + this.vesselLength(target) * 1.5 : 0;
+        out.fov = MathUtils.clamp(MathUtils.radToDeg(2 * Math.atan(Math.max(tall / 2 / d, wide / 2 / d / Math.max(0.5, ctx.aspect)))), 1, 55);
+        // a wide pair on the horizon: tilt up a little so the ground takes about the lower third
+        // of the letterboxed picture, not half of it
+        if (pair.length === 2) out.look.addScaledVector(this.upAt(ctx, st.anchorBody!, out.look, _a), (d * Math.tan(MathUtils.degToRad(out.fov) / 2)) / 6);
         out.up.copy(this.upAt(ctx, st.anchorBody!, out.pos, _a));
         out.handheld = 0.5;
+        this.viewed = pair.length === 2 ? pair : target !== v ? [target] : [];
         return true;
       }
       case 'entry_front': case 'entry_chase': {

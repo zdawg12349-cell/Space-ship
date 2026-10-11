@@ -28,7 +28,7 @@ const PHASE_LABEL: Record<string, string> = {
 export class HUD {
   readonly root: HTMLElement;
   private els: Record<string, HTMLElement> = {};
-  private tel: Record<string, { v: HTMLElement; u: HTMLElement }> = {};
+  private tel: Record<string, { v: HTMLElement; u: HTMLElement; l: HTMLElement }> = {};
   private stagesEl: HTMLElement;
   private propEl: HTMLElement;
   private recoveryEl: HTMLElement;
@@ -81,9 +81,9 @@ export class HUD {
     }
     const left = h('div', { class: 'hud-left' });
     const telRow = (key: string, label: string, big = false) => {
-      const v = h('span', { class: 'value' }), u = h('span', { class: 'unit' });
-      left.appendChild(h('div', { class: `tel${big ? ' big' : ''}` }, h('span', { class: 'label' }, label), h('span', {}, v, u)));
-      this.tel[key] = { v, u };
+      const v = h('span', { class: 'value' }), u = h('span', { class: 'unit' }), l = h('span', { class: 'label' }, label);
+      left.appendChild(h('div', { class: `tel${big ? ' big' : ''}` }, l, h('span', {}, v, u)));
+      this.tel[key] = { v, u, l };
     };
     telRow('alt', 'Altitude', true);
     telRow('vel', 'Velocity', true);
@@ -132,6 +132,9 @@ export class HUD {
     this.visible = v;
     this.root.classList.toggle('hidden', !v);
   }
+
+  /** Under a panel or the pause menu the read-outs fade back, so they don't show through it. */
+  setDimmed(d: boolean): void { this.root.classList.toggle('dimmed', d); }
 
   banner(big: string, small = '', seconds = 4): void {
     (this.bannerEl.children[0] as HTMLElement).textContent = big;
@@ -221,8 +224,17 @@ export class HUD {
     const o = v.updateOrbit(s.world.t);
     const R = v.body.radius;
     const launched = v.hasLiftedOff || s.phase !== 'countdown';
-    if (!launched) { set('ap', ['—', '']); set('pe', ['—', '']); }
-    else {
+    // before liftoff the orbit rows carry the launch weather instead
+    const label = (k: string, text: string) => { const l = this.tel[k].l; if (l.textContent !== text) l.textContent = text; };
+    label('ap', launched ? 'Apoapsis' : 'Weather');
+    label('pe', launched ? 'Periapsis' : 'Surface wind');
+    if (!launched) {
+      const w = s.weather.state;
+      set('ap', [w.kind.charAt(0).toUpperCase() + w.kind.slice(1), '']);
+      // meteorological convention: where the wind comes from
+      const from = Math.round((((w.windDir * 180) / Math.PI + 180) % 360 + 360) % 360);
+      set('pe', [w.surfaceWind.toFixed(0), `m/s from ${String(from).padStart(3, '0')}°`]);
+    } else {
       if (o.e < 1) set('ap', fmtDist(o.apoapsis - R)); else set('ap', ['∞', 'escape']);
       set('pe', o.periapsis - R < 0 ? ['sub-orbital', ''] : fmtDist(o.periapsis - R));
     }
@@ -275,7 +287,10 @@ export class HUD {
       this.recoveryEl.appendChild(h('div', { class: 'label' }, 'Recovery'));
       for (const b of s.boosters) {
         const st = b.v.destroyed ? 'LOST' : b.v.landed ? 'LANDED' : b.g.phase.toUpperCase();
-        this.recoveryEl.appendChild(h('div', { class: 'item' }, h('b', {}, b.zone.id), h('span', { style: b.v.destroyed ? 'color:var(--red)' : b.v.landed ? 'color:var(--green)' : '' }, `${st} · ${(b.v.telemetry.altitude / 1000).toFixed(1)} km`)));
+        // in flight: how high and how fast it is coming home
+        const tm = b.v.telemetry;
+        const live = b.v.destroyed || b.v.landed ? '' : ` · ${tm.speedSurface.toFixed(0)} m/s`;
+        this.recoveryEl.appendChild(h('div', { class: 'item' }, h('b', {}, b.zone.id), h('span', { style: b.v.destroyed ? 'color:var(--red)' : b.v.landed ? 'color:var(--green)' : '' }, `${st} · ${(tm.altitude / 1000).toFixed(1)} km${live}`)));
       }
     }
   }

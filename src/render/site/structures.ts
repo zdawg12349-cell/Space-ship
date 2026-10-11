@@ -9,6 +9,22 @@ import { box, GeoBuilder, lathe, tube } from '../vehicle/shapes';
  * into per-material batches so a whole complex renders in a few dozen draw calls.
  */
 
+/** A lamp that lights the site's own surfaces after dark (site frame: x east, y up, z south). */
+export interface SiteLamp {
+  pos: Vector3;
+  /** where the beam points (unit) */
+  dir: Vector3;
+  /** peak luminous intensity (kcd) */
+  kcd: number;
+  /** cosines of the beam's edge (dark) and of its core (full strength) */
+  cone: [number, number];
+  /** colour of the light (linear) */
+  color: [number, number, number];
+}
+
+/** a small LED wall pack over a door: warm white, a broad downward spread */
+const WALL_PACK = { kcd: 1.2, cone: [0.09, 0.7] as [number, number], color: [1, 0.8, 0.58] as [number, number, number] };
+
 export class Batch {
   private gbs = new Map<Material, GeoBuilder>();
   get(m: Material): GeoBuilder {
@@ -159,19 +175,139 @@ export function horizontalTank(gb: GeoBuilder, saddle: GeoBuilder, at: Vector3, 
 }
 
 /** Simple building: box with a parapet, door and window band. */
-export function building(wall: GeoBuilder, roof: GeoBuilder, glass: GeoBuilder, at: Vector3, sx: number, sy: number, sz: number, yaw = 0): void {
+/** A plain block with a window band on its long sides and, given a lamp, a wall pack over each. */
+export function building(wall: GeoBuilder, roof: GeoBuilder, glass: GeoBuilder, at: Vector3, sx: number, sy: number, sz: number, yaw = 0, lamp?: GeoBuilder): SiteLamp[] {
   const m = new Matrix4().makeRotationY(yaw).setPosition(at.x, at.y + sy / 2, at.z);
   box(wall, sx, sy, sz, m);
   box(roof, sx + 0.3, 0.4, sz + 0.3, new Matrix4().makeRotationY(yaw).setPosition(at.x, at.y + sy + 0.2, at.z));
   // window band on the long sides
+  const Y = new Vector3(0, 1, 0);
   const n = Math.max(1, Math.floor(sx / 3));
   for (let i = 0; i < n; i++) {
     const x = -sx / 2 + (i + 0.5) * (sx / n);
     for (const s of [1, -1]) {
-      const p = new Vector3(x, sy * 0.62, s * (sz / 2 + 0.02)).applyAxisAngle(new Vector3(0, 1, 0), yaw).add(at);
+      const p = new Vector3(x, sy * 0.62, s * (sz / 2 + 0.02)).applyAxisAngle(Y, yaw).add(at);
       box(glass, 1.6, 1.1, 0.05, new Matrix4().makeRotationY(yaw).setPosition(p));
     }
   }
+  if (!lamp) return [];
+  const lamps: SiteLamp[] = [];
+  for (const s of [1, -1]) {
+    const out = new Vector3(0, 0, s).applyAxisAngle(Y, yaw);
+    const p = new Vector3(sx * 0.3 * s, Math.min(sy - 0.7, 3.4), s * (sz / 2 + 0.15)).applyAxisAngle(Y, yaw).add(at);
+    box(lamp, 0.35, 0.2, 0.25, new Matrix4().makeRotationY(yaw).setPosition(p));
+    lamps.push({ ...WALL_PACK, pos: p.clone().addScaledVector(out, 0.2), dir: new Vector3(0, -1, 0).addScaledVector(out, 0.6).normalize() });
+  }
+  return lamps;
+}
+
+export interface HangarParts {
+  wall: GeoBuilder; door: GeoBuilder; trim: GeoBuilder; plinth: GeoBuilder; dark: GeoBuilder; roof: GeoBuilder; lamp: GeoBuilder; glass: GeoBuilder;
+}
+
+/**
+ * Integration hangar, its footprint centred on `at` (on the ground) with the doors on the -z side:
+ * - profiled-steel walls on a concrete plinth, rising into a capped parapet round a flat roof
+ *   that carries ridge vents and plant;
+ * - a sliding door of six leaves on staggered tracks across most of the front, between deep
+ *   posts under a header, with a track sill and flood lights above;
+ * - personnel doors, louvres high on the end walls, downpipes, and a two-storey office annex
+ *   with window bands on the +x end.
+ */
+export function hangar(g: HangarParts, at: Vector3, sx: number, sy: number, sz: number): SiteLamp[] {
+  const lamps: SiteLamp[] = [];
+  const T = (x: number, y: number, z: number) => new Matrix4().makeTranslation(at.x + x, at.y + y, at.z + z);
+  const hx = sx / 2, hz = sz / 2;
+  box(g.plinth, sx + 0.4, 1, sz + 0.4, T(0, 0.5, 0));
+  box(g.wall, sx, sy - 1, sz, T(0, 1 + (sy - 1) / 2, 0));
+  // parapet and its coping
+  const pH = 1.4, top = sy + pH;
+  box(g.wall, sx, pH, 0.3, T(0, sy + pH / 2, -hz + 0.15));
+  box(g.wall, sx, pH, 0.3, T(0, sy + pH / 2, hz - 0.15));
+  box(g.wall, 0.3, pH, sz - 0.6, T(-hx + 0.15, sy + pH / 2, 0));
+  box(g.wall, 0.3, pH, sz - 0.6, T(hx - 0.15, sy + pH / 2, 0));
+  box(g.trim, sx + 0.2, 0.14, 0.5, T(0, top + 0.07, -hz + 0.15));
+  box(g.trim, sx + 0.2, 0.14, 0.5, T(0, top + 0.07, hz - 0.15));
+  box(g.trim, 0.5, 0.14, sz, T(-hx + 0.15, top + 0.07, 0));
+  box(g.trim, 0.5, 0.14, sz, T(hx - 0.15, top + 0.07, 0));
+  // roof: membrane, a line of ridge vents, two air handlers and a stair hatch
+  box(g.roof, sx - 0.6, 0.25, sz - 0.6, T(0, sy + 0.12, 0));
+  const vents = Math.max(3, Math.round(sx / 12));
+  for (let i = 0; i < vents; i++) {
+    const x = -hx + (i + 0.5) * (sx / vents);
+    box(g.dark, 2.2, 0.9, 1.6, T(x, sy + 0.7, 0));
+    box(g.trim, 2.6, 0.14, 2.0, T(x, sy + 1.22, 0));
+  }
+  for (const [x, z] of [[hx * 0.45, hz * 0.45], [-hx * 0.3, hz * 0.5]]) {
+    box(g.trim, 4.4, 2.0, 2.6, T(x, sy + 1.25, z));
+    box(g.dark, 3.6, 0.2, 2.0, T(x, sy + 2.35, z));
+    tube(g.dark, new Vector3(at.x + x - 1.2, at.y + sy + 2.45, at.z + z), new Vector3(at.x + x - 1.2, at.y + sy + 2.75, at.z + z), 0.6, 10);
+    tube(g.dark, new Vector3(at.x + x + 1.2, at.y + sy + 2.45, at.z + z), new Vector3(at.x + x + 1.2, at.y + sy + 2.75, at.z + z), 0.6, 10);
+  }
+  box(g.trim, 1.6, 1.0, 1.6, T(-hx + 4, sy + 0.75, hz - 4));
+  // the main door: six leaves on staggered tracks, posts, header, sill
+  const dw = sx * 0.76, dh = Math.min(sy - 3.5, sy * 0.82), leaves = 6;
+  const lw = dw / leaves;
+  for (let i = 0; i < leaves; i++) {
+    const x = -dw / 2 + (i + 0.5) * lw;
+    const z = -hz - 0.2 - (i % 2) * 0.45;
+    box(g.door, lw + 0.25, dh, 0.22, T(x, 0.2 + dh / 2, z));
+    // a stiffening rail across each leaf at mid-height and its bottom guide
+    box(g.trim, lw + 0.1, 0.25, 0.1, T(x, 0.2 + dh * 0.5, z - 0.15));
+    box(g.dark, lw + 0.25, 0.3, 0.3, T(x, 0.35, z));
+    // the meeting edge of the next leaf: a dark rubber seal down its full height
+    if (i < leaves - 1) box(g.dark, 0.16, dh, 0.06, T(x + lw / 2, 0.2 + dh / 2, -hz - 0.2 - 0.45 - 0.16));
+  }
+  const postD = 1.4;
+  for (const s of [-1, 1]) box(g.wall, 1.6, sy - 0.2, postD, T(s * (dw / 2 + 0.8), (sy - 0.2) / 2 + 0.1, -hz - postD / 2 + 0.1));
+  box(g.wall, dw + 3.2, sy - dh - 0.2, postD, T(0, dh + 0.2 + (sy - dh - 0.2) / 2, -hz - postD / 2 + 0.1));
+  box(g.trim, dw + 3.4, 0.35, postD + 0.2, T(0, dh + 0.25, -hz - postD / 2 + 0.1));
+  box(g.plinth, dw + 4, 0.12, 2.6, T(0, 0.06, -hz - 1.3));
+  // flood lights on short arms over the door, washing down the leaves and out over the apron
+  for (let i = 0; i < 4; i++) {
+    const x = -dw / 2 + (i + 0.5) * (dw / 4);
+    box(g.trim, 0.15, 0.15, 1.3, T(x, dh + 1.6, -hz - postD - 0.6));
+    box(g.lamp, 0.8, 0.25, 0.5, T(x, dh + 1.45, -hz - postD - 1.2));
+    lamps.push({
+      pos: new Vector3(at.x + x, at.y + dh + 1.3, at.z - hz - postD - 1.2), dir: new Vector3(0, -1, -0.62).normalize(),
+      kcd: 9, cone: [0.3, 0.8], color: [1, 0.93, 0.84],
+    });
+  }
+  // personnel doors with canopies
+  const pdoor = (x: number, z: number, along: 'x' | 'z') => {
+    const ax = along === 'x';
+    box(g.dark, ax ? 1.2 : 0.12, 2.3, ax ? 0.12 : 1.2, T(x, 1.15 + 0.2, z));
+    box(g.trim, ax ? 1.8 : 1.0, 0.12, ax ? 1.0 : 1.8, T(x + (ax ? 0 : Math.sign(x) * 0.45), 2.75, z + (ax ? Math.sign(z) * 0.45 : 0)));
+    box(g.lamp, 0.3, 0.12, 0.2, T(x + (ax ? 0 : Math.sign(x) * 0.15), 2.95, z + (ax ? Math.sign(z) * 0.15 : 0)));
+    const out = ax ? new Vector3(0, 0, Math.sign(z)) : new Vector3(Math.sign(x), 0, 0);
+    lamps.push({ ...WALL_PACK, pos: new Vector3(at.x + x, at.y + 2.85, at.z + z).addScaledVector(out, 0.35), dir: new Vector3(0, -1, 0).addScaledVector(out, 0.6).normalize() });
+  };
+  pdoor(-dw / 2 - 4.5, -hz - 0.07, 'x');
+  pdoor(dw / 2 + 4.5, -hz - 0.07, 'x');
+  pdoor(-hx - 0.07, hz * 0.4, 'z');
+  pdoor(hx * 0.3, hz + 0.07, 'x');
+  // louvres high on the end walls
+  for (const s of [-1, 1]) for (const z of [-hz * 0.45, 0, hz * 0.45]) {
+    box(g.dark, 0.14, 1.6, 3.2, T(s * (hx + 0.07), sy - 2.6, z));
+    for (let k = 0; k < 5; k++) box(g.trim, 0.2, 0.06, 3.2, T(s * (hx + 0.14), sy - 3.3 + k * 0.35, z));
+  }
+  // downpipes from the gutters behind the parapet
+  const pipe = (x: number, z: number) => tube(g.trim, new Vector3(at.x + x, at.y + 1, at.z + z), new Vector3(at.x + x, at.y + sy + 0.2, at.z + z), 0.09, 6);
+  for (let i = 0; i <= 4; i++) pipe(-hx + 0.6 + i * ((sx - 1.2) / 4), hz + 0.18);
+  pipe(-hx - 0.18, -hz + 0.6);
+  pipe(hx + 0.18, -hz + 0.6);
+  // office annex: two storeys on the +x end
+  const ax = hx + 6.5, aw = 13, ah = 8.4, ad = sz * 0.62, az = hz - ad / 2 - 2;
+  box(g.plinth, aw + 0.4, 0.8, ad + 0.4, T(ax, 0.4, az));
+  box(g.wall, aw, ah - 0.8, ad, T(ax, 0.8 + (ah - 0.8) / 2, az));
+  box(g.trim, aw + 0.5, 0.5, ad + 0.5, T(ax, ah + 0.25, az));
+  for (const fy of [2.4, 5.8]) {
+    box(g.glass, 0.06, 1.3, ad - 2, T(ax + aw / 2 + 0.03, fy, az));
+    box(g.glass, aw - 2, 1.3, 0.06, T(ax, fy, az - ad / 2 - 0.03));
+    box(g.trim, 0.3, 0.12, ad - 1.6, T(ax + aw / 2 + 0.15, fy - 0.72, az));
+  }
+  box(g.dark, 0.12, 2.3, 1.8, T(ax + aw / 2 + 0.06, 1.95, az + ad * 0.3));
+  return lamps;
 }
 
 /** Light mast with a lamp bank aimed at `target`; returns the lamp position. */
@@ -292,20 +428,31 @@ export function pineGeometry(): { trunk: BufferGeometry; crown: BufferGeometry }
   const top = new Vector3(0.25, H, 0.1);
   tube(t, new Vector3(0, -0.3, 0), top, 0.22, 7);
   const c = new GeoBuilder();
-  // branches spiral up the top third (golden angle), each ending in a clump of needles
+  let sd = 1213;
+  const rnd = () => { sd = (sd * 16807) % 2147483647; return sd / 2147483647; };
+  // branches spiral up the top third (golden angle), irregular in length and lift; each carries
+  // two tufts of needles, so the crown is ragged and deep rather than a stack of plates
   const golden = 2.39996;
-  for (let i = 0; i < 8; i++) {
-    const f = i / 7;
-    const y = H * (0.76 + f * 0.2);
-    const a = i * golden + 0.4;
-    const len = 2.5 - f * 1.3 + ((i * 37) % 5) * 0.12;
-    const rise = 0.5 + f * 0.6;
+  const n = 11;
+  for (let i = 0; i < n; i++) {
+    const f = i / (n - 1);
+    const y = H * (0.74 + f * 0.22) + (rnd() - 0.5) * 0.5;
+    const a = i * golden + 0.4 + (rnd() - 0.5) * 0.5;
+    const len = (2.6 - f * 1.4) * (0.75 + rnd() * 0.5);
+    const rise = 0.35 + f * 0.7 + rnd() * 0.3;
     const from = new Vector3(0.25 * (y / H), y, 0.1 * (y / H));
     const tip = from.clone().add(new Vector3(Math.cos(a) * len, rise, Math.sin(a) * len));
     tube(t, from, tip, 0.07 - f * 0.02, 4);
-    crownBlob(c, tip, 1.05 + (1 - f) * 0.35, 0.72 + (1 - f) * 0.15, 97 + i * 13, 9);
+    const size = 0.95 + (1 - f) * 0.4;
+    crownBlob(c, tip, size * (0.9 + rnd() * 0.25), size * 0.85, 97 + i * 13, 8);
+    // an inner tuft part-way along the branch, a little lower and smaller
+    const mid = from.clone().lerp(tip, 0.55).add(new Vector3((rnd() - 0.5) * 0.4, -0.15, (rnd() - 0.5) * 0.4));
+    crownBlob(c, mid, size * 0.7, size * 0.65, 331 + i * 17, 7);
   }
-  crownBlob(c, top.clone().add(new Vector3(0, 0.7, 0)), 1.35, 1.0, 211, 10);
+  // a lumpy, flat-topped crown on the leader
+  crownBlob(c, top.clone().add(new Vector3(0, 0.6, 0)), 1.3, 0.95, 211, 9);
+  crownBlob(c, top.clone().add(new Vector3(0.7, 0.2, -0.4)), 0.95, 0.8, 223, 8);
+  crownBlob(c, top.clone().add(new Vector3(-0.6, 0.3, 0.5)), 0.9, 0.75, 229, 8);
   // dead stubs lower down
   tube(t, new Vector3(0.05, H * 0.5, 0), new Vector3(1.0, H * 0.54, 0.3), 0.04, 4);
   tube(t, new Vector3(0.1, H * 0.62, 0), new Vector3(-0.8, H * 0.66, -0.5), 0.04, 4);
