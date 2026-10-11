@@ -106,6 +106,7 @@ export class App {
     rw.plumes.quality = g.plumeQuality;
     rw.effects.setBudget(g.particles);
     rw.envProbe.setSize(g.envProbe);
+    rw.deck.steps = g.cloudSteps;
     this.resize(true);
   }
 
@@ -137,6 +138,8 @@ export class App {
     this.rw.effects.clear();
     this.rw.aero.clear();
     this.rw.zones.clear();
+    this.rw.deck.setWeather(null);
+    this.rw.lightning.reset(this.rw.deck);
     this.rw.post.settings.letterbox = 0;
     this.system.setEpoch(this.menuTime0);
     this.menuT = 0;

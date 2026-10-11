@@ -24,6 +24,8 @@ import type { GlobalMap, HeightContext, SiteDef } from './planet/heightfield';
 import { SkyBackground, Starfield } from './sky/Sky';
 import { FullscreenQuad } from './util/Fullscreen';
 import { createTileableNoise } from './util/ProceduralTextures';
+import { CloudDeck } from './weather/CloudDeck';
+import { Lightning } from './weather/Lightning';
 
 const _v = new Vector3();
 const _v2 = new Vector3();
@@ -157,6 +159,9 @@ export class RenderWorld {
   readonly fxScene = new Scene();
   readonly camera: PerspectiveCamera;
   readonly atmosphere: Atmosphere;
+  /** low-level weather: the cloud deck around the camera, rain, and lightning */
+  readonly deck: CloudDeck;
+  readonly lightning: Lightning;
   readonly post: PostPipeline;
   readonly sky: SkyBackground;
   readonly stars: Starfield;
@@ -222,7 +227,8 @@ export class RenderWorld {
     this.camera = new PerspectiveCamera(55, 1, 0.05, 1e13);
     this.camera.position.set(0, 0, 0);
     this.atmosphere = new Atmosphere();
-    this.post = new PostPipeline(renderer, this.atmosphere);
+    this.deck = new CloudDeck(renderer, this.atmosphere);
+    this.post = new PostPipeline(renderer, this.atmosphere, this.deck.uniforms);
     this.detailTex = createTileableNoise(renderer, 512, 3).texture;
 
     this.sky = new SkyBackground(assets.milkyWay);
@@ -239,7 +245,7 @@ export class RenderWorld {
     for (let i = 0; i < md.length; i++) md[i] = mimg.data[i * 4];
     this.heightCtxMoon = { kind: 'moon', radius: 1_737_400, moonMap: { width: mimg.width, height: mimg.height, data: md }, sites: [] };
 
-    this.earthMat = createEarthMaterial({ albedo: assets.earthAlbedo, night: assets.earthNight, data: assets.earthData, clouds: assets.earthClouds, detail: this.detailTex }, this.atmosphere.uniforms);
+    this.earthMat = createEarthMaterial({ albedo: assets.earthAlbedo, night: assets.earthNight, data: assets.earthData, clouds: assets.earthClouds, detail: this.detailTex }, this.atmosphere.uniforms, this.deck.uniforms);
     this.post.compositeMat.uniforms.uClouds.value = assets.earthClouds;
     this.earth = new QuadtreePlanet({ radius: 6_371_000, ctx: this.heightCtxEarth, material: this.earthMat, maxLevel: 16, splitFactor: 2.4, workers: 3 });
     this.scene.add(this.earth.group);
@@ -277,7 +283,8 @@ export class RenderWorld {
     this.scene.add(this.sunLight.target);
     this.scene.add(this.vessels.root);
     this.scene.add(this.zones.group);
-    this.envProbe = new EnvironmentProbe(renderer, this.atmosphere, 64);
+    this.envProbe = new EnvironmentProbe(renderer, this.atmosphere, 64, this.deck.uniforms);
+    this.lightning = new Lightning(this.fxScene);
     this.plumes = new PlumeSystem(this.fxScene, this.scene, this.detailTex, () => this.post.linearDepth);
     // allocated for the largest preset; App.applyGraphics sets the active budget
     this.effects = new Effects(this, 14000);
@@ -371,6 +378,9 @@ export class RenderWorld {
     const up = camKm.clone().normalize();
     this.atmosphere.precompute(this.renderer);
     if (camR < this.atmosphere.params.topRadius + 1) this.atmosphere.updateSkyView(this.renderer, camR, up.dot(this.sunDir));
+
+    // ---- low cloud deck, rain and lightning (before lighting: the deck shades the focus)
+    this.updateWeather(dt, t, camKm);
 
     // ---- launch complex (site-local tangent frame, camera-relative)
     if (this.complex) this.placeComplex(dt);
@@ -470,6 +480,8 @@ export class RenderWorld {
     const distAU = this.focusHelio.length() / 1.495978707e11;
     const E = 110 / Math.max(1e-6, distAU * distAU);
     const T = sunTransmittance(this.atmosphere.params, focusKm, this.sunDir, this._st);
+    // the cloud deck's shadow (thick cloud: no direct sun, no hard shadows)
+    T.multiplyScalar(this.deck.focusSun);
     // lunar shadow (eclipses / far side of the Moon)
     const rel = _v.copy(this.focusHelio).sub(this.moonPos);
     const b = rel.dot(this.sunDir);
@@ -497,10 +509,72 @@ export class RenderWorld {
     this.scene.environment = env;
   }
 
+  private readonly earthRotInv = new Quaternion();
+  private readonly camKmWorld = new Vector3();
+  private readonly _wf = new Vector3();
+  private readonly _ws = new Vector3();
+  private readonly _wt = new Vector3();
+  private readonly _we = new Vector3();
+  private readonly _wst = new Vector3();
+  private readonly _wu = new Vector3();
+  private readonly _wc = new Vector3();
+  private prevSimT = NaN;
+  private prevCamR = NaN;
+  private climb = 0;
+  private rainClock = 0;
+
+  /** The cloud deck in the body-fixed frame, rain on the lens, lightning. */
+  private updateWeather(dt: number, t: number, camKm: Vector3): void {
+    const deck = this.deck;
+    const qi = this.earthRotInv.copy(this.earthRot).invert();
+    this.camKmWorld.copy(camKm);
+    const camF = this._wc.copy(camKm).applyQuaternion(qi);
+    const focusF = this._wf.copy(this.focusHelio).sub(this.earthPos).multiplyScalar(0.001).applyQuaternion(qi);
+    const sunF = this._ws.copy(this.sunDir).applyQuaternion(qi);
+    const simDt = Number.isFinite(this.prevSimT) ? t - this.prevSimT : 0;
+    this.prevSimT = t;
+    // sunlight arriving on top of the deck over the camera
+    const top = this._wt.copy(camKm).normalize().multiplyScalar(6371 + (deck.params?.top ?? 2));
+    const muS = this._wu.copy(top).normalize().dot(this.sunDir);
+    const sunE = this._we.copy(this.atmosphere.params.sunIlluminance).multiply(sunTransmittance(this.atmosphere.params, top, this.sunDir, this._wst));
+    const skyE = 110 * 0.12 * Math.min(1, Math.max(0, muS + 0.1));
+    deck.update(dt, simDt, camF, focusF, sunF, sunE, skyE);
+    // rain on the lens (world axes): local up, a horizontal reference, the camera's climb rate
+    this.rainClock += dt;
+    const camR = camKm.length() * 1000;
+    if (Number.isFinite(this.prevCamR) && dt > 0) this.climb += ((camR - this.prevCamR) / dt - this.climb) * Math.min(1, dt * 4);
+    this.prevCamR = camR;
+    const cu = this.post.compositeMat.uniforms;
+    const upW = (cu.uRainUp.value as Vector3).copy(camKm).normalize();
+    const eW = (cu.uRainE.value as Vector3).set(0, 0, 1).cross(upW);
+    if (eW.lengthSq() < 1e-8) eW.set(1, 0, 0);
+    eW.normalize();
+    const pixelAngle = (2 * Math.tan((this.camera.fov * Math.PI) / 360)) / Math.max(1, this.post.size.y);
+    (cu.uRain.value as Vector4).set(deck.rainAtCamera, this.rainClock, Math.min(300, Math.max(0, this.climb)), pixelAngle);
+    // lightning: it lights the cloud, the ground and (through the ambient light) everything else
+    this.lightning.update(dt, deck, camF, this.earthRot, this._wt.copy(this.cameraHelio).sub(this.earthPos));
+    // under a storm or an overcast the picture should stay dark
+    this.post.weatherEV = (deck.params?.ev ?? 0) * deck.overcast;
+    const fi = deck.uniforms.uDeckFlashIrr.value;
+    this.ambient.color.setRGB(0.82, 0.88, 1);
+    this.ambient.intensity = Math.max(fi.x, fi.y, fi.z);
+  }
+
   /** Vehicles, plumes and particles for this frame (after update(), before render()). */
   updateVehicles(dt: number, t: number, vessels: Vessel[], active: Vessel | null, bodyPos: (v: Vessel) => Vector3): void {
     this.vessels.sync(vessels, bodyPos, this.cameraHelio, dt);
     this.plumes.update(dt, vessels, this.vessels, this.post.size, this.atmToFocus);
+    // a climbing rocket bores a channel through the deck
+    if (this.deck.active > 0 && active && !active.destroyed) {
+      const pf = this._wf.copy(active.pos).add(bodyPos(active)).sub(this.earthPos).multiplyScalar(0.001).applyQuaternion(this.earthRotInv);
+      this.deck.trackVehicle(active.body.id === 'earth' ? pf : null, active.telemetry.verticalSpeed > 20 && active.telemetry.thrust > 0, dt);
+    } else this.deck.trackVehicle(null, false, dt);
+    // the brightest exhaust lights the cloud deck from below (and from inside, punching through)
+    const L0 = this.plumes.lights[0];
+    if (this.deck.active > 0 && L0 && L0.intensity > 0) {
+      const gp = this._wf.copy(L0.pos).multiplyScalar(0.001).add(this.camKmWorld).applyQuaternion(this.earthRotInv);
+      this.deck.setGlow(gp, L0.intensity, this._ws.set(L0.color.r, L0.color.g, L0.color.b));
+    } else this.deck.setGlow(null);
     this.updateHaze();
     this.effects.update(dt, t, vessels, active, this.complex);
     this.aero.update(dt, vessels, this.vessels, this.effects.sheetLight);

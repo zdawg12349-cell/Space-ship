@@ -43,11 +43,14 @@ for (const st of steps) {
   if (st.click) { await page.click(st.click).catch((e) => console.log('click fail', String(e).slice(0, 200))); await page.waitForTimeout(800); }
   if (st.wait) await page.waitForTimeout(st.wait);
   if (st.shot) {
+    // hold the simulation still while the terrain streams in for the capture
+    await page.evaluate(() => { window.__freezeSim = true; });
     const s = await waitReady(st.timeout ?? 240000, st.frames ?? 4);
     await page.evaluate(() => { window.__freezeHud = true; });
     const file = `${prefix}_${String(i++).padStart(2, '0')}_${st.shot}.png`;
     await page.screenshot({ path: file, timeout: 180000 });
     console.log('shot', file, JSON.stringify({ screen: s?.screen, err: s?.error ? String(s.error).slice(0, 300) : null }));
+    await page.evaluate(() => { window.__freezeSim = false; window.__freezeHud = false; });
   }
 }
 for (const l of logs.slice(0, 40)) console.log(l);

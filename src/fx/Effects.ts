@@ -42,6 +42,13 @@ export class Effects {
   readonly flags: EffectsFlags = { deluge: 0, venting: 0 };
   /** lit radiance of white condensation near the focus (HDR), for flow-attached vapour */
   readonly sheetLight = new Vector3(10, 10, 10);
+  /** surface wind in the local frame (x east, y up, z south), m/s */
+  readonly surfaceWind = new Vector3(3.5, 0, -1.2);
+
+  /** Surface wind: speed (m/s) and the direction it blows toward (rad from north). */
+  setWind(speed: number, toward: number): void {
+    this.surfaceWind.set(Math.sin(toward) * speed, 0, -Math.cos(toward) * speed);
+  }
   /** anchor (body-fixed) */
   anchorBody: CelestialBody | null = null;
   readonly anchorDirFixed = new Vector3(1, 0, 0);
@@ -160,8 +167,9 @@ export class Effects {
     this.placeFrame(t);
     const P = this.particles;
     const air = this.anchorBody.atmosphereTop > 0;
-    // wind: gentle sea breeze at the pad (the physics weather supplies the real profile in flight)
-    P.wind.set(air ? 3.5 : 0, 0, air ? -1.2 : 0);
+    // surface wind at the site (a sea breeze unless the weather says otherwise; the physics
+    // weather supplies the full profile to the vehicle in flight)
+    if (air) P.wind.copy(this.surfaceWind); else P.wind.set(0, 0, 0);
     P.groundY = 0;
     P.bodyRadius = this.anchorBody.radius;
 
@@ -184,6 +192,9 @@ export class Effects {
     const day = smooth(-0.12, 0.25, sunEl);
     const amb = new Vector3(0.75, 0.85, 1.0).multiplyScalar(110 * 0.1 * day + 0.004);
     if (!air) amb.set(0.002, 0.002, 0.002);
+    // under an overcast the sky light is the deck's grey base
+    const ov = rw.deck.overcast;
+    if (air && ov > 0) amb.lerp(_d.copy(rw.deck.uniforms.uDeckUnderL.value).multiplyScalar(Math.PI * 0.85), ov);
     const lights = rw.plumes.lights.map((l) => ({ pos: l.pos, color: l.color, intensity: l.intensity }));
     if (this.flashI > 0) lights.push({ pos: this.flash.position, color: this.flash.color, intensity: this.flashI });
     P.setLighting(rw.sunDir, sunIrr, amb, rw.camera.matrixWorldInverse, lights, rw.atmToFocus);

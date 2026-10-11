@@ -3,6 +3,7 @@ import {
   WebGLRenderer, WebGLRenderTarget,
 } from 'three';
 import { ATMOSPHERE_COMMON } from '../atmosphere/glsl';
+import { DECK_UNIFORMS } from '../weather/CloudDeck';
 import type { Atmosphere } from '../atmosphere/Atmosphere';
 import { FullscreenQuad } from '../util/Fullscreen';
 
@@ -36,13 +37,14 @@ export class EnvironmentProbe {
     this.timer = 1e9;
   }
 
-  constructor(private renderer: WebGLRenderer, atmosphere: Atmosphere, size = 64) {
+  constructor(private renderer: WebGLRenderer, atmosphere: Atmosphere, size: number, deckUniforms: Record<string, { value: unknown }>) {
     this.cube = new WebGLCubeRenderTarget(size, { type: HalfFloatType, generateMipmaps: false, minFilter: LinearFilter, magFilter: LinearFilter, depthBuffer: false });
     this.pmrem = new PMREMGenerator(renderer);
     this.mat = new ShaderMaterial({
       blending: NoBlending, depthTest: false, depthWrite: false,
       uniforms: {
         ...atmosphere.uniforms,
+        ...deckUniforms,
         uFace: { value: 0 },
         uSize: { value: size },
         uCamPosKm: { value: new Vector3(0, 6371.1, 0) },
@@ -61,6 +63,7 @@ export class EnvironmentProbe {
         uniform float uGroundAlbedoAvg;
         uniform float uStarGlow;
         ${ATMOSPHERE_COMMON}
+        ${DECK_UNIFORMS}
         vec3 faceDir(int f, vec2 st) {
           vec2 c = st * 2.0 - 1.0;
           if (f == 0) return vec3(1.0, -c.y, -c.x);
@@ -94,10 +97,16 @@ export class EnvironmentProbe {
             vec3 sunT = getTransmittance(length(p), muS);
             vec3 skyIrr = getMultiScat(length(p), muS) * uSunIlluminance * 4.0 * ATM_PI;
             vec3 E = uSunIlluminance * sunT * max(muS, 0.0) + skyIrr * 0.5;
+            E = mix(E, uDeckUnderL * ATM_PI, uDeckProbe.x);
             col += T * uGroundAlbedoAvg * E / ATM_PI;
           } else if (tTop.y <= 0.0 || r > uAtmTop) {
             col += vec3(uStarGlow);
           }
+          // low cloud deck: under an overcast the sky is its grey base; above the deck its
+          // sunlit top fills much of the view down
+          float vz = dot(rd, ro / r);
+          col = mix(col, uDeckUnderL, uDeckProbe.x * smoothstep(-0.05, 0.12, vz));
+          col = mix(col, uDeckTopL, uDeckProbe.y * smoothstep(-0.02, -0.15, vz));
           gl_FragColor = vec4(col, 1.0);
         }`,
     });

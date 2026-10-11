@@ -1,5 +1,6 @@
 import { GLSL3, Matrix3, ShaderMaterial, Texture, Vector3 } from 'three';
 import { ATMOSPHERE_COMMON } from '../atmosphere/glsl';
+import { DECK_COMMON } from '../weather/CloudDeck';
 
 /**
  * Earth & Moon terrain shaders. Lighting is done in the body-fixed frame (km) so the atmosphere
@@ -68,6 +69,7 @@ uniform float uDetailStrength;
 uniform vec3 uPalScrub, uPalGrass, uPalForest, uPalWet, uPalDry, uPalSoil, uPalSand;
 uniform int uDebug;
 ${ATMOSPHERE_COMMON}
+${DECK_COMMON}
 ${NOISE_GLSL}
 
 vec2 dirToUV(vec3 d) {
@@ -153,11 +155,17 @@ void main() {
   vec3 shadowDir = normalize(dir + L * (8.0 / 6371.0) / max(0.08, muS));
   float cl = texture(uClouds, dirToUV(rotateZ(shadowDir, -uCloudRot))).r;
   float cloudShade = 1.0 - uCloudShadow * smoothstep(0.15, 0.8, cl) * 0.85;
+  // near the camera the low cloud deck casts the shadows instead of the planet-wide map
+  cloudShade = mix(cloudShade, 1.0, uDeckOn * (1.0 - smoothstep(90000.0, 150000.0, viewDist)));
+  float deckSun = deckSunShadow(pKm, L);
+  // under an overcast the light is the grey glow of the cloud base, from every direction
+  float deckUnder = uDeckOn > 0.0 ? smoothstep(0.55, 0.9, deckCoverage(pKm)) * uDeckOn * (1.0 - smoothstep(90000.0, 150000.0, viewDist)) : 0.0;
 
   vec3 V = normalize(uViewToFixed * (-vViewPos));
-  vec3 sunIrr = uSunIlluminance * sunT * cloudShade;
+  vec3 sunIrr = uSunIlluminance * sunT * cloudShade * deckSun;
   // sky ambient approximated from the multiple-scattering LUT
   vec3 skyAmb = getMultiScat(r, muS) * uSunIlluminance * 4.0;
+  skyAmb = mix(skyAmb, uDeckUnderL * ATM_PI, deckUnder) + uDeckFlashIrr;
   vec3 color;
   if (water > 0.5) {
     // ocean: deep colour + shallow tint + Fresnel sky reflection + GGX sun glint
@@ -287,11 +295,15 @@ export function setGroundPalette(mat: ShaderMaterial, c: GroundClimate): void {
   PALETTES[c].forEach((v, i) => (mat.uniforms[PAL_NAMES[i]].value as Vector3).set(v[0], v[1], v[2]));
 }
 
-export function createEarthMaterial(tex: { albedo: Texture; night: Texture; data: Texture; clouds: Texture; detail: Texture }, atmUniforms: Record<string, { value: unknown }>): ShaderMaterial {
+export function createEarthMaterial(
+  tex: { albedo: Texture; night: Texture; data: Texture; clouds: Texture; detail: Texture },
+  atmUniforms: Record<string, { value: unknown }>,
+  deckUniforms: Record<string, { value: unknown }>,
+): ShaderMaterial {
   return new ShaderMaterial({
-    
     uniforms: {
       ...atmUniforms,
+      ...deckUniforms,
       uAlbedo: { value: tex.albedo },
       uNight: { value: tex.night },
       uData: { value: tex.data },

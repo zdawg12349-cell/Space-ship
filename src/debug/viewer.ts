@@ -9,6 +9,7 @@ import { SolarSystem } from '../physics/bodies';
 import { dateToJ2000Seconds } from '../physics/constants';
 import { RenderWorld } from '../render/RenderWorld';
 import { LAUNCH_SITES, siteToHeightDef } from '../world/sites';
+import type { DeckWeather } from '../render/weather/CloudDeck';
 
 /**
  * Debug viewer: ?debug=view&body=earth&lat=..&lon=..&alt=..&heading=..&pitch=..&utc=..&fov=..
@@ -47,6 +48,9 @@ export async function runViewer(canvas: HTMLCanvasElement): Promise<void> {
   rw.earthMat.uniforms.uDebug.value = num('dbg', 0);
   rw.post.compositeMat.uniforms.uAtmEnabled.value = num('atm', 1);
   rw.post.compositeMat.uniforms.uDebug.value = num('cdbg', 0);
+  // low cloud deck: ?weather=fair|overcast|storm..&steps=&wind=(deg the wind blows toward)
+  if (q.has('weather')) rw.deck.setWeather(q.get('weather') as DeckWeather, (num('wind', 90) * Math.PI) / 180);
+  rw.deck.steps = num('steps', 32);
   if (q.has('ev')) { rw.post.settings.autoExposure = false; rw.post.settings.manualEV = num('ev', 10); }
   if (q.get('wire') === '1') rw.earthMat.wireframe = true;
   if (q.has('bloom')) rw.post.settings.bloom = num('bloom', 0.05);
@@ -175,6 +179,7 @@ export async function runViewer(canvas: HTMLCanvasElement): Promise<void> {
     body.globalPositionAt(t, bodyPos);
     const camHelio = posFixed.clone().applyQuaternion(rot).add(bodyPos);
     rw.cameraHelio.copy(camHelio);
+    rw.focusHelio.copy(camHelio);
     const fwdW = fwd.clone().applyQuaternion(rot);
     const upW = up.clone().applyQuaternion(rot);
     // near-vertical views: use north as the camera's up vector (lookAt degenerates otherwise)

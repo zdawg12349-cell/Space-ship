@@ -38,7 +38,7 @@ There are eleven missions plus a free sandbox:
 | 3 | Return to Sender | KESTREL 9 | Booster boostback and landing at LZ-1 |
 | 4 | Twin Boosters | KESTREL HEAVY | Side boosters land side by side; the core lands on the drone ship |
 | 5 | Night Flight | MERIDIAN 421 | Solid boosters in the dark |
-| 6 | Crew Rotation | VOSTOK-R | Steppe launch, orbit, a deorbit aimed at the steppe, guided entry, soft landing |
+| 6 | Crew Rotation | VOSTOK-R | Steppe launch through an overcast, orbit, a deorbit aimed at the steppe, guided entry, soft landing |
 | 7 | Catch | LEVIATHAN | The launch tower catches the returning booster |
 | 8 | Free Return | COLOSSUS V | Sunrise launch window, TLI, course correction, lunar flyby |
 | 9 | Tranquility | Lunar lander | Powered descent to the Sea of Tranquility |
@@ -112,6 +112,15 @@ materials are generated from that definition.
 - **Planets and sky:** quadtree planet terrain from real elevation data. The atmosphere is
   physically based (after Hillaire 2020), with sunsets that depend on altitude. Clouds, ocean
   and city lights complete the Earth.
+- **Weather:** a volumetric cloud deck over the region around the camera, ray-marched at half
+  resolution. Clear and fair skies have fair-weather cumulus, breezy skies broken cloud,
+  overcast skies a grey stratus sheet, and storms towering cells with rain and lightning.
+  - The same atmosphere that lights the sky lights the cloud, so it takes sunset colours,
+    the orange of town lights at night, and the glare of the exhaust as a rocket climbs
+    through.
+  - Clouds drift with the wind and cast moving shadows on the ground.
+  - An overcast takes away the direct sun and greys the light.
+  - A climbing rocket punches a channel through the deck that slowly spreads.
 - **Moon and planets:** the Moon, and Jupiter with its banded atmosphere and Galilean moons.
 - **Image pipeline:** HDR rendering with auto-exposure, AgX tone mapping, energy-conserving
   bloom and a night colour grade.
@@ -129,11 +138,12 @@ materials are generated from that definition.
 ### Cinematography and sound
 
 - **Camera:** an automatic camera director with more than thirty shot types, cued by flight
-  events. Camera shake models sound arriving at the speed of sound, vibration, dynamic
+  events, among them a camera hovering above the cloud tops as the rocket bursts out. Camera shake models sound arriving at the speed of sound, vibration, dynamic
   pressure and the lens in use. Ground cameras find a clear line of sight through the trees.
 - **Other camera modes:** chase, orbit, onboard, ground-tracking and free cameras, plus a photo
   mode.
-- **Sound:** layered engine sound with distance delay and air absorption. Mission-control radio
+- **Sound:** layered engine sound with distance delay and air absorption. Rain hisses on the
+  pad, and thunder cracks or rolls in at the speed of sound after each flash. Mission-control radio
   reacts to flight events, with Quindar tones. The music is an adaptive score, and there is
   deliberate silence after orbit insertion.
 

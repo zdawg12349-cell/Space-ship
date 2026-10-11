@@ -124,6 +124,8 @@ export class FlightController {
     app.audio.music?.setIntensity(0.3);
     if (app.audio.music) { app.audio.music.pulseOn = 0; app.audio.music.shimmerOn = 0.25; }
     app.audio.setHush(false);
+    // thunder rolls in at the speed of sound after each flash
+    app.rw.lightning.onStrike = (d, k) => app.audio.thunder(d, k);
     if (mission?.tutorial) this.tutorial = new Tutorial(app.ui, s);
     app.progress.flights++;
     saveProgress(app.progress);
@@ -477,6 +479,8 @@ export class FlightController {
   frame(dt: number): void {
     const s = this.session;
     const app = this.app;
+    // headless capture: hold the simulation and the camera still while a frame is grabbed
+    if ((window as unknown as { __freezeSim?: boolean }).__freezeSim) { s.render(0); app.rw.render(dt); return; }
     if (!this.paused && !this.photo) {
       this.applyManualControls(dt);
       s.update(dt);
@@ -537,6 +541,9 @@ export class FlightController {
     // pad ambience while the camera is near the ground at the site
     const nearSite = s.complex && camAlt < 3000 && s.phase !== 'orbit';
     audio.setAmbience(nearSite ? 1 : 0, s.phase === 'countdown' ? this.app.rw.effects.flags.venting : 0, this.app.rw.effects.flags.deluge, this.app.rw.siteNight);
+    // rain on the camera while it is low (the deck reports it), and how hard the wind blows
+    const wind = { clear: 0.7, fair: 1, breezy: 1.6, overcast: 1.2, storm: 2.2 }[s.config.weather] ?? 1;
+    audio.setWeather(camAlt < 4000 ? this.app.rw.deck.rainAtCamera : 0, wind);
     void dt;
     this.stageSoundT += dt;
   }
@@ -718,6 +725,8 @@ export class FlightController {
     this.app.audio.radio?.clear();
     this.app.audio.setEngine(null);
     this.app.audio.setAmbience(0, 0, 0, 0);
+    this.app.audio.setWeather(0, 1);
+    this.app.rw.lightning.onStrike = null;
     this.app.audio.setHush(false);
     for (const el of Array.from(this.app.ui.querySelectorAll('.summary'))) el.remove();
     void WARP_LEVELS;

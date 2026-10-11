@@ -31,6 +31,8 @@ export interface CamContext {
   site: { quat: Quaternion; origin: Vector3; body: CelestialBody } | null;
   /** tower top, deck height (site local) */
   towerTop: Vector3 | null;
+  /** tops of the low cloud deck (m above sea level), if there is one */
+  cloudTop: number | null;
   deckHeight: number;
   /** site-local terrain and vegetation queries for placing ground cameras with a clear view */
   siteQuery: SiteQuery | null;
@@ -121,6 +123,8 @@ export class CameraDirector {
   private rngSeed = 1;
   /** last computed camera mount, for shake */
   private lastMount: CamOut['mount'] = 'free';
+  /** cloud_break: where the vehicle will come out of the deck (body-fixed) */
+  private cloudExit = new Vector3();
 
   constructor(readonly camera: PerspectiveCamera) {}
 
@@ -151,6 +155,7 @@ export class CameraDirector {
       tower_clear: ['tracking_long'], maxq: ['chase_side'], separation: ['interstage', 'chase_upper'], fairing: ['payload_cam'],
       meco: ['onboard_down'], orbit: ['orbit_beauty'], boostback: ['booster_chase'], entryburn: ['booster_chase'], landing: ['lz_ground'],
       entry: ['entry_front'], chutes: ['chute_below'], splashdown: ['splash'], explosion: ['tracking_long'], moon: ['orbit_beauty'], touchdown: ['lz_ground'],
+      clouds: ['cloud_break'],
     };
     const list = map[name];
     if (!list || this.mode !== 'cinematic') return;
@@ -757,6 +762,49 @@ export class CameraDirector {
         out.up.copy(this.upAt(ctx, v.body, out.pos, _a));
         out.fov = 50;
         out.handheld = 0.5;
+        out.mount = 'ground';
+        return true;
+      }
+      case 'cloud_break': {
+        // a camera hovering just above the cloud tops, beside the point where the rocket will
+        // burst out: the deck fills the lower half, sky the upper, the exit low in the frame
+        const top = ctx.cloudTop;
+        if (top === null || !v.body.def.hasSurface) return false;
+        const rot = new Quaternion();
+        v.body.orientationAt(ctx.t, rot);
+        const bp = ctx.bodyPos(v.body);
+        if (!st.anchorBody) {
+          const com = this.com(ctx, v, _b);
+          const vel = new Vector3();
+          v.surfaceVelocity(vel);
+          const up = this.upAt(ctx, v.body, com, _a).clone();
+          const vz = vel.dot(up);
+          if (vz < 30) return false;
+          const tExit = Math.max(0, top - v.telemetry.altitude) / vz;
+          st.dur = MathUtils.clamp(tExit + 6, 8, 16);
+          const exit = com.clone().addScaledVector(vel, tExit);
+          const horiz = vel.clone().addScaledVector(up, -vz);
+          if (horiz.lengthSq() < 1) horiz.set(1, 0, 0).applyQuaternion(v.rot).addScaledVector(up, -up.dot(_d.set(1, 0, 0).applyQuaternion(v.rot)));
+          horiz.normalize();
+          const side = new Vector3().crossVectors(horiz, up).normalize().multiplyScalar(st.a < 0.5 ? 1 : -1);
+          st.anchor.copy(exit).addScaledVector(side, 1400 + st.b * 500).addScaledVector(horiz, -300).addScaledVector(up, 180 + st.c * 140);
+          st.anchorBody = v.body;
+          const inv = rot.clone().invert();
+          st.anchorFixed = st.anchor.clone().sub(bp).applyQuaternion(inv);
+          // the point it will emerge from, body-fixed, held in subject-less shots' second anchor
+          this.cloudExit.copy(exit).sub(bp).applyQuaternion(inv);
+        }
+        out.pos.copy(st.anchorFixed!).applyQuaternion(rot).add(bp);
+        const exitW = _b.copy(this.cloudExit).applyQuaternion(rot).add(bp);
+        // watch the cloud top where it will appear (aimed a little above it, so the horizon sits
+        // mid-frame), then follow it out
+        const com = this.com(ctx, v, _a);
+        const w = MathUtils.smoothstep(v.telemetry.altitude, top - 150, top + 400);
+        const upX = this.upAt(ctx, v.body, exitW, _d);
+        out.look.copy(exitW).addScaledVector(upX, 260).lerp(com, w);
+        out.up.copy(this.upAt(ctx, v.body, out.pos, _d));
+        out.fov = 36 - 8 * w;
+        out.handheld = 0.45;
         out.mount = 'ground';
         return true;
       }

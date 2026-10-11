@@ -130,6 +130,11 @@ export class FlightSession {
     this.weather = new GameWeather({ kind: config.weather, windDir: ((this.site.coastBearing + 180) * Math.PI) / 180, ...preset });
     rw.cloudCover = preset.clouds;
     rw.aero.humidity = { clear: 0.65, fair: 0.85, breezy: 0.75, overcast: 1, storm: 1 }[config.weather] ?? 0.8;
+    // the sky over the site: a deck of cloud drifting with the wind (veered a little aloft); the
+    // same wind carries the steam and smoke of the launch away
+    rw.deck.setWeather(config.weather, this.weather.state.windDir);
+    rw.effects.setWind(this.weather.state.surfaceWind, this.weather.state.windDir);
+    rw.lightning.reset(rw.deck);
     const t0 = system.epoch;
     this.world = new PhysicsWorld(system, t0, terrain, this.weather);
     const lat = (this.site.lat * Math.PI) / 180, lon = (this.site.lon * Math.PI) / 180;
@@ -885,6 +890,10 @@ export class FlightSession {
       }
     }
     if (tm.altitude > 100_000 && v.body.id === 'earth') this.milestone('karman', 'karman', undefined, 'Kármán line — 100 km');
+    // climbing into the cloud deck: cut to a camera above the tops to watch it burst out
+    const deck = this.rw.deck.params;
+    if (deck && this.phase === 'ascent' && v.body.id === 'earth' && tm.verticalSpeed > 30 && (this.rw.deck.focusInCloud > 0.25 || deck.cover >= 0.8)
+      && tm.altitude < (deck.base + deck.top) * 500 && (deck.top * 1000 - tm.altitude) / tm.verticalSpeed < 14) this.milestone('clouds', undefined, 'clouds');
     // atmosphere exit / entry
     const inAtm = v.body.atmosphereTop > 0 && tm.altitude < v.body.atmosphereTop;
     if (this.wasInAtmo && !inAtm) this.wasInAtmo = false;
@@ -995,6 +1004,7 @@ export class FlightSession {
       bodyPos: this.bodyPos,
       site: { quat: siteQuat, origin: siteOrigin, body: earth },
       towerTop: this.complex ? this.complex.towerTop : null,
+      cloudTop: this.rw.deck.params && this.rw.deck.active > 0.5 ? this.rw.deck.params.top * 1000 : null,
       deckHeight: this.complex ? this.complex.deckHeight : 0,
       siteQuery: this.complex,
       groundHeight: (body, helio) => {

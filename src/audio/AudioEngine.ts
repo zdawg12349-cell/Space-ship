@@ -107,7 +107,9 @@ export class AudioEngine {
     onboard: GainNode; onboardLp: BiquadFilterNode;
   } | null = null;
   private wind: { gain: GainNode; bp: BiquadFilterNode; buffet: GainNode } | null = null;
-  private amb: { breeze: GainNode; surf: GainNode; insects: GainNode; vent: GainNode; deluge: GainNode } | null = null;
+  private amb: { breeze: GainNode; surf: GainNode; insects: GainNode; vent: GainNode; deluge: GainNode; rain: GainNode; rainLow: GainNode } | null = null;
+  /** weather: wind strength multiplier for the breeze, rain falling on the camera 0..1 */
+  private windLevel = 1;
   private plasma: GainNode | null = null;
   private scene: 'menu' | 'flight' = 'menu';
   private time = 0;
@@ -228,7 +230,10 @@ export class AudioEngine {
     const insects = mk('white', 1, 'bandpass', 5200, 9);
     const vent = mk('white', 1, 'highpass', 2600, 0.5);
     const deluge = mk('pink', 1.3, 'bandpass', 1400, 0.5);
-    this.amb = { breeze, surf, insects, vent, deluge };
+    // rain: a broad hiss of drops plus the low roar of a downpour on the ground
+    const rain = mk('white', 0.9, 'bandpass', 3800, 0.35);
+    const rainLow = mk('pink', 0.8, 'lowpass', 700, 0.5);
+    this.amb = { breeze, surf, insects, vent, deluge, rain, rainLow };
   }
 
   applySettings(s: Settings): void {
@@ -305,7 +310,7 @@ export class AudioEngine {
     const t = this.ctx.currentTime;
     const a = this.amb;
     const k = 1 - this.hush;
-    a.breeze.gain.setTargetAtTime(0.12 * outdoor * k, t, 0.5);
+    a.breeze.gain.setTargetAtTime(0.12 * outdoor * k * this.windLevel, t, 0.5);
     a.surf.gain.setTargetAtTime(0.1 * outdoor * k, t, 0.5);
     a.insects.gain.setTargetAtTime(0.012 * outdoor * (0.4 + 0.6 * night) * k, t, 0.5);
     a.vent.gain.setTargetAtTime(0.05 * vent * outdoor, t, 0.3);
@@ -313,6 +318,32 @@ export class AudioEngine {
     this.birdOutdoor = outdoor * (1 - night);
   }
   private birdOutdoor = 0;
+
+  /** Weather around the camera: rain falling on it (0..1) and how windy it is (1 = a sea breeze). */
+  setWeather(rain: number, wind: number): void {
+    this.windLevel = wind;
+    if (!this.ctx || !this.amb) return;
+    const t = this.ctx.currentTime;
+    const k = 1 - this.hush * 0.7;
+    this.amb.rain.gain.setTargetAtTime(0.11 * rain * k, t, 0.6);
+    this.amb.rainLow.gain.setTargetAtTime(0.09 * rain * k, t, 0.6);
+  }
+
+  /** Thunder from a strike `distance` m away: a crack if it is close, then the long roll. */
+  thunder(distance: number, strength = 1): void {
+    if (!this.ctx) return;
+    const delay = Math.min(60, distance / 343);
+    const far = Math.min(1, 2500 / Math.max(1200, distance)) * strength;
+    const lp = Math.max(110, 900 * Math.exp(-distance / 6000));
+    if (distance < 4000) this.burst({ buf: 'white', dur: 0.45, gain: 0.45 * far, hp: 900, lp: 6000, decay: 0.08, delay, reverb: 0.7 });
+    this.burst({ buf: 'brown', dur: 6, gain: 1.0 * far, lp, attack: 0.15, decay: 1.6, delay: delay + 0.05, reverb: 0.9, rate: 0.7 });
+    // the sound from different parts of the channel arrives spread over seconds: it rolls
+    let d = delay + 0.6;
+    for (let i = 0; i < 3; i++) {
+      this.burst({ buf: 'brown', dur: 3, gain: (0.55 - i * 0.12) * far, lp: lp * 0.8, attack: 0.3, decay: 0.9, delay: d, rate: 0.6 + Math.random() * 0.2 });
+      d += 0.7 + Math.random() * 0.9;
+    }
+  }
 
   // ------------------------------------------------------------------------------ one-shots
 
