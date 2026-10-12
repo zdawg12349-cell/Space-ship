@@ -100,7 +100,15 @@ export class GoalPilot {
   private stopped = false;
   status = '';
 
-  get label(): string { return GOALS.find((x) => x.id === this.goal)?.label ?? ''; }
+  /** a sandbox flight: the do-nothing goal is free flight, not a mission */
+  sandbox = false;
+
+  get label(): string { return this.goal === 'mission' && this.sandbox ? 'Free flight' : GOALS.find((x) => x.id === this.goal)?.label ?? ''; }
+
+  /** Goals that make sense right now, labelled for this flight. */
+  menu(): { id: GoalId; label: string; hint: string }[] {
+    return this.available().map((g) => (g.id === 'mission' && this.sandbox ? { id: g.id, label: 'Free flight', hint: 'you fly; the autopilot only helps when asked' } : g));
+  }
 
   constructor(private readonly host: GoalHost) {}
 
