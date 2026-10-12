@@ -121,6 +121,13 @@ export class FlightController {
     this.hud.subtitlesAlways = app.settings.subtitles;
     this.hud.onAutopilot = (m) => this.setAutopilot(m as AutopilotMode);
     this.hud.onNavAction = (id) => this.navAction(id);
+    // the speed button: 1x, 2x, 5x, 10x, then back to real time (10x is the fastest the full
+    // physics runs anywhere, engines firing or in the air)
+    this.hud.onWarpClick = () => {
+      const w = this.session.world.warpIndex;
+      this.session.setWarp(w >= 3 ? 0 : w + 1);
+      this.app.audio.play('ui');
+    };
     this.input = new Input(app.canvas);
     this.input.onAction = (a) => this.action(a);
     this.director = new MissionDirector(mission, s);
