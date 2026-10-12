@@ -152,6 +152,8 @@ export class FlightController {
     app.ui.appendChild(this.goalEl);
     const def: Record<string, GoalId> = { crew: 'home', flyby: 'flyby', landing: 'moon_land', homeward: 'moon_home' };
     if (mission && def[mission.id]) this.goals.choose(def[mission.id]);
+    // in the sandbox the goals are the point: show them from the start
+    if (!mission) { this.goals.sandbox = true; this.goalOpen = true; }
     app.progress.flights++;
     saveProgress(app.progress);
     this.hud.banner(mission ? mission.title : s.def.name, mission ? mission.subtitle : `${s.site.name} · ${s.config.weather}`, 5);
@@ -273,7 +275,7 @@ export class FlightController {
   /** The goal panel: the current goal and its step, and (open) the goals to choose from. */
   private updateGoals(): void {
     const g = this.goals;
-    const list = this.goalOpen ? g.available() : [];
+    const list = this.goalOpen ? g.menu() : [];
     const key = `${this.goalOpen}|${g.goal}|${g.status}|${list.map((x) => x.id).join(',')}|${this.hud.visible}`;
     if (key === this.goalKey) return;
     this.goalKey = key;
