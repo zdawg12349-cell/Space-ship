@@ -287,6 +287,12 @@ export class Music {
     void this.scene;
   }
 
+  /** Stop the score and cut it from the mix (when the sound graph is rebuilt). */
+  dispose(): void {
+    for (const o of [...this.drones, ...this.padVoices.flatMap((v) => v.osc)]) { try { o.stop(); o.disconnect(); } catch { /* */ } }
+    try { this.out.disconnect(); } catch { /* */ }
+  }
+
   /** Countdown tension: tempo and pulse ramp with the clock. */
   setTempo(bpm: number): void { this.tempo = bpm; }
 }

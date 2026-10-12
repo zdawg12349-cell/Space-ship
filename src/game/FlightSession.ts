@@ -741,7 +741,10 @@ export class FlightSession {
       this.emit({ type: 'message', text: `Recovery zone: splashdown in ${oceanName(eg.designated.lat, eg.designated.lon)}`, level: 'info' });
     }
     const pc = cap.def.features.parachutes;
-    if (pc && cap.chuteState === 'stowed' && tm.altitude < 9_000 && tm.speedSurface < 240 && tm.verticalSpeed < 0) {
+    // (only for a capsule flying on its own, after entry or an abort: the whole stack settling on
+    // its engines just after liftoff is also low, slow and sinking, and opened the chutes)
+    const alone = v.assemblies.length === 1 || this.hasMilestone('entry_prep');
+    if (pc && alone && cap.chuteState === 'stowed' && tm.altitude < 9_000 && tm.speedSurface < 240 && tm.verticalSpeed < 0) {
       // drogues first (or the mains straight away on capsules without drogues)
       if (v.deployChutes()) {
         // drop any remaining staging step for the chutes so the player doesn't fire them twice
