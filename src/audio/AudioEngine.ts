@@ -138,6 +138,9 @@ export class AudioEngine {
   private lastClock = -1;
   private lastRebuild = -1e9;
   private rebuilding = false;
+  /** the final node into the speakers, and every looping source (to retire a broken graph) */
+  private finalOut: AudioNode | null = null;
+  private loops: AudioBufferSourceNode[] = [];
 
   constructor(settings: Settings, readonly assets: AssetBundle) {
     this.settings = settings;
@@ -147,15 +150,18 @@ export class AudioEngine {
   }
 
   /** Create the context on the first user gesture (browser autoplay policy). */
-  start(): void {
+  start(reuse: AudioContext | null = null): void {
     if (this.started) { if (this.ctx?.state === 'suspended') void this.ctx.resume(); return; }
     this.started = true;
     let ctx: AudioContext;
+    if (reuse) ctx = reuse;
+    else 
     // (the 'playback' latency's larger buffers ride out a busy main thread and a slow CPU: with
     // the smallest buffers the sound kept breaking up on low-end laptops. A tenth of a second
     // more latency is inaudible against engine sound that already arrives with its distance delay)
     try { ctx = new AudioContext({ latencyHint: 'playback' }); } catch { try { ctx = new AudioContext(); } catch { this.started = false; return; } }
     this.ctx = ctx;
+    this.loops = [];
     // master: rumble below hearing taken out (it only eats headroom), a gentle glue compressor
     // that lifts the whole mix to a level small laptop speakers carry, then a fast limiter so the
     // loudest moments never clip
@@ -170,15 +176,18 @@ export class AudioEngine {
     const mix = ctx.createGain();
     mix.connect(hp).connect(glue).connect(this.master);
     this.master.connect(limiter).connect(ctx.destination);
+    this.finalOut = limiter;
     // the watchdog listens to the final output (see update)
     this.tap = ctx.createAnalyser();
     this.tap.fftSize = 512;
     limiter.connect(this.tap);
     // a context the system suspends (another tab took the audio device, the lid closed) comes
     // back by itself when the page is shown again, not only on the next click
+    if (!reuse) {
     const wake = () => { if (ctx.state !== 'running' && ctx.state !== 'closed' && document.visibilityState === 'visible') void ctx.resume().catch(() => undefined); };
     ctx.addEventListener('statechange', wake);
     document.addEventListener('visibilitychange', wake);
+    }
     this.sfx = ctx.createGain(); this.sfx.connect(mix);
     this.musicBus = ctx.createGain(); this.musicBus.connect(mix);
     this.voiceBus = ctx.createGain(); this.voiceBus.connect(this.master);
@@ -210,6 +219,7 @@ export class AudioEngine {
     s.loop = true;
     s.playbackRate.value = rate;
     s.start(ctx.currentTime + Math.random() * 0.05, Math.random() * (s.buffer!.duration - 0.1));
+    this.loops.push(s);
     return s;
   }
 
@@ -539,11 +549,10 @@ export class AudioEngine {
     this.watchT = 0;
     if (document.visibilityState !== 'visible') { this.deadFor = 0; return; }
     if (ctx.state !== 'running') {
+      // (only resumed, never replaced: a new context starts muted until the next click, so
+      // replacing it left the game silent)
       void ctx.resume().catch(() => undefined);
-      // a context that will not come back (closed by the system, or stuck suspended) is replaced
-      this.deadFor += step;
       this.lastClock = -1;
-      if (this.deadFor > 4) this.rebuild();
       return;
     }
     this.tap.getFloatTimeDomainData(this.tapBuf);
@@ -563,19 +572,23 @@ export class AudioEngine {
     this.rebuilding = true;
     this.lastRebuild = this.time;
     const old = this.ctx, music = this.music, radio = this.radio;
-    this.ctx = null; this.engine = null; this.wind = null; this.amb = null; this.plasma = null; this.tap = null;
+    // the graph is rebuilt in the same context (which keeps its permission to play): the old one
+    // is cut from the speakers and its sources stopped
+    try { this.finalOut?.disconnect(); } catch { /* */ }
+    for (const l of this.loops) { try { l.stop(); l.disconnect(); } catch { /* */ } }
+    music?.dispose();
+    radio?.clear();
+    this.engine = null; this.wind = null; this.amb = null; this.plasma = null; this.tap = null;
     this.music = null; this.radio = null;
     this.started = false;
     this.deadFor = 0;
     this.lastClock = -1;
-    radio?.clear();
-    // (the old context is closed first: browsers allow only a few at once)
-    const fresh = () => { this.rebuilding = false; this.restart(music, radio); };
-    if (old && old.state !== 'closed') old.close().then(fresh, fresh); else fresh();
+    this.rebuilding = false;
+    if (!old || old.state === 'closed') { this.ctx = null; this.start(); } else this.start(old);
+    this.restore(music, radio);
   }
 
-  private restart(music: Music | null, radio: Radio | null): void {
-    this.start();
+  private restore(music: Music | null, radio: Radio | null): void {
     const m = this.music as Music | null, r = this.radio as Radio | null;
     if (m && music) {
       m.setMood(music.mood);
