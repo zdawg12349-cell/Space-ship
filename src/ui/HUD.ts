@@ -55,6 +55,8 @@ export class HUD {
   private subTimer = 0;
   private lastStageKey = '';
   visible = true;
+  /** the speed button: cycles time warp 1x, 2x, 5x, 10x */
+  onWarpClick: (() => void) | null = null;
   /** show subtitles even in cinematic mode */
   subtitlesAlways = true;
   onAutopilot: ((mode: string) => void) | null = null;
@@ -69,7 +71,7 @@ export class HUD {
     );
     this.objEl = h('div', { class: 'objective-hud' });
     const tr = h('div', { class: 'hud-tr' },
-      h('div', { style: 'display:flex;gap:10px;align-items:center' }, (this.els.cam = h('div', { class: 'chip' })), (this.els.warp = h('div', { class: 'warp' }))),
+      h('div', { style: 'display:flex;gap:10px;align-items:center' }, (this.els.cam = h('div', { class: 'chip' })), (this.els.warp = h('button', { class: 'warp warp-btn', title: 'Speed up: 1× → 2× → 5× → 10× (or , and .)' }))),
       (this.apPanel = h('div', { class: 'ap-panel interactive' })),
       (this.navEl = h('div', { class: 'nav-panel interactive' })),
       this.objEl,
@@ -114,6 +116,7 @@ export class HUD {
     );
     this.bannerEl = h('div', { class: 'banner' }, h('div', { class: 'big' }), h('div', { class: 'small' }));
     this.subEl = h('div', { class: 'subtitles' }, h('div', { class: 'line' }));
+    this.els.warp.addEventListener('click', (e) => { e.stopPropagation(); (e.currentTarget as HTMLElement).blur(); this.onWarpClick?.(); });
     this.logEl = h('div', { class: 'log' });
     this.ignitionEl = h('div', { class: 'ignition' });
     IGNITION_STEPS.forEach((s, i) => this.ignitionEl.appendChild(h('div', { class: 'step' }, h('span', { class: 'n' }, String(i + 1).padStart(2, '0')), s)));
@@ -206,7 +209,8 @@ export class HUD {
     this.els.met.textContent = LaunchSequence.format(s.met);
     this.els.phase.textContent = (s.seq.held ? 'HOLD · ' : '') + (PHASE_LABEL[s.phase] ?? s.phase);
     const warp = WARP_LEVELS[s.world.warpIndex];
-    this.els.warp.textContent = warp > 1 ? `▶▶ ${warp}×` : '▶ 1×';
+    const txt = warp > 1 ? `▶▶ ${warp}×` : '▶ 1× · speed up';
+    if (this.els.warp.textContent !== txt) this.els.warp.textContent = txt;
     this.els.warp.classList.toggle('on', warp > 1);
     this.els.cam.textContent = CAMERA_LABELS[s.director.mode];
     for (const b of Array.from(this.apPanel.children) as HTMLElement[]) b.classList.toggle('active', b.dataset.mode === s.autopilot.mode);
