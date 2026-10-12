@@ -35,7 +35,16 @@ can change it under **Settings**.
 
 ### Flights and missions
 
-There are eleven missions plus a free sandbox:
+There are eleven missions plus a free sandbox.
+
+**Goals (press Y):** choose what the flight should do and the autopilot flies all of it, using
+the same manoeuvre buttons you would: *Orbit, then come home* (deorbit burn, entry,
+parachutes), *Around the Moon and home*, *Land on the Moon*, or *Leave the Moon, come home*.
+Only the goals that make sense for the vehicle and where it is are offered. Each mission starts
+on the goal it is about, and the panel at the top shows the step being flown. On every flight
+with parachutes, tips walk you through the way home: the deorbit burn, entry, and when to press
+<kbd>U</kbd> for the parachutes.
+
 
 | # | Mission | Vehicle | What happens |
 | --- | --- | --- | --- |

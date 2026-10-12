@@ -6,18 +6,18 @@
 export type Action =
   | 'stage' | 'throttleMax' | 'throttleCut' | 'pause' | 'map' | 'camera' | 'cameraPrev' | 'onboardCycle' | 'hud' | 'photo'
   | 'warpUp' | 'warpDown' | 'warpReset' | 'sas' | 'rcs' | 'legs' | 'chutes' | 'hold' | 'skip' | 'screenshot' | 'help'
-  | 'ap0' | 'ap1' | 'ap2' | 'ap3' | 'ap4' | 'ap5' | 'ap6' | 'ap7' | 'ap8' | 'ap9' | 'apOrbit' | 'quicksave' | 'abort';
+  | 'ap0' | 'ap1' | 'ap2' | 'ap3' | 'ap4' | 'ap5' | 'ap6' | 'ap7' | 'ap8' | 'ap9' | 'apOrbit' | 'quicksave' | 'abort' | 'goals';
 
 export const KEYMAP: Record<string, Action> = {
   Space: 'stage', KeyZ: 'throttleMax', KeyX: 'throttleCut', Escape: 'pause', KeyM: 'map', KeyC: 'camera', KeyV: 'onboardCycle',
   KeyH: 'hud', KeyP: 'photo', Period: 'warpUp', Comma: 'warpDown', Slash: 'warpReset', KeyT: 'sas', KeyR: 'rcs', KeyG: 'legs', KeyU: 'chutes',
   Backspace: 'hold', Enter: 'skip', F2: 'screenshot', F1: 'help', Digit1: 'ap0', Digit2: 'ap1', Digit3: 'ap2', Digit4: 'ap3', Digit5: 'ap4',
-  Digit6: 'ap5', Digit7: 'ap6', Digit8: 'ap7', Digit9: 'ap8', Digit0: 'ap9', KeyO: 'apOrbit', F5: 'quicksave', KeyB: 'abort',
+  Digit6: 'ap5', Digit7: 'ap6', Digit8: 'ap7', Digit9: 'ap8', Digit0: 'ap9', KeyO: 'apOrbit', F5: 'quicksave', KeyB: 'abort', KeyY: 'goals',
 };
 
 export const KEY_HELP: [string, string][] = [
   ['Space', 'Stage'], ['Shift / Ctrl', 'Throttle up / down'], ['Z / X', 'Full throttle / cut'], ['W S', 'Pitch'], ['A D', 'Yaw'], ['Q E', 'Roll'],
-  ['T', 'Stability assist'], ['1 – 0', 'Autopilot modes'], ['O', 'Orbit assist'], ['R', 'RCS'], ['G', 'Landing legs'], ['U', 'Parachutes'],
+  ['T', 'Stability assist'], ['1 – 0', 'Autopilot modes'], ['O', 'Orbit assist'], ['R', 'RCS'], ['G', 'Landing legs'], ['U', 'Parachutes'], ['Y', 'Choose a goal (autopilot flies it)'],
   [', .  /', 'Time warp down / up / reset'], ['C', 'Camera mode'], ['V', 'Onboard camera'], ['Mouse drag / wheel', 'Orbit / zoom camera'],
   ['M', 'Orbital map'], ['H', 'Cinematic (HUD off)'], ['P', 'Photo mode'], ['Enter', 'Skip countdown to T-10'], ['Backspace', 'Hold countdown'],
   ['F5', 'Quick save'], ['Esc', 'Pause'],

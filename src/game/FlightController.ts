@@ -19,7 +19,8 @@ import type { WeatherKind } from './providers';
 import { FlightSnapshot, saveProgress, snapshotVessel, writeSnapshot } from './SaveGame';
 import type { Settings } from './Settings';
 import { GRAPHICS } from './Settings';
-import { Tutorial } from '../ui/Tutorial';
+import { HOME_TIPS, Tutorial } from '../ui/Tutorial';
+import { GoalId, GoalPilot } from './Goals';
 import { planCapture, planCircularize, planCorrection, planDeorbit, planTEI, planTLI, trajectoryForecast } from './Planner';
 
 /**
@@ -75,6 +76,13 @@ export class FlightController {
   private summaryShown = false;
   private hushTimer = -1;
   private tutorial: Tutorial | null = null;
+  /** the way-home tips (deorbit, entry, parachutes), on every flight */
+  private homeTips: Tutorial;
+  /** pick-a-goal autopilot and its panel (Y) */
+  private goals: GoalPilot;
+  private goalEl: HTMLElement;
+  private goalOpen = false;
+  private goalKey = '';
   private stageSoundT = 0;
   private boostersReported = new Set<string>();
   private cinematicHud = false;
@@ -137,6 +145,13 @@ export class FlightController {
     // thunder rolls in at the speed of sound after each flash
     app.rw.lightning.onStrike = (d, k) => app.audio.thunder(d, k);
     if (mission?.tutorial) this.tutorial = new Tutorial(app.ui, s);
+    this.homeTips = new Tutorial(app.ui, s, HOME_TIPS);
+    // goals: by default the autopilot flies what the mission is about, all the way
+    this.goals = new GoalPilot({ session: s, nav: (id) => this.navAction(id), log: (t, l) => this.hud.log(t, this.session.met, l) });
+    this.goalEl = h('div', { class: 'goal-panel' });
+    app.ui.appendChild(this.goalEl);
+    const def: Record<string, GoalId> = { crew: 'home', flyby: 'flyby', landing: 'moon_land', homeward: 'moon_home' };
+    if (mission && def[mission.id]) this.goals.choose(def[mission.id]);
     app.progress.flights++;
     saveProgress(app.progress);
     this.hud.banner(mission ? mission.title : s.def.name, mission ? mission.subtitle : `${s.site.name} · ${s.config.weather}`, 5);
@@ -198,6 +213,7 @@ export class FlightController {
         if (s.active.deployChutes()) { this.hud.log('Parachutes armed', s.met, 'good'); audio.play('chute'); }
         else this.hud.log('No parachutes available', s.met, 'warn');
         break;
+      case 'goals': this.goalOpen = !this.goalOpen; this.goalKey = ''; audio.play('ui'); break;
       case 'hold': s.holdCountdown(!s.seq.held); break;
       case 'skip': s.skipCountdown(-10); break;
       case 'screenshot': this.screenshot(); break;
@@ -253,6 +269,26 @@ export class FlightController {
   // ------------------------------------------------------------------------------ manoeuvres
 
   private navTimer = 0;
+
+  /** The goal panel: the current goal and its step, and (open) the goals to choose from. */
+  private updateGoals(): void {
+    const g = this.goals;
+    const list = this.goalOpen ? g.available() : [];
+    const key = `${this.goalOpen}|${g.goal}|${g.status}|${list.map((x) => x.id).join(',')}|${this.hud.visible}`;
+    if (key === this.goalKey) return;
+    this.goalKey = key;
+    this.goalEl.style.display = this.hud.visible ? '' : 'none';
+    const cur = list.length ? null : h('div', { class: 'goal-cur' }, h('span', { class: 'label' }, 'Goal · Y'), h('b', {}, g.label), g.status ? h('span', { class: 'goal-step' }, g.status) : null);
+    this.goalEl.replaceChildren(...(cur ? [cur] : [
+      h('div', { class: 'label' }, 'Choose a goal — the autopilot flies it'),
+      ...list.map((x) => {
+        const b = h('button', { class: `btn goal-btn${x.id === g.goal ? ' on' : ''}` }, h('b', {}, x.label), h('span', {}, x.hint));
+        b.addEventListener('click', () => { this.goals.choose(x.id); this.goalOpen = false; this.goalKey = ''; this.app.audio.play('ui_select'); });
+        return b;
+      }),
+    ]));
+    if (cur) cur.addEventListener('click', () => { this.goalOpen = true; this.goalKey = ''; });
+  }
 
   /** Buttons that make sense right now. */
   private contextActions(): { id: string; label: string; primary?: boolean }[] {
@@ -501,6 +537,8 @@ export class FlightController {
       s.update(dt);
       this.director.update(dt);
       this.tutorial?.update(dt);
+      this.homeTips.update(dt);
+      this.goals.update(dt);
       if (this.director.result !== 'running' && !this.summaryShown) this.showSummary();
     } else this.input.consumeMouse();
     if (this.photo) this.photo.update(dt, this.input);
@@ -517,6 +555,7 @@ export class FlightController {
     this.updateAudio(dt);
     this.hud.update(s, dt, this.mission ? `Mission ${this.mission.number} · ${this.mission.title}` : 'Sandbox');
     this.updateNav(dt);
+    this.updateGoals();
     if (this.map) this.map.update(dt);
     else app.rw.render(dt);
     if (this.hushTimer > 0) {
@@ -597,6 +636,7 @@ export class FlightController {
     for (let i = 0; i < n; i++) {
       s.update(dt);
       this.director.update(dt);
+      this.goals.update(dt);
       if (i % renderEvery === 0) {
         s.render(dt * renderEvery);
         // banners and subtitles run on the same clock, so a capture shows what live play would
@@ -769,6 +809,8 @@ export class FlightController {
     this.pauseEl?.remove();
     this.overlay?.remove();
     this.tutorial?.dispose();
+    this.homeTips.dispose();
+    this.goalEl.remove();
     this.app.audio.radio?.clear();
     if (this.app.audio.radio) this.app.audio.radio.clock = null;
     this.app.audio.setEngine(null);

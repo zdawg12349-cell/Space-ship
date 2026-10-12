@@ -1,4 +1,4 @@
-import { glide } from './glide';
+import { disposeOnEnd, glide } from './glide';
 
 /**
  * Adaptive score, synthesised live. Layers fade in and out with an intensity value set by the
@@ -154,6 +154,7 @@ export class Music {
     g.gain.setTargetAtTime(0, t + 0.05, 0.5);
     o.connect(g).connect(this.dry);
     g.connect(this.reverb);
+    disposeOnEnd(o, g);
     o.start(t);
     o.stop(t + 3);
     // low brass-like swell on the root
@@ -169,6 +170,7 @@ export class Music {
       bg.gain.setTargetAtTime(0, t + 1.2, 1.4);
       b.connect(lp).connect(bg).connect(this.dry);
       bg.connect(this.reverb);
+      disposeOnEnd(b, lp, bg);
       b.start(t);
       b.stop(t + 7);
     }
@@ -187,6 +189,7 @@ export class Music {
     const bp = ctx.createBiquadFilter(); bp.type = 'bandpass'; bp.frequency.setValueAtTime(400, t); bp.frequency.exponentialRampToValueAtTime(4000, t + seconds); bp.Q.value = 0.8;
     const g = ctx.createGain(); g.gain.value = 0.12;
     s.connect(bp).connect(g).connect(this.reverb);
+    disposeOnEnd(s, bp, g);
     s.start(t);
   }
 
@@ -205,6 +208,8 @@ export class Music {
     g.gain.setTargetAtTime(0, at + 0.01, 0.16);
     o.connect(lp); o2.connect(lp);
     lp.connect(g).connect(this.pulseG);
+    disposeOnEnd(o, lp, g);
+    disposeOnEnd(o2);
     o.start(at); o2.start(at);
     o.stop(at + 1); o2.stop(at + 1);
   }
@@ -224,6 +229,8 @@ export class Music {
     g.gain.linearRampToValueAtTime(0.045 * vel, at + 0.01);
     g.gain.setTargetAtTime(0, at + 0.02, 1.6);
     car.connect(g).connect(this.shimmerG);
+    disposeOnEnd(car, g);
+    disposeOnEnd(mod, mg);
     car.start(at); mod.start(at);
     car.stop(at + 7); mod.stop(at + 7);
   }
