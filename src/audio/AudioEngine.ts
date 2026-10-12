@@ -2,7 +2,7 @@ import type { AssetBundle } from '../core/assets';
 import type { Settings } from '../game/Settings';
 import { Music } from './Music';
 import { Radio } from './Radio';
-import { glide } from './glide';
+import { disposeOnEnd, glide } from './glide';
 
 /**
  * Procedural audio. Every sound except the recorded mission-control voices is synthesised
@@ -135,6 +135,9 @@ export class AudioEngine {
   private tapBuf = new Float32Array(512);
   private watchT = 0;
   private deadFor = 0;
+  private lastClock = -1;
+  private lastRebuild = -1e9;
+  private rebuilding = false;
 
   constructor(settings: Settings, readonly assets: AssetBundle) {
     this.settings = settings;
@@ -151,7 +154,7 @@ export class AudioEngine {
     // (the 'playback' latency's larger buffers ride out a busy main thread and a slow CPU: with
     // the smallest buffers the sound kept breaking up on low-end laptops. A tenth of a second
     // more latency is inaudible against engine sound that already arrives with its distance delay)
-    try { ctx = new AudioContext({ latencyHint: 'playback' }); } catch { try { ctx = new AudioContext(); } catch { return; } }
+    try { ctx = new AudioContext({ latencyHint: 'playback' }); } catch { try { ctx = new AudioContext(); } catch { this.started = false; return; } }
     this.ctx = ctx;
     // master: rumble below hearing taken out (it only eats headroom), a gentle glue compressor
     // that lifts the whole mix to a level small laptop speakers carry, then a fast limiter so the
@@ -454,14 +457,17 @@ export class AudioEngine {
     src.playbackRate.value = opts.rate ?? 1;
     if (opts.pitchDrop) src.playbackRate.exponentialRampToValueAtTime(Math.max(0.05, (opts.rate ?? 1) * opts.pitchDrop), t + opts.dur);
     let node: AudioNode = src;
-    if (opts.lp) { const f = ctx.createBiquadFilter(); f.type = 'lowpass'; f.frequency.value = opts.lp; node.connect(f); node = f; }
-    if (opts.hp) { const f = ctx.createBiquadFilter(); f.type = 'highpass'; f.frequency.value = opts.hp; node.connect(f); node = f; }
+    const parts: AudioNode[] = [];
+    if (opts.lp) { const f = ctx.createBiquadFilter(); f.type = 'lowpass'; f.frequency.value = opts.lp; node.connect(f); node = f; parts.push(f); }
+    if (opts.hp) { const f = ctx.createBiquadFilter(); f.type = 'highpass'; f.frequency.value = opts.hp; node.connect(f); node = f; parts.push(f); }
     const g = ctx.createGain();
     g.gain.setValueAtTime(0, t);
     g.gain.linearRampToValueAtTime(opts.gain, t + (opts.attack ?? 0.005));
     g.gain.setTargetAtTime(0, t + (opts.attack ?? 0.005), (opts.decay ?? opts.dur / 4));
     node.connect(g).connect(this.sfx);
-    if (opts.reverb) { const r = ctx.createGain(); r.gain.value = opts.reverb; g.connect(r).connect(this.reverbSend); }
+    parts.push(g);
+    if (opts.reverb) { const r = ctx.createGain(); r.gain.value = opts.reverb; g.connect(r).connect(this.reverbSend); parts.push(r); }
+    disposeOnEnd(src, ...parts);
     src.start(t, Math.random() * 2);
     src.stop(t + opts.dur + 1);
   }
@@ -479,6 +485,7 @@ export class AudioEngine {
     g.gain.linearRampToValueAtTime(gain, t + 0.01);
     g.gain.setTargetAtTime(0, t + dur * 0.4, dur / 4);
     o.connect(g).connect(dest ?? this.sfx);
+    disposeOnEnd(o, g);
     o.start(t);
     o.stop(t + dur + 0.5);
   }
@@ -531,23 +538,43 @@ export class AudioEngine {
     const step = this.watchT;
     this.watchT = 0;
     if (document.visibilityState !== 'visible') { this.deadFor = 0; return; }
-    if (ctx.state !== 'running') { void ctx.resume().catch(() => undefined); return; }
+    if (ctx.state !== 'running') {
+      void ctx.resume().catch(() => undefined);
+      // a context that will not come back (closed by the system, or stuck suspended) is replaced
+      this.deadFor += step;
+      this.lastClock = -1;
+      if (this.deadFor > 4) this.rebuild();
+      return;
+    }
     this.tap.getFloatTimeDomainData(this.tapBuf);
     let bad = false, peak = 0;
     for (const x of this.tapBuf) { if (!Number.isFinite(x)) { bad = true; break; } peak = Math.max(peak, Math.abs(x)); }
     const shouldPlay = this.settings.master > 0.02 && this.settings.music > 0.02;
-    this.deadFor = bad || (shouldPlay && peak === 0) ? this.deadFor + step : 0;
-    if (bad || this.deadFor > 4) this.rebuild();
+    // the audio clock must keep moving while the context says it is running
+    const stalled = this.lastClock >= 0 && ctx.currentTime - this.lastClock < step * 0.25;
+    this.lastClock = ctx.currentTime;
+    this.deadFor = bad || stalled || (shouldPlay && peak === 0) ? this.deadFor + step : 0;
+    if (bad || this.deadFor > 3) this.rebuild();
   }
 
   private rebuild(): void {
+    // at most once every ten seconds, and never while one is under way
+    if (this.rebuilding || this.time - this.lastRebuild < 10) return;
+    this.rebuilding = true;
+    this.lastRebuild = this.time;
     const old = this.ctx, music = this.music, radio = this.radio;
     this.ctx = null; this.engine = null; this.wind = null; this.amb = null; this.plasma = null; this.tap = null;
     this.music = null; this.radio = null;
     this.started = false;
     this.deadFor = 0;
+    this.lastClock = -1;
     radio?.clear();
-    void old?.close().catch(() => undefined);
+    // (the old context is closed first: browsers allow only a few at once)
+    const fresh = () => { this.rebuilding = false; this.restart(music, radio); };
+    if (old && old.state !== 'closed') old.close().then(fresh, fresh); else fresh();
+  }
+
+  private restart(music: Music | null, radio: Radio | null): void {
     this.start();
     const m = this.music as Music | null, r = this.radio as Radio | null;
     if (m && music) {

@@ -14,3 +14,15 @@ export function glide(p: AudioParam, v: number, t: number, tc: number): void {
   p.cancelScheduledValues(t);
   p.setTargetAtTime(v, t, tc);
 }
+
+/**
+ * Disconnect a one-shot's nodes when its source ends. Left connected, every finished hiss,
+ * note and click stayed in the graph; after twenty minutes of play there were tens of thousands
+ * of them and the audio thread could no longer keep up (crackle, then silence).
+ */
+export function disposeOnEnd(src: AudioScheduledSourceNode, ...nodes: (AudioNode | null | undefined)[]): void {
+  src.onended = () => {
+    try { src.disconnect(); } catch { /* already */ }
+    for (const n of nodes) { if (n) try { n.disconnect(); } catch { /* already */ } }
+  };
+}

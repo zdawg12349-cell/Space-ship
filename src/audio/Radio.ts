@@ -5,6 +5,8 @@
  * play late is skipped) and reports each line for subtitles.
  */
 
+import { disposeOnEnd } from './glide';
+
 export interface VoiceLine { role: string; text: string; duration: number }
 
 const ROLE_NAMES: Record<string, string> = {
@@ -88,6 +90,7 @@ export class Radio {
     g.gain.setValueAtTime(0.09, at + dur - 0.01);
     g.gain.linearRampToValueAtTime(0, at + dur);
     o.connect(g).connect(this.input);
+    disposeOnEnd(o, g);
     o.start(at);
     o.stop(at + dur + 0.05);
   }
@@ -113,6 +116,7 @@ export class Radio {
     const src = ctx.createBufferSource();
     src.buffer = buf;
     src.connect(this.input);
+    disposeOnEnd(src);
     src.start(t + lead);
     const end = t + lead + buf.duration;
     if (quindar) this.tone(2475, end + 0.04, 0.25);
